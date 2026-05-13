@@ -96,6 +96,13 @@ Run one real budget:
 python -m evaluator.optimize_budget --budget 128 --cycles 10 --codex-model gpt-5.5-medium
 ```
 
+On Windows the optimizer resolves `codex.cmd` explicitly. If Codex is installed in a
+non-standard location, pass:
+
+```powershell
+python -m evaluator.optimize_budget --budget 128 --cycles 10 --codex-bin C:\path\to\codex.cmd
+```
+
 Dry-run validation Harbor command construction:
 
 ```bash
