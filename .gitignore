@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+
+experience/B*/*
+!experience/B*/.gitkeep
+final_test/B*/*
+!final_test/B*/.gitkeep
+results/*
+!results/.gitkeep

@@ -1,0 +1,33 @@
+[project]
+name = "harness-complexity"
+version = "0.1.0"
+description = "Minimal scaffold for TerminalBench harness line-count experiments."
+requires-python = ">=3.11"
+dependencies = [
+    "black",
+    "matplotlib",
+    "openai",
+    "pandas",
+    "pydantic",
+    "pytest",
+    "ruff",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["evaluator", "plumbing", "scripts"]
+
+[tool.black]
+line-length = 100
+target-version = ["py311"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
