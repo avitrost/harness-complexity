@@ -9,8 +9,8 @@ def test_build_codex_command_uses_resolved_exec_binary(tmp_path: Path) -> None:
     command = build_codex_command(
         workspace=tmp_path,
         budget=128,
-        codex_model="gpt-5.5-medium",
-        codex_reasoning_effort=None,
+        codex_model="gpt-5.5",
+        codex_reasoning_effort="medium",
         repair=False,
         codex_bin=str(codex),
     )

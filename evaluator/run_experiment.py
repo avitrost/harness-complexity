@@ -23,7 +23,7 @@ def main() -> int:
     parser.add_argument(
         "--codex-reasoning-effort",
         choices=("low", "medium", "high", "xhigh"),
-        default=None,
+        default="medium",
     )
     parser.add_argument("--codex-bin")
     parser.add_argument("--dry-run", action="store_true")
@@ -42,11 +42,8 @@ def main() -> int:
                     str(args.cycles),
                     "--codex-model",
                     args.codex_model,
-                    *(
-                        ("--codex-reasoning-effort", args.codex_reasoning_effort)
-                        if args.codex_reasoning_effort
-                        else ()
-                    ),
+                    "--codex-reasoning-effort",
+                    args.codex_reasoning_effort,
                     *(("--codex-bin", args.codex_bin) if args.codex_bin else ()),
                     *(("--dry-run",) if args.dry_run else ()),
                 ]

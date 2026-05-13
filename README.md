@@ -104,9 +104,7 @@ python -m evaluator.optimize_budget --budget 128 --cycles 10 --codex-bin C:\path
 ```
 
 For ChatGPT-authenticated Codex CLI accounts, model names are slugs such as `gpt-5.5`;
-reasoning effort is separate. The current optimizer still accepts legacy combined
-values like `gpt-5.5-medium` and normalizes them to `--model gpt-5.5` plus
-`model_reasoning_effort="medium"`.
+reasoning effort is separate.
 
 Dry-run validation Harbor command construction:
 
