@@ -7,7 +7,6 @@ def test_build_codex_command_uses_resolved_exec_binary(tmp_path: Path) -> None:
     codex = tmp_path / "codex.cmd"
     codex.write_text("", encoding="utf-8")
     command = build_codex_command(
-        workspace=tmp_path,
         budget=128,
         codex_model="gpt-5.5",
         codex_reasoning_effort="medium",
@@ -16,5 +15,7 @@ def test_build_codex_command_uses_resolved_exec_binary(tmp_path: Path) -> None:
     )
     assert command[:4] == [str(codex), "exec", "--model", "gpt-5.5"]
     assert command[4:6] == ["-c", 'model_reasoning_effort="medium"']
+    assert command[6:8] == ["--sandbox", "danger-full-access"]
+    assert "--ephemeral" in command
     assert "--skip-git-repo-check" in command
-    assert "--sandbox" in command
+    assert "Do not inspect parent directories" in command[-1]

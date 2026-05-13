@@ -15,12 +15,9 @@ Your task:
 - Optimize for general terminal-agent behavior, not task-specific hacks.
 
 You may inspect:
-- prior candidate harnesses for this same budget
-- prior val scores
-- prior execution traces
-- validation logs
-- summaries
-- diffs
+- candidate/harness.py
+- proposal.md
+- validation failure details from this same current attempt if they are provided directly
 
 You may edit:
 - candidate/harness.py
@@ -41,6 +38,7 @@ Hard constraints:
 - Do not import behavior from uncounted files.
 - Do not hardcode task names, task slugs, test names, expected answers, or oracle behavior.
 - Do not read benchmark solutions, tests, hidden files, split files, experience logs, or final-test results at runtime.
+- Do not inspect parent directories or prior experiment runs.
 - Do not use eval, exec, dynamic imports, or generated Python code.
 - Do not optimize for validation tasks by name.
 - Prefer robust general strategies for terminal problem solving.
@@ -48,7 +46,7 @@ Hard constraints:
 Output requirements:
 - Write candidate/harness.py.
 - Write proposal.md containing:
-  - what prior candidates you inspected
+  - what current workspace files you inspected
   - observed failure modes
   - hypothesis
   - changes made

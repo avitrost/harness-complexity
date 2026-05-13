@@ -5,6 +5,7 @@ import json
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -28,38 +29,42 @@ def optimize_budget(
     budget_dir = Path(f"experience/B{budget:04d}")
     budget_dir.mkdir(parents=True, exist_ok=True)
     reports = []
-    source = Path("seeds/seed_minimal.py")
     for cycle in range(1, cycles + 1):
         iter_dir = budget_dir / f"iter_{cycle:03d}"
+        iter_dir.mkdir(parents=True, exist_ok=True)
         workspace = iter_dir / "workspace"
-        make_workspace(workspace, source)
-        command = build_codex_command(
-            workspace,
-            budget,
-            codex_model,
-            codex_reasoning_effort,
-            repair=False,
-            codex_bin=codex_bin,
-        )
-        (iter_dir / "codex_command.json").write_text(
-            json.dumps(command, indent=2), encoding="utf-8"
-        )
-        if not dry_run:
-            _run_codex(command, workspace)
-        validation = validate_candidate(workspace / "candidate" / "harness.py", budget)
-        for repair in range(1, 3):
-            if validation["ok"] or dry_run:
-                break
-            repair_command = build_codex_command(
-                workspace,
+        with tempfile.TemporaryDirectory(
+            prefix=f"harness_complexity_B{budget:04d}_iter_{cycle:03d}_"
+        ) as temp_dir:
+            codex_workspace = Path(temp_dir) / "workspace"
+            make_workspace(codex_workspace, Path("seeds/seed_minimal.py"))
+            command = build_codex_command(
                 budget,
                 codex_model,
                 codex_reasoning_effort,
-                repair=True,
+                repair=False,
                 codex_bin=codex_bin,
             )
-            _run_codex(repair_command, workspace)
+            (iter_dir / "codex_command.json").write_text(
+                json.dumps(command, indent=2), encoding="utf-8"
+            )
+            if not dry_run:
+                _run_codex(command, codex_workspace)
+            _copy_workspace(codex_workspace, workspace)
             validation = validate_candidate(workspace / "candidate" / "harness.py", budget)
+            for repair in range(1, 3):
+                if validation["ok"] or dry_run:
+                    break
+                repair_command = build_codex_command(
+                    budget,
+                    codex_model,
+                    codex_reasoning_effort,
+                    repair=True,
+                    codex_bin=codex_bin,
+                )
+                _run_codex(repair_command, codex_workspace)
+                _copy_workspace(codex_workspace, workspace)
+                validation = validate_candidate(workspace / "candidate" / "harness.py", budget)
         (iter_dir / "validation.json").write_text(
             json.dumps(validation, indent=2, sort_keys=True),
             encoding="utf-8",
@@ -69,13 +74,11 @@ def optimize_budget(
         else:
             summary = {"split": "val", "split_mean": 0.0, "invalid": not validation["ok"]}
             (iter_dir / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
-        source = workspace / "candidate" / "harness.py"
         reports.append({"iteration": cycle, "workspace": str(workspace), "valid": validation["ok"]})
     return reports
 
 
 def build_codex_command(
-    workspace: Path,
     budget: int,
     codex_model: str,
     codex_reasoning_effort: str,
@@ -83,9 +86,10 @@ def build_codex_command(
     codex_bin: str | None = None,
 ) -> list[str]:
     prompt = (
-        f"Edit only candidate/harness.py and proposal.md. Keep candidate/harness.py at most "
-        f"{budget} Black-formatted physical lines. Improve general TerminalBench behavior "
-        "without task-specific hacks."
+        "You are in an isolated workspace. Edit only candidate/harness.py and proposal.md. "
+        "Do not inspect parent directories, absolute repository paths, or prior experiment "
+        f"artifacts. Keep candidate/harness.py at most {budget} Black-formatted physical "
+        "lines. Improve general TerminalBench behavior without task-specific hacks."
     )
     if repair:
         prompt = f"Repair validation failures. {prompt}"
@@ -97,7 +101,8 @@ def build_codex_command(
         "-c",
         f'model_reasoning_effort="{codex_reasoning_effort}"',
         "--sandbox",
-        "workspace-write",
+        "danger-full-access",
+        "--ephemeral",
         "--skip-git-repo-check",
         prompt,
     ]
@@ -123,6 +128,12 @@ def _run_codex(command: list[str], workspace: Path) -> None:
     result = subprocess.run(command, cwd=workspace, check=False)
     if result.returncode != 0:
         raise RuntimeError(f"Codex CLI exited with status {result.returncode}")
+
+
+def _copy_workspace(source: Path, destination: Path) -> None:
+    if destination.exists():
+        shutil.rmtree(destination)
+    shutil.copytree(source, destination, ignore=shutil.ignore_patterns("__pycache__"))
 
 
 def _run_val(workspace: Path, budget: int, iter_dir: Path) -> None:

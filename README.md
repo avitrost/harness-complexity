@@ -35,6 +35,11 @@ The terminal-solving model is not named in `candidate/harness.py`. It is frozen 
 optimization cycles may change harness behavior only inside `candidate/harness.py`;
 prompt text in that file counts toward the budget.
 
+Budget optimization invokes Codex in a temporary isolated workspace containing only
+`candidate/harness.py`, `proposal.md`, and local workspace instructions. After Codex
+returns, those files are copied into `experience/Bxxxx/iter_NNN/workspace` for
+validation and record keeping.
+
 ## Plumbing Boundary
 
 Uncounted plumbing must stay mechanical. It may load `OPENAI_API_KEY`, call the fixed
@@ -105,6 +110,11 @@ python -m evaluator.optimize_budget --budget 128 --cycles 10 --codex-bin C:\path
 
 For ChatGPT-authenticated Codex CLI accounts, model names are slugs such as `gpt-5.5`;
 reasoning effort is separate.
+
+On Windows, Codex `workspace-write` sandboxing can fail with
+`CreateProcessWithLogonW failed: 1056`. The optimizer therefore runs Codex in a
+temporary isolated workspace with `--sandbox danger-full-access`, then copies back only
+the candidate workspace artifacts.
 
 Dry-run validation Harbor command construction:
 
