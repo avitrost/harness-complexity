@@ -27,8 +27,8 @@ mechanics needed to run it.
 ## Counted Harness
 
 The barebones starter harness is intentionally small. It imports only allowed plumbing,
-constructs a generic system/user message pair from the TerminalBench instruction, and
-calls `plumbing.openai_client.call_terminal_model(...)`.
+formats recent terminal observations, calls `plumbing.openai_client.call_terminal_model(...)`,
+and returns the next command or `DONE`.
 
 The terminal-solving model is not named in `candidate/harness.py`. It is frozen in
 `plumbing/openai_client.py` as `gpt-5.4-nano`, outside the line-counted file. Future
@@ -48,10 +48,10 @@ parse Harbor outputs, aggregate scores, and plot results. It must not contain
 task-solving strategy that would change benchmark behavior.
 
 The Harbor adapter exposes `plumbing.harbor_adapter:HarborHarnessAgent`. Harbor calls
-that class, the adapter loads the candidate harness from the selected workspace, gets
-one command from the harness, executes that command in the benchmark environment, and
-writes small agent logs. The adapter does not choose the model and does not add
-task-specific behavior.
+that class, the adapter loads the candidate harness from the selected workspace, passes
+terminal history to the counted harness, executes the returned command, and records
+observations. The adapter does not choose the model and does not add task-specific
+behavior.
 
 ## Install
 

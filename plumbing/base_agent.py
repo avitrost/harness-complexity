@@ -8,13 +8,13 @@ from contextlib import contextmanager
 from collections.abc import Iterator
 from typing import Any
 
-from plumbing.types import TaskContext
+from plumbing.types import CommandResult, HarnessTurn, TaskContext
 
 
 class BaseHarness(ABC):
     @abstractmethod
-    def solve(self, task: TaskContext) -> str:
-        """Return the next model-authored terminal instruction or answer."""
+    def next_command(self, task: TaskContext, history: list[CommandResult]) -> HarnessTurn:
+        """Return the next terminal command, or mark the task done."""
 
 
 def load_harness(

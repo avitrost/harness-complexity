@@ -10,3 +10,17 @@ class TaskContext:
     working_dir: str | None = None
     task_id: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class CommandResult:
+    command: str
+    return_code: int | None
+    stdout: str = ""
+    stderr: str = ""
+
+
+@dataclass(frozen=True)
+class HarnessTurn:
+    command: str = ""
+    done: bool = False

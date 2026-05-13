@@ -26,6 +26,8 @@ def optimize_budget(
 ) -> list[dict[str, Any]]:
     if budget not in BUDGETS:
         raise ValueError(f"unsupported budget: {budget}")
+    if not dry_run:
+        _require_docker()
     budget_dir = Path(f"experience/B{budget:04d}")
     budget_dir.mkdir(parents=True, exist_ok=True)
     reports = []
@@ -136,6 +138,14 @@ def _copy_workspace(source: Path, destination: Path) -> None:
     shutil.copytree(source, destination, ignore=shutil.ignore_patterns("__pycache__"))
 
 
+def _require_docker() -> None:
+    if shutil.which("docker") is None:
+        raise RuntimeError(
+            "Docker is required for validation but was not found on PATH. "
+            "Install/start Docker Desktop, or rerun with --dry-run."
+        )
+
+
 def _run_val(workspace: Path, budget: int, iter_dir: Path) -> None:
     subprocess.run(
         [
@@ -164,14 +174,18 @@ def main() -> int:
     parser.add_argument("--codex-bin")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
-    reports = optimize_budget(
-        args.budget,
-        args.cycles,
-        args.codex_model,
-        args.codex_reasoning_effort,
-        args.dry_run,
-        args.codex_bin,
-    )
+    try:
+        reports = optimize_budget(
+            args.budget,
+            args.cycles,
+            args.codex_model,
+            args.codex_reasoning_effort,
+            args.dry_run,
+            args.codex_bin,
+        )
+    except RuntimeError as exc:
+        print(json.dumps({"ok": False, "error": str(exc)}, indent=2), file=sys.stderr)
+        return 1
     print(json.dumps(reports, indent=2, sort_keys=True))
     return 0
 

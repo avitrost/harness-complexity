@@ -14,14 +14,16 @@ def test_load_harness_from_candidate_workspace(tmp_path: Path) -> None:
     candidate.mkdir(parents=True)
     (candidate / "harness.py").write_text(
         "from plumbing.base_agent import BaseHarness\n"
+        "from plumbing.types import HarnessTurn\n"
         "class H(BaseHarness):\n"
-        "    def solve(self, task):\n"
-        "        return 'echo workspace'\n"
+        "    def next_command(self, task, history):\n"
+        "        return HarnessTurn(command='echo workspace')\n"
         "def create_agent():\n"
         "    return H()\n",
         encoding="utf-8",
     )
-    assert load_harness(candidate_dir=workspace).solve(SimpleNamespace()) == "echo workspace"
+    turn = load_harness(candidate_dir=workspace).next_command(SimpleNamespace(), [])
+    assert turn.command == "echo workspace"
 
 
 def test_harbor_agent_executes_candidate_command(tmp_path: Path) -> None:
@@ -30,9 +32,12 @@ def test_harbor_agent_executes_candidate_command(tmp_path: Path) -> None:
     candidate.mkdir(parents=True)
     (candidate / "harness.py").write_text(
         "from plumbing.base_agent import BaseHarness\n"
+        "from plumbing.types import HarnessTurn\n"
         "class H(BaseHarness):\n"
-        "    def solve(self, task):\n"
-        "        return 'echo ok'\n"
+        "    def next_command(self, task, history):\n"
+        "        if history:\n"
+        "            return HarnessTurn(done=True)\n"
+        "        return HarnessTurn(command='echo ok')\n"
         "def create_agent():\n"
         "    return H()\n",
         encoding="utf-8",
@@ -42,7 +47,8 @@ def test_harbor_agent_executes_candidate_command(tmp_path: Path) -> None:
     agent = HarborHarnessAgent(logs_dir=tmp_path / "logs", candidate_dir=workspace)
     asyncio.run(agent.run("instruction", env, context))
     assert env.commands == ["echo ok"]
-    assert context.metadata["return_code"] == 0
+    assert context.metadata["last_return_code"] == 0
+    assert context.metadata["turns"] == 1
     assert (tmp_path / "logs" / "harness-result.json").exists()
 
 

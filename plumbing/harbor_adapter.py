@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from plumbing.base_agent import load_harness
-from plumbing.types import TaskContext
+from plumbing.types import CommandResult, TaskContext
 
 try:  # Harbor is installed as a CLI tool, not as a project test dependency.
     from harbor.agents.base import BaseAgent as HarborBaseAgent
@@ -17,6 +17,8 @@ except Exception:  # pragma: no cover - exercised when Harbor imports this file.
 
 TERMINAL_BENCH_DATASET = "terminal-bench@2.0"
 HARBOR_AGENT_IMPORT_PATH = "plumbing.harbor_adapter:HarborHarnessAgent"
+MAX_TURNS = 12
+MAX_OBSERVATION_CHARS = 6000
 
 
 @dataclass(frozen=True)
@@ -67,28 +69,46 @@ class HarborHarnessAgent(HarborBaseAgent):
 
     async def run(self, instruction: str, environment: Any, context: Any) -> None:
         agent = load_harness(candidate_dir=self.candidate_dir)
-        command = agent.solve(TaskContext(instruction=instruction)).strip()
+        task = TaskContext(instruction=instruction)
+        history: list[CommandResult] = []
         self.logs_dir.mkdir(parents=True, exist_ok=True)
-        (self.logs_dir / "harness-command.txt").write_text(command, encoding="utf-8")
-        if not command:
-            context.metadata = {"candidate_dir": str(self.candidate_dir), "empty_command": True}
-            return
-        result = await environment.exec(command=command)
-        self._write_result_logs(command, result)
+        done = False
+        for turn_index in range(1, MAX_TURNS + 1):
+            turn = agent.next_command(task, history)
+            command = turn.command.strip()
+            if turn.done or not command:
+                done = turn.done
+                break
+            result = await environment.exec(command=command)
+            record = CommandResult(
+                command=command,
+                return_code=getattr(result, "return_code", None),
+                stdout=_tail(getattr(result, "stdout", "") or ""),
+                stderr=_tail(getattr(result, "stderr", "") or ""),
+            )
+            history.append(record)
+            self._write_turn_log(turn_index, record)
+        self._write_result_logs(history, done)
         context.metadata = {
             "candidate_dir": str(self.candidate_dir),
-            "command": command,
-            "return_code": getattr(result, "return_code", None),
-            "stdout_chars": len(getattr(result, "stdout", "") or ""),
-            "stderr_chars": len(getattr(result, "stderr", "") or ""),
+            "done": done,
+            "turns": len(history),
+            "max_turns": MAX_TURNS,
+            "last_return_code": history[-1].return_code if history else None,
         }
 
-    def _write_result_logs(self, command: str, result: Any) -> None:
+    def _write_turn_log(self, turn_index: int, record: CommandResult) -> None:
+        (self.logs_dir / f"harness-turn-{turn_index:02d}.json").write_text(
+            json.dumps(record.__dict__, indent=2),
+            encoding="utf-8",
+        )
+
+    def _write_result_logs(self, history: list[CommandResult], done: bool) -> None:
         payload = {
-            "command": command,
-            "return_code": getattr(result, "return_code", None),
-            "stdout": getattr(result, "stdout", None),
-            "stderr": getattr(result, "stderr", None),
+            "done": done,
+            "turns": len(history),
+            "commands": [record.command for record in history],
+            "last_return_code": history[-1].return_code if history else None,
         }
         (self.logs_dir / "harness-result.json").write_text(
             json.dumps(payload, indent=2),
@@ -102,7 +122,12 @@ def run_candidate(
     candidate_dir: str | Path | None = None,
 ) -> str:
     agent = load_harness(candidate_dir=candidate_dir)
-    return agent.solve(TaskContext(instruction=instruction, working_dir=working_dir))
+    turn = agent.next_command(TaskContext(instruction=instruction, working_dir=working_dir), [])
+    return turn.command
+
+
+def _tail(text: str) -> str:
+    return text[-MAX_OBSERVATION_CHARS:]
 
 
 def detect_harbor_executable() -> str | None:

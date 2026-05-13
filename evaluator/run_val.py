@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -40,13 +41,29 @@ def run_split(
         summary = {"split": split, "dry_run": dry_run, "ran": False, **command_json}
         (out_dir / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
         return summary
+    if shutil.which("docker") is None:
+        message = "Docker is not installed or not on PATH. Please install Docker and try again."
+        (out_dir / "stderr.log").write_text(message + "\n", encoding="utf-8")
+        (out_dir / "stdout.log").write_text("", encoding="utf-8")
+        (out_dir / "records.json").write_text("[]\n", encoding="utf-8")
+        summary = aggregate_records([], split)
+        summary.update(
+            {
+                "ran": False,
+                "returncode": 1,
+                "error": message,
+                **command_json,
+            }
+        )
+        write_summary(summary, out_dir)
+        return summary
     result = subprocess.run(plan.command, check=False, capture_output=True, text=True)
     (out_dir / "stdout.log").write_text(result.stdout, encoding="utf-8")
     (out_dir / "stderr.log").write_text(result.stderr, encoding="utf-8")
     records = parse_records(out_dir)
     (out_dir / "records.json").write_text(json.dumps(records, indent=2), encoding="utf-8")
     summary = aggregate_records(records, split)
-    summary.update({"returncode": result.returncode, "command": plan.command})
+    summary.update({"ran": True, "returncode": result.returncode, "command": plan.command})
     write_summary(summary, out_dir)
     return summary
 
