@@ -12,12 +12,22 @@ from evaluator.validate_candidate import validate_candidate
 from scripts.make_workspace import make_workspace
 
 BUDGETS = {64, 128, 256, 512}
+CODEX_REASONING_EFFORTS = ("low", "medium", "high", "xhigh")
+KNOWN_CODEX_MODELS = {
+    "gpt-5.5",
+    "gpt-5.4",
+    "gpt-5.4-mini",
+    "gpt-5.3-codex",
+    "gpt-5.2",
+    "codex-auto-review",
+}
 
 
 def optimize_budget(
     budget: int,
     cycles: int = 10,
-    codex_model: str = "gpt-5.5-medium",
+    codex_model: str = "gpt-5.5",
+    codex_reasoning_effort: str | None = "medium",
     dry_run: bool = False,
     codex_bin: str | None = None,
 ) -> list[dict[str, Any]]:
@@ -32,7 +42,12 @@ def optimize_budget(
         workspace = iter_dir / "workspace"
         make_workspace(workspace, source)
         command = build_codex_command(
-            workspace, budget, codex_model, repair=False, codex_bin=codex_bin
+            workspace,
+            budget,
+            codex_model,
+            codex_reasoning_effort,
+            repair=False,
+            codex_bin=codex_bin,
         )
         (iter_dir / "codex_command.json").write_text(
             json.dumps(command, indent=2), encoding="utf-8"
@@ -47,6 +62,7 @@ def optimize_budget(
                 workspace,
                 budget,
                 codex_model,
+                codex_reasoning_effort,
                 repair=True,
                 codex_bin=codex_bin,
             )
@@ -70,6 +86,7 @@ def build_codex_command(
     workspace: Path,
     budget: int,
     codex_model: str,
+    codex_reasoning_effort: str | None,
     repair: bool,
     codex_bin: str | None = None,
 ) -> list[str]:
@@ -80,16 +97,41 @@ def build_codex_command(
     )
     if repair:
         prompt = f"Repair validation failures. {prompt}"
+    model, reasoning_effort = normalize_codex_model(codex_model, codex_reasoning_effort)
     return [
         resolve_codex_executable(codex_bin),
         "exec",
         "--model",
-        codex_model,
+        model,
+        "-c",
+        f'model_reasoning_effort="{reasoning_effort}"',
         "--sandbox",
         "workspace-write",
         "--skip-git-repo-check",
         prompt,
     ]
+
+
+def normalize_codex_model(
+    codex_model: str, codex_reasoning_effort: str | None = None
+) -> tuple[str, str]:
+    model = codex_model
+    reasoning_effort = codex_reasoning_effort
+    for effort in CODEX_REASONING_EFFORTS:
+        suffix = f"-{effort}"
+        if codex_model.endswith(suffix):
+            possible_model = codex_model[: -len(suffix)]
+            if possible_model in KNOWN_CODEX_MODELS:
+                model = possible_model
+                reasoning_effort = reasoning_effort or effort
+                break
+    reasoning_effort = reasoning_effort or "medium"
+    if reasoning_effort not in CODEX_REASONING_EFFORTS:
+        expected = ", ".join(CODEX_REASONING_EFFORTS)
+        raise ValueError(
+            f"unsupported Codex reasoning effort: {reasoning_effort}; expected {expected}"
+        )
+    return model, reasoning_effort
 
 
 def resolve_codex_executable(codex_bin: str | None = None) -> str:
@@ -135,7 +177,8 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--budget", type=int, choices=sorted(BUDGETS), required=True)
     parser.add_argument("--cycles", type=int, default=10)
-    parser.add_argument("--codex-model", default="gpt-5.5-medium")
+    parser.add_argument("--codex-model", default="gpt-5.5")
+    parser.add_argument("--codex-reasoning-effort", choices=CODEX_REASONING_EFFORTS, default=None)
     parser.add_argument("--codex-bin")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
@@ -143,6 +186,7 @@ def main() -> int:
         args.budget,
         args.cycles,
         args.codex_model,
+        args.codex_reasoning_effort,
         args.dry_run,
         args.codex_bin,
     )

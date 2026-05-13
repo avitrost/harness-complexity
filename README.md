@@ -93,7 +93,7 @@ python -m evaluator.optimize_budget --budget 128 --cycles 10 --dry-run
 Run one real budget:
 
 ```bash
-python -m evaluator.optimize_budget --budget 128 --cycles 10 --codex-model gpt-5.5-medium
+python -m evaluator.optimize_budget --budget 128 --cycles 10 --codex-model gpt-5.5 --codex-reasoning-effort medium
 ```
 
 On Windows the optimizer resolves `codex.cmd` explicitly. If Codex is installed in a
@@ -102,6 +102,11 @@ non-standard location, pass:
 ```powershell
 python -m evaluator.optimize_budget --budget 128 --cycles 10 --codex-bin C:\path\to\codex.cmd
 ```
+
+For ChatGPT-authenticated Codex CLI accounts, model names are slugs such as `gpt-5.5`;
+reasoning effort is separate. The current optimizer still accepts legacy combined
+values like `gpt-5.5-medium` and normalizes them to `--model gpt-5.5` plus
+`model_reasoning_effort="medium"`.
 
 Dry-run validation Harbor command construction:
 

@@ -19,7 +19,12 @@ def main() -> int:
         )
     )
     parser.add_argument("--cycles", type=int, default=10)
-    parser.add_argument("--codex-model", default="gpt-5.5-medium")
+    parser.add_argument("--codex-model", default="gpt-5.5")
+    parser.add_argument(
+        "--codex-reasoning-effort",
+        choices=("low", "medium", "high", "xhigh"),
+        default=None,
+    )
     parser.add_argument("--codex-bin")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--skip-optimization", action="store_true")
@@ -37,6 +42,11 @@ def main() -> int:
                     str(args.cycles),
                     "--codex-model",
                     args.codex_model,
+                    *(
+                        ("--codex-reasoning-effort", args.codex_reasoning_effort)
+                        if args.codex_reasoning_effort
+                        else ()
+                    ),
                     *(("--codex-bin", args.codex_bin) if args.codex_bin else ()),
                     *(("--dry-run",) if args.dry_run else ()),
                 ]

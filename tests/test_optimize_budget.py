@@ -10,9 +10,11 @@ def test_build_codex_command_uses_resolved_exec_binary(tmp_path: Path) -> None:
         workspace=tmp_path,
         budget=128,
         codex_model="gpt-5.5-medium",
+        codex_reasoning_effort=None,
         repair=False,
         codex_bin=str(codex),
     )
-    assert command[:4] == [str(codex), "exec", "--model", "gpt-5.5-medium"]
+    assert command[:4] == [str(codex), "exec", "--model", "gpt-5.5"]
+    assert command[4:6] == ["-c", 'model_reasoning_effort="medium"']
     assert "--skip-git-repo-check" in command
     assert "--sandbox" in command
