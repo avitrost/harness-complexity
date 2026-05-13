@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -17,7 +18,7 @@ except Exception:  # pragma: no cover - exercised when Harbor imports this file.
 
 TERMINAL_BENCH_DATASET = "terminal-bench@2.0"
 HARBOR_AGENT_IMPORT_PATH = "plumbing.harbor_adapter:HarborHarnessAgent"
-MAX_TURNS = 12
+MAX_TURNS = int(os.environ["HARNESS_MAX_TURNS"]) if os.getenv("HARNESS_MAX_TURNS") else None
 MAX_OBSERVATION_CHARS = 6000
 
 
@@ -73,7 +74,9 @@ class HarborHarnessAgent(HarborBaseAgent):
         history: list[CommandResult] = []
         self.logs_dir.mkdir(parents=True, exist_ok=True)
         done = False
-        for turn_index in range(1, MAX_TURNS + 1):
+        turn_index = 0
+        while MAX_TURNS is None or turn_index < MAX_TURNS:
+            turn_index += 1
             turn = agent.next_command(task, history)
             command = turn.command.strip()
             if turn.done or not command:

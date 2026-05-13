@@ -28,10 +28,10 @@ mechanics needed to run it.
 
 The barebones starter harness is intentionally small. It imports only allowed plumbing,
 formats recent terminal observations, calls `plumbing.openai_client.call_terminal_model(...)`,
-and returns the next command or `DONE`.
+and returns a JSON action: `run` with the next command or `done` when complete.
 
 The terminal-solving model is not named in `candidate/harness.py`. It is frozen in
-`plumbing/openai_client.py` as `gpt-5.4-nano`, outside the line-counted file. Future
+`plumbing/openai_client.py`, outside the line-counted file. Future
 optimization cycles may change harness behavior only inside `candidate/harness.py`;
 prompt text in that file counts toward the budget.
 
@@ -52,6 +52,10 @@ that class, the adapter loads the candidate harness from the selected workspace,
 terminal history to the counted harness, executes the returned command, and records
 observations. The adapter does not choose the model and does not add task-specific
 behavior.
+
+By default the adapter does not impose a harness turn cap; it loops until the candidate
+returns `done`, returns an empty command, or Harbor stops the run. Set
+`HARNESS_MAX_TURNS` only for cheap smoke tests.
 
 ## Install
 

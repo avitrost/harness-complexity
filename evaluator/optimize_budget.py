@@ -36,6 +36,8 @@ def optimize_budget(
     reports = []
     for cycle in range(1, cycles + 1):
         iter_dir = budget_dir / f"iter_{cycle:03d}"
+        if iter_dir.exists():
+            shutil.rmtree(iter_dir)
         iter_dir.mkdir(parents=True, exist_ok=True)
         workspace = iter_dir / "workspace"
         with tempfile.TemporaryDirectory(
