@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from evaluator.validate_candidate import validate_candidate
-from plumbing.openai_client import check_terminal_model_available
+from plumbing.openai_client import check_terminal_model_available, using_codex_auth
 from scripts.make_workspace import make_workspace
 
 BUDGETS = {64, 128, 256, 512}
@@ -152,7 +152,7 @@ def _require_docker() -> None:
 
 
 def _require_openai_api_key() -> None:
-    if not os.getenv("OPENAI_API_KEY"):
+    if not using_codex_auth() and not os.getenv("OPENAI_API_KEY"):
         raise RuntimeError(
             "OPENAI_API_KEY is required for validation because candidate harnesses call "
             "the fixed terminal model through plumbing.openai_client."
@@ -165,8 +165,8 @@ def _require_terminal_model() -> None:
         check_terminal_model_available()
     except Exception as exc:
         raise RuntimeError(
-            "Terminal model preflight failed. Check OPENAI_API_KEY billing, quota, "
-            "and model access before running optimization."
+            "Terminal model preflight failed. Check OPENAI_API_KEY or Codex auth, "
+            "quota, and model access before running optimization."
         ) from exc
 
 

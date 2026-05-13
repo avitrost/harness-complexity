@@ -12,7 +12,7 @@ from evaluator.aggregate import aggregate_records, write_summary
 from evaluator.parse_results import parse_records
 from evaluator.splits import VAL_CONCURRENCY, VAL_TRIALS, get_val_tasks
 from plumbing.harbor_adapter import HarborRunSpec, build_harbor_command
-from plumbing.openai_client import check_terminal_model_available
+from plumbing.openai_client import check_terminal_model_available, using_codex_auth
 
 
 def run_split(
@@ -87,14 +87,14 @@ def run_split(
 
 
 def _terminal_model_error() -> str | None:
-    if not os.getenv("OPENAI_API_KEY"):
+    if not using_codex_auth() and not os.getenv("OPENAI_API_KEY"):
         return "OPENAI_API_KEY is required for terminal model validation."
     try:
         check_terminal_model_available()
     except Exception:
         return (
-            "Terminal model preflight failed. Check OPENAI_API_KEY billing, quota, "
-            "and model access before running validation."
+            "Terminal model preflight failed. Check OPENAI_API_KEY or Codex auth, "
+            "quota, and model access before running validation."
         )
     return None
 

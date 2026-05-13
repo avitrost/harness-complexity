@@ -75,6 +75,17 @@ PowerShell:
 $env:OPENAI_API_KEY = "..."
 ```
 
+For local smoke runs, the plumbing can also use your existing Codex CLI ChatGPT
+login instead of a Platform API key:
+
+```powershell
+$env:OPENAI_AUTH_MODE = "codex"
+```
+
+This reads `~/.codex/auth.json` locally and calls the Codex backend directly. It is
+intended for local experimentation only; use the Platform API path for preregistered
+benchmark runs.
+
 Authenticate the Codex CLI separately using your local Codex setup.
 
 Install Harbor as a CLI tool. On this machine it was installed with `uv tool install harbor
