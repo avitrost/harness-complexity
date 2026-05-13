@@ -16,8 +16,12 @@ def parse_records(
     records: list[dict[str, Any]] = []
     if out_dir and out_dir.exists():
         for path in out_dir.rglob("*.json"):
-            records.extend(_records_from_payload(_read_json(path)))
-    return _dedupe(records)
+            if path.name in {"command.json", "records.json", "summary.json", "validation.json"}:
+                continue
+            for record in _records_from_payload(_read_json(path)):
+                record["_source"] = str(path)
+                records.append(record)
+    return _strip_internal_fields(_renumber_trials(_dedupe(records)))
 
 
 def _read_json(path: Path) -> Any:
@@ -125,15 +129,34 @@ def _parse_datetime(value: Any) -> datetime | None:
 
 
 def _dedupe(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    seen: set[tuple[str, int]] = set()
+    seen: set[str] = set()
     result = []
     for record in records:
-        key = (str(record["task"]), int(record["trial"]))
+        key = (
+            str(record.get("_source"))
+            if record.get("_source")
+            else json.dumps(record, sort_keys=True)
+        )
         if key in seen:
             continue
         seen.add(key)
         result.append(record)
     return result
+
+
+def _renumber_trials(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    counts: dict[str, int] = {}
+    for record in records:
+        task = str(record["task"])
+        counts[task] = counts.get(task, 0) + 1
+        record["trial"] = counts[task]
+    return records
+
+
+def _strip_internal_fields(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    for record in records:
+        record.pop("_source", None)
+    return records
 
 
 def main() -> int:

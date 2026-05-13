@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -10,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from evaluator.validate_candidate import validate_candidate
+from plumbing.openai_client import check_terminal_model_available
 from scripts.make_workspace import make_workspace
 
 BUDGETS = {64, 128, 256, 512}
@@ -28,6 +30,7 @@ def optimize_budget(
         raise ValueError(f"unsupported budget: {budget}")
     if not dry_run:
         _require_docker()
+        _require_terminal_model()
     budget_dir = Path(f"experience/B{budget:04d}")
     budget_dir.mkdir(parents=True, exist_ok=True)
     reports = []
@@ -144,6 +147,25 @@ def _require_docker() -> None:
             "Docker is required for validation but was not found on PATH. "
             "Install/start Docker Desktop, or rerun with --dry-run."
         )
+
+
+def _require_openai_api_key() -> None:
+    if not os.getenv("OPENAI_API_KEY"):
+        raise RuntimeError(
+            "OPENAI_API_KEY is required for validation because candidate harnesses call "
+            "the fixed terminal model through plumbing.openai_client."
+        )
+
+
+def _require_terminal_model() -> None:
+    _require_openai_api_key()
+    try:
+        check_terminal_model_available()
+    except Exception as exc:
+        raise RuntimeError(
+            "Terminal model preflight failed. Check OPENAI_API_KEY billing, quota, "
+            "and model access before running optimization."
+        ) from exc
 
 
 def _run_val(workspace: Path, budget: int, iter_dir: Path) -> None:

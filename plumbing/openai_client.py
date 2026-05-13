@@ -46,6 +46,16 @@ def call_terminal_model(messages: list[dict[str, str]]) -> str:
     raise RuntimeError("terminal model call failed") from last_error
 
 
+def check_terminal_model_available() -> None:
+    response = _make_client().responses.create(
+        model=TERMINAL_MODEL,
+        input=[{"role": "user", "content": "Reply OK."}],
+        max_output_tokens=5,
+        timeout=TIMEOUT_SEC,
+    )
+    _extract_text(response)
+
+
 def _extract_text(response: Any) -> str:
     text = getattr(response, "output_text", None)
     if isinstance(text, str):

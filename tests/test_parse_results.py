@@ -26,7 +26,7 @@ def test_parse_harbor_job_result(tmp_path: Path) -> None:
     assert parse_records(job) == [
         {
             "task": "fix-git",
-            "trial": 3,
+            "trial": 1,
             "reward": 1,
             "status": "success",
             "runtime_sec": 5.0,
@@ -50,3 +50,22 @@ def test_parse_harbor_crash_result(tmp_path: Path) -> None:
     [record] = parse_records(trial)
     assert record["status"] == "crash"
     assert record["reward"] == 0
+
+
+def test_parse_harbor_random_trial_suffixes_do_not_dedupe(tmp_path: Path) -> None:
+    for name in ("fix-git__26vwnxY", "fix-git__YmQYwNf"):
+        trial = tmp_path / name
+        trial.mkdir()
+        (trial / "result.json").write_text(
+            json.dumps(
+                {
+                    "task_name": "fix-git",
+                    "trial_name": name,
+                    "exception_info": {"exception_type": "RuntimeError"},
+                }
+            ),
+            encoding="utf-8",
+        )
+    records = parse_records(tmp_path)
+    assert [record["trial"] for record in records] == [1, 2]
+    assert len(records) == 2
