@@ -18,6 +18,7 @@ except Exception:  # pragma: no cover - exercised when Harbor imports this file.
 
 TERMINAL_BENCH_DATASET = "terminal-bench@2.0"
 HARBOR_AGENT_IMPORT_PATH = "plumbing.harbor_adapter:HarborHarnessAgent"
+SLURM_PYXIS_ENV_IMPORT_PATH = "plumbing.slurm_pyxis_environment:SlurmPyxisEnvironment"
 MAX_TURNS = int(os.environ["HARNESS_MAX_TURNS"]) if os.getenv("HARNESS_MAX_TURNS") else None
 MAX_OBSERVATION_CHARS = 6000
 
@@ -30,6 +31,7 @@ class HarborRunSpec:
     trials: int
     concurrency: int
     split: str
+    backend: str = "docker"
 
 
 @dataclass(frozen=True)
@@ -137,6 +139,9 @@ def detect_harbor_executable() -> str | None:
     for name in ("harbor", "hb"):
         if shutil.which(name):
             return name
+    local_harbor = Path.home() / ".local" / "bin" / "harbor"
+    if local_harbor.exists():
+        return str(local_harbor)
     local_harbor = Path.home() / ".local" / "bin" / "harbor.exe"
     if local_harbor.exists():
         return str(local_harbor)
@@ -188,6 +193,19 @@ def build_harbor_command(
         "--quiet",
         "--yes",
     ]
+    if spec.backend == "slurm-pyxis":
+        command.extend(
+            [
+                "--environment-import-path",
+                SLURM_PYXIS_ENV_IMPORT_PATH,
+                "--environment-kwarg",
+                "sqsh_cache_dir=/wbl-fast/usrs/trost/tbench-sqsh-cache/images",
+                "--environment-kwarg",
+                "docker_tar_cache_dir=/wbl-fast/usrs/ee/agent-collab/docker-image-cache",
+                "--environment-kwarg",
+                "shared_dir=/wbl-fast/usrs/trost/harbor-slurm-pyxis",
+            ]
+        )
     for task in spec.tasks:
         command.extend([task_flag, task])
     runnable = bool(detect_harbor_executable() or executable) and has_harbor_run_flags(help_blob)

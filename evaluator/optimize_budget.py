@@ -10,6 +10,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+from evaluator.run_val import BACKENDS
 from evaluator.validate_candidate import validate_candidate
 from plumbing.openai_client import check_terminal_model_available, using_codex_auth
 from scripts.make_workspace import make_workspace
@@ -25,11 +26,14 @@ def optimize_budget(
     codex_reasoning_effort: str = "medium",
     dry_run: bool = False,
     codex_bin: str | None = None,
+    backend: str = "docker",
 ) -> list[dict[str, Any]]:
     if budget not in BUDGETS:
         raise ValueError(f"unsupported budget: {budget}")
+    if backend not in BACKENDS:
+        raise ValueError(f"unsupported backend: {backend}")
     if not dry_run:
-        _require_docker()
+        _require_backend(backend)
         _require_terminal_model()
     budget_dir = Path(f"experience/B{budget:04d}")
     budget_dir.mkdir(parents=True, exist_ok=True)
@@ -77,7 +81,7 @@ def optimize_budget(
             encoding="utf-8",
         )
         if validation["ok"] and not dry_run:
-            _run_val(workspace, budget, iter_dir)
+            _run_val(workspace, budget, iter_dir, backend)
         else:
             summary = {"split": "val", "split_mean": 0.0, "invalid": not validation["ok"]}
             (iter_dir / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
@@ -143,12 +147,16 @@ def _copy_workspace(source: Path, destination: Path) -> None:
     shutil.copytree(source, destination, ignore=shutil.ignore_patterns("__pycache__"))
 
 
-def _require_docker() -> None:
-    if shutil.which("docker") is None:
+def _require_backend(backend: str) -> None:
+    if backend == "docker" and shutil.which("docker") is None:
         raise RuntimeError(
             "Docker is required for validation but was not found on PATH. "
             "Install/start Docker Desktop, or rerun with --dry-run."
         )
+    if backend == "slurm-pyxis":
+        missing = [name for name in ("srun", "enroot") if shutil.which(name) is None]
+        if missing:
+            raise RuntimeError(f"Slurm/Pyxis backend missing: {', '.join(missing)}")
 
 
 def _require_openai_api_key() -> None:
@@ -170,7 +178,7 @@ def _require_terminal_model() -> None:
         ) from exc
 
 
-def _run_val(workspace: Path, budget: int, iter_dir: Path) -> None:
+def _run_val(workspace: Path, budget: int, iter_dir: Path, backend: str) -> None:
     subprocess.run(
         [
             sys.executable,
@@ -182,6 +190,8 @@ def _run_val(workspace: Path, budget: int, iter_dir: Path) -> None:
             str(budget),
             "--out-dir",
             str(iter_dir),
+            "--backend",
+            backend,
         ],
         check=False,
     )
@@ -196,6 +206,7 @@ def main() -> int:
         "--codex-reasoning-effort", choices=CODEX_REASONING_EFFORTS, default="medium"
     )
     parser.add_argument("--codex-bin")
+    parser.add_argument("--backend", choices=sorted(BACKENDS), default="docker")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
     try:
@@ -206,6 +217,7 @@ def main() -> int:
             args.codex_reasoning_effort,
             args.dry_run,
             args.codex_bin,
+            args.backend,
         )
     except RuntimeError as exc:
         print(json.dumps({"ok": False, "error": str(exc)}, indent=2), file=sys.stderr)

@@ -128,27 +128,24 @@ reasoning effort is separate.
 
 ## Slurm Container Runs
 
-CPU Slurm nodes do not run Docker directly. Convert cached Docker archives once
-on the access node, store the SquashFS image on shared storage, then run it with
-Pyxis/Enroot:
+Local validation uses Harbor's Docker environment by default. CPU Slurm nodes do
+not run Docker directly, so use the explicit Slurm/Pyxis backend there:
 
 ```bash
-SQSH=$(/wbl-fast/usrs/trost/tbench-sqsh-cache/bin/docker-tar-to-sqsh \
-  /wbl-fast/usrs/ee/agent-collab/docker-image-cache/<image>.tar)
-
-sbatch -p m7i-cpu2 \
-  --container-image="$SQSH" \
-  --container-mounts="$PWD:/workspace" \
-  --container-workdir=/workspace \
-  --wrap="/bin/sh -lc 'pwd; ls; ./run-task-command'"
+OPENAI_AUTH_MODE=codex python -m evaluator.run_val \
+  --candidate-dir . \
+  --budget 128 \
+  --out-dir experience/B0128/iter_001 \
+  --backend slurm-pyxis
 ```
 
-Use this as the execution backend for TerminalBench task containers: the runner
-should submit a Slurm/Pyxis job for the converted task image and run the
-terminal-agent loop inside that job. Do not call Docker on compute nodes.
-
-Keep generated images and Slurm logs under `/wbl-fast/usrs/trost`, not `/tmp`.
-Direct `--container-image=<cached>.tar` fails with Enroot `Invalid image format`.
+The backend is a Harbor custom environment
+(`plumbing.slurm_pyxis_environment:SlurmPyxisEnvironment`). It keeps Harbor's
+task, agent, verifier, and result flow, but runs each task attempt as one
+persistent `srun --container-image=<task>.sqsh` job. Cached Docker archives are
+read from `/wbl-fast/usrs/ee/agent-collab/docker-image-cache`; converted images
+and Slurm staging live under `/wbl-fast/usrs/trost`. Direct
+`--container-image=<cached>.tar` fails with Enroot `Invalid image format`.
 
 On Windows, Codex `workspace-write` sandboxing can fail with
 `CreateProcessWithLogonW failed: 1056`. The optimizer therefore runs Codex in a

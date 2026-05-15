@@ -14,6 +14,8 @@ from evaluator.splits import VAL_CONCURRENCY, VAL_TRIALS, get_val_tasks
 from plumbing.harbor_adapter import HarborRunSpec, build_harbor_command
 from plumbing.openai_client import check_terminal_model_available, using_codex_auth
 
+BACKENDS = {"docker", "slurm-pyxis"}
+
 
 def run_split(
     split: str,
@@ -26,13 +28,17 @@ def run_split(
     dry_run: bool,
     harbor_bin: str | None = None,
     harbor_help_text: str | None = None,
+    backend: str = "docker",
 ) -> dict[str, Any]:
+    if backend not in BACKENDS:
+        raise ValueError(f"unsupported backend: {backend}")
     out_dir.mkdir(parents=True, exist_ok=True)
-    spec = HarborRunSpec(candidate_dir, out_dir, tasks, trials, concurrency, split)
+    spec = HarborRunSpec(candidate_dir, out_dir, tasks, trials, concurrency, split, backend)
     plan = build_harbor_command(spec, executable=harbor_bin, help_text=harbor_help_text)
     command_json = {
         "split": split,
         "budget": budget,
+        "backend": backend,
         "command": plan.command,
         "runnable": plan.runnable,
         "task_flag": plan.task_flag,
@@ -43,9 +49,9 @@ def run_split(
         summary = {"split": split, "dry_run": dry_run, "ran": False, **command_json}
         (out_dir / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
         return summary
-    if shutil.which("docker") is None:
-        message = "Docker is not installed or not on PATH. Please install Docker and try again."
-        (out_dir / "stderr.log").write_text(message + "\n", encoding="utf-8")
+    backend_error = _backend_error(backend)
+    if backend_error:
+        (out_dir / "stderr.log").write_text(backend_error + "\n", encoding="utf-8")
         (out_dir / "stdout.log").write_text("", encoding="utf-8")
         (out_dir / "records.json").write_text("[]\n", encoding="utf-8")
         summary = aggregate_records([], split)
@@ -53,7 +59,7 @@ def run_split(
             {
                 "ran": False,
                 "returncode": 1,
-                "error": message,
+                "error": backend_error,
                 **command_json,
             }
         )
@@ -86,6 +92,16 @@ def run_split(
     return summary
 
 
+def _backend_error(backend: str) -> str | None:
+    if backend == "docker" and shutil.which("docker") is None:
+        return "Docker is not installed or not on PATH. Please install Docker and try again."
+    if backend == "slurm-pyxis":
+        missing = [name for name in ("srun", "enroot") if shutil.which(name) is None]
+        if missing:
+            return f"Slurm/Pyxis backend missing required command(s): {', '.join(missing)}."
+    return None
+
+
 def _terminal_model_error() -> str | None:
     if not using_codex_auth() and not os.getenv("OPENAI_API_KEY"):
         return "OPENAI_API_KEY is required for terminal model validation."
@@ -106,6 +122,7 @@ def main() -> int:
     parser.add_argument("--out-dir", type=Path, required=True)
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--harbor-bin")
+    parser.add_argument("--backend", choices=sorted(BACKENDS), default="docker")
     args = parser.parse_args()
     summary = run_split(
         "val",
@@ -117,6 +134,7 @@ def main() -> int:
         VAL_CONCURRENCY,
         args.dry_run,
         args.harbor_bin,
+        backend=args.backend,
     )
     print(json.dumps(summary, indent=2, sort_keys=True))
     return 0 if summary.get("ran", True) or args.dry_run else 1

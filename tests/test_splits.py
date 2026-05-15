@@ -36,3 +36,15 @@ def test_harbor_command_dry_run_constructs_task_flags() -> None:
     assert plan.command.count("--include-task-name") == 2
     assert "terminal-bench@2.0" in plan.command
     assert "--model" not in plan.command
+
+
+def test_harbor_command_can_use_slurm_pyxis_environment() -> None:
+    spec = HarborRunSpec(Path("candidate"), Path("out"), ["a"], 1, 1, "val", "slurm-pyxis")
+    plan = build_harbor_command(
+        spec,
+        executable="harbor",
+        help_text="--dataset --include-task-name --n-attempts --n-concurrent",
+    )
+    assert "--environment-import-path" in plan.command
+    assert "plumbing.slurm_pyxis_environment:SlurmPyxisEnvironment" in plan.command
+    assert plan.command.count("--environment-kwarg") == 3
