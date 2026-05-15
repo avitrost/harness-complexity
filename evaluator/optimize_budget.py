@@ -15,9 +15,10 @@ from typing import Any
 from evaluator.run_val import BACKENDS
 from evaluator.validate_candidate import validate_candidate
 from plumbing.openai_client import check_terminal_model_available, using_codex_auth
+from scripts.count_loc import count_loc
 from scripts.make_workspace import make_workspace
 
-BUDGETS = {128, 256, 512, 1024, 2048}
+BUDGETS = (128, 256, 512, 1024, 2048)
 CODEX_REASONING_EFFORTS = ("low", "medium", "high", "xhigh")
 DEFAULT_K = 2
 
@@ -82,7 +83,11 @@ def optimize_budget(
                     _run_codex(command, codex_workspace, iter_dir)
                 _copy_workspace(codex_workspace, workspace)
                 _strip_workspace_history(workspace)
-                validation = validate_candidate(workspace / "candidate" / "harness.py", budget)
+                validation = validate_candidate(
+                    workspace / "candidate" / "harness.py",
+                    max_lines=budget,
+                    min_lines=_budget_min_lines(budget),
+                )
             _write_json(iter_dir / "validation.json", validation, sort_keys=True)
             if validation["ok"] and not dry_run:
                 _run_val(workspace, budget, iter_dir, backend)
@@ -121,13 +126,19 @@ def build_codex_command(
         if iteration is not None and candidate_index is not None
         else ""
     )
+    min_lines = _budget_min_lines(budget)
+    line_rule = (
+        f"Keep candidate/harness.py between {min_lines} and {budget}"
+        if min_lines > 1
+        else f"Keep candidate/harness.py at most {budget}"
+    )
     prompt = (
         "You are in an isolated Meta-Harness workspace."
         f"{slot} Read history/ first: it contains prior candidate source, proposals, "
         "validation, scores, and terminal traces for this budget. Edit only "
         "candidate/harness.py and proposal.md. Do not inspect parent directories, "
         "absolute repository paths, experience/ directly, final_test/, or results/. "
-        f"Keep candidate/harness.py at most {budget} Black-formatted physical lines. "
+        f"{line_rule} Black-formatted physical lines. "
         "Improve general TerminalBench behavior without task-specific hacks. Propose "
         "one new harness; you may base it on any prior harness in history/."
     )
@@ -184,9 +195,14 @@ def _ensure_seed_candidate(
         shutil.rmtree(iter_dir)
     iter_dir.mkdir(parents=True, exist_ok=True)
     make_workspace(workspace, Path("candidate"))
+    _pad_seed_to_bucket(workspace / "candidate" / "harness.py", budget)
     _strip_workspace_history(workspace)
     _write_meta(iter_dir, budget, 0, 0, "seed")
-    validation = validate_candidate(workspace / "candidate" / "harness.py", budget)
+    validation = validate_candidate(
+        workspace / "candidate" / "harness.py",
+        max_lines=budget,
+        min_lines=_budget_min_lines(budget),
+    )
     _write_json(iter_dir / "validation.json", validation, sort_keys=True)
     if validation["ok"] and not dry_run:
         _run_val(workspace, budget, iter_dir, backend)
@@ -203,6 +219,22 @@ def _ensure_seed_candidate(
 
 def _proposal_dir(budget_dir: Path, iteration: int, candidate_index: int) -> Path:
     return budget_dir / f"iter_{iteration:03d}_cand_{candidate_index:02d}"
+
+
+def _budget_min_lines(budget: int) -> int:
+    ordered = sorted(BUDGETS)
+    index = ordered.index(budget)
+    return 1 if index == 0 else ordered[index - 1] + 1
+
+
+def _pad_seed_to_bucket(path: Path, budget: int) -> None:
+    min_lines = _budget_min_lines(budget)
+    while (needed := min_lines - int(count_loc(path)["physical_loc"])) > 0:
+        text = path.read_text(encoding="utf-8")
+        if text and not text.endswith("\n"):
+            text += "\n"
+        text += "\n".join("# bucket padding" for _ in range(needed)) + "\n"
+        path.write_text(text, encoding="utf-8")
 
 
 def _new_run_dir(budget_dir: Path, dry_run: bool, run_id: str | None) -> Path:

@@ -21,6 +21,8 @@ DEFAULT_SHARED_DIR = Path("/wbl-fast/usrs/trost/harbor-slurm-pyxis")
 DEFAULT_SQSH_CACHE = Path("/wbl-fast/usrs/trost/tbench-sqsh-cache/images")
 DEFAULT_TAR_CACHE = Path("/wbl-fast/usrs/ee/agent-collab/docker-image-cache")
 DEFAULT_ENROOT_SYSCONF = Path("/etc/enroot")
+DEFAULT_STARTUP_TIMEOUT_SEC = 12 * 60 * 60
+DEFAULT_HEALTH_TIMEOUT_SEC = 20 * 60
 SLURM_BOOTSTRAP = """#!/bin/bash
 export WORKDIR="${1:-/app}"; shift
 export HARBOR_STAGING="/staging/env_files"
@@ -195,6 +197,8 @@ class SlurmPyxisEnvironment(BaseEnvironment):
         shared_dir: str | Path = DEFAULT_SHARED_DIR,
         slurm_partition: str = "m7i-cpu2",
         slurm_time: str = "02:00:00",
+        startup_timeout_sec: int | str = DEFAULT_STARTUP_TIMEOUT_SEC,
+        health_timeout_sec: int | str = DEFAULT_HEALTH_TIMEOUT_SEC,
         remap_root: bool = True,
         **kwargs,
     ):
@@ -203,6 +207,8 @@ class SlurmPyxisEnvironment(BaseEnvironment):
         self._shared_dir = Path(shared_dir)
         self._slurm_partition = slurm_partition
         self._slurm_time = slurm_time
+        self._startup_timeout_sec = int(startup_timeout_sec)
+        self._health_timeout_sec = int(health_timeout_sec)
         self._remap_root = remap_root
         self._process: asyncio.subprocess.Process | None = None
         self._stream_task: asyncio.Task | None = None
@@ -422,7 +428,7 @@ class SlurmPyxisEnvironment(BaseEnvironment):
 
     async def _read_startup_node(self) -> str:
         assert self._process and self._process.stdout
-        deadline = time.monotonic() + 300
+        deadline = time.monotonic() + self._startup_timeout_sec
         while time.monotonic() < deadline:
             try:
                 line = await asyncio.wait_for(self._process.stdout.readline(), timeout=30)
@@ -437,7 +443,7 @@ class SlurmPyxisEnvironment(BaseEnvironment):
                 return text.removeprefix("__HARBOR_PYXIS_NODE__")
             if self._process.returncode is not None:
                 raise RuntimeError(f"srun exited before startup: {self._process.returncode}")
-        raise RuntimeError("Timed out waiting for Slurm/Pyxis node")
+        raise RuntimeError(f"Timed out waiting {self._startup_timeout_sec}s for Slurm/Pyxis node")
 
     async def _stream_output(self) -> None:
         assert self._process and self._process.stdout
@@ -447,14 +453,16 @@ class SlurmPyxisEnvironment(BaseEnvironment):
                 self.logger.debug(text)
 
     async def _wait_for_health(self) -> None:
-        for _ in range(120):
+        for _ in range(self._health_timeout_sec):
             try:
                 data = await self._get("/health", timeout=5)
                 if data.get("status") in {"ok", "healthy"}:
                     return
             except Exception:
                 await asyncio.sleep(1)
-        raise RuntimeError("Slurm/Pyxis exec server did not become healthy")
+        raise RuntimeError(
+            f"Slurm/Pyxis exec server did not become healthy within {self._health_timeout_sec}s"
+        )
 
     async def _get(self, path: str, timeout: int) -> dict[str, object]:
         return await asyncio.to_thread(self._request, path, None, timeout)

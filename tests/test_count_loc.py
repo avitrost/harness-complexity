@@ -16,3 +16,9 @@ def test_count_loc_fails_over_budget(tmp_path: Path) -> None:
     path = tmp_path / "harness.py"
     path.write_text("a = 1\nb = 2\n", encoding="utf-8")
     assert count_loc(path, max_lines=1)["ok"] is False
+
+
+def test_count_loc_fails_under_bucket_floor(tmp_path: Path) -> None:
+    path = tmp_path / "harness.py"
+    path.write_text("a = 1\nb = 2\n", encoding="utf-8")
+    assert count_loc(path, min_lines=3, max_lines=4)["ok"] is False
