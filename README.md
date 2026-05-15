@@ -53,9 +53,8 @@ terminal history to the counted harness, executes the returned command, and reco
 observations. The adapter does not choose the model and does not add task-specific
 behavior.
 
-By default the adapter does not impose a harness turn cap; it loops until the candidate
-returns `done`, returns an empty command, or Harbor stops the run. Set
-`HARNESS_MAX_TURNS` only for cheap smoke tests.
+The adapter imposes no independent harness turn cap; it loops until the candidate
+returns `done`, returns an empty command, or Harbor stops the run.
 
 ## Install
 
