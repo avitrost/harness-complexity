@@ -44,7 +44,7 @@ def optimize_budget(
             prefix=f"harness_complexity_B{budget:04d}_iter_{cycle:03d}_"
         ) as temp_dir:
             codex_workspace = Path(temp_dir) / "workspace"
-            make_workspace(codex_workspace, Path("seeds/seed_minimal.py"))
+            make_workspace(codex_workspace, Path("candidate"))
             command = build_codex_command(
                 budget,
                 codex_model,

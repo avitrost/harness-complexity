@@ -1,36 +1,51 @@
 # Proposal
 
-## Current workspace files inspected
+## Current Workspace Files Inspected
 
 - `candidate/harness.py`
 - `proposal.md`
 
-## Observed failure modes
+External reference read at the user's request:
 
-The baseline asked the terminal model to return raw command text. In a smoke run,
-that style can leak prose, duplicate commands, or make it ambiguous whether the
-model wants to continue or stop.
+- `https://www.mihaileric.com/The-Emperor-Has-No-Clothes/`
+
+## Observed Failure Modes
+
+The 60-line harness had the right basic shape, but it left useful agent-loop
+behavior implicit. A small terminal model can still repeat failed commands,
+return fenced or alternate tool-call formats, stop without evidence, or lose the
+connection between recent writes and the need to verify.
 
 ## Hypothesis
 
-A minimal action protocol should make the harness closer to a real tool-using
-agent while staying small. Requiring JSON for either `run` or `done` gives the
-model a clearer contract and gives the harness a narrow place to parse responses.
+The article's core pattern is a compact tool loop: tell the model what tools it
+has, parse structured calls, execute one step, feed back results. In this
+environment the only tool the counted harness can expose is a shell command, so
+a stronger one-tool contract plus better parsing and state hints should improve
+general TerminalBench behavior without task-specific logic.
 
-## Changes made
+## Changes Made
 
-`candidate/harness.py` now asks the terminal model for one JSON action per turn:
-`{"action":"run","command":"..."}` or `{"action":"done"}`. The harness parses
-that action, keeps recent terminal history compact, and returns the command to
-the Harbor adapter.
+`candidate/harness.py` now:
 
-## Expected benefit
+- uses a deterministic first `pwd && ls -la` inspection;
+- frames the model as a one-tool terminal agent;
+- carries six clipped, indexed terminal observations;
+- adds state hints for failed commands, repeated commands, and recent writes;
+- accepts strict JSON, fenced JSON, and simple `tool: run({...})` forms;
+- normalizes `action`/`tool`/`name`, `command`/`cmd`, and nested args;
+- keeps `done` gated in the prompt by verification evidence.
 
-The terminal model should produce fewer malformed shell commands and should be
-less likely to mix final-answer prose with executable commands.
+The file is 127 physical lines after Black formatting.
+
+## Expected Benefit
+
+The terminal model should spend fewer turns on malformed outputs, repeated
+failures, and premature `done` actions, while getting a clearer inspect-edit-test
+loop.
 
 ## Risks
 
-The model may still ignore the JSON contract. The fallback preserves raw text as
-a command so a bad response can still fail at the shell, but the primary path is
-now structured and minimal.
+The fixed first inspection costs one turn on tasks where the next action is
+obvious. More prompt and parsing logic may help malformed responses but cannot
+force the model to choose a good command.

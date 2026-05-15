@@ -17,7 +17,7 @@ mechanics needed to run it.
   sequencing.
 - `scripts/` contains uncounted command-line helpers for line counting, static audit,
   workspace creation, candidate selection, bootstrap confidence intervals, and plots.
-- `seeds/seed_minimal.py` is the starter harness copied into new optimization
+- `tree/main/candidate` is the canonical seed copied into new optimization
   workspaces.
 - `experience/`, `final_test/`, and `results/` are artifact directories. Generated
   contents are ignored by git; only `.gitkeep` placeholders are tracked.
@@ -125,6 +125,30 @@ python -m evaluator.optimize_budget --budget 128 --cycles 10 --codex-bin C:\path
 
 For ChatGPT-authenticated Codex CLI accounts, model names are slugs such as `gpt-5.5`;
 reasoning effort is separate.
+
+## Slurm Container Runs
+
+CPU Slurm nodes do not run Docker directly. Convert cached Docker archives once
+on the access node, store the SquashFS image on shared storage, then run it with
+Pyxis/Enroot:
+
+```bash
+SQSH=$(/wbl-fast/usrs/trost/tbench-sqsh-cache/bin/docker-tar-to-sqsh \
+  /wbl-fast/usrs/ee/agent-collab/docker-image-cache/<image>.tar)
+
+sbatch -p m7i-cpu2 \
+  --container-image="$SQSH" \
+  --container-mounts="$PWD:/workspace" \
+  --container-workdir=/workspace \
+  --wrap="/bin/sh -lc 'pwd; ls; ./run-task-command'"
+```
+
+Use this as the execution backend for TerminalBench task containers: the runner
+should submit a Slurm/Pyxis job for the converted task image and run the
+terminal-agent loop inside that job. Do not call Docker on compute nodes.
+
+Keep generated images and Slurm logs under `/wbl-fast/usrs/trost`, not `/tmp`.
+Direct `--container-image=<cached>.tar` fails with Enroot `Invalid image format`.
 
 On Windows, Codex `workspace-write` sandboxing can fail with
 `CreateProcessWithLogonW failed: 1056`. The optimizer therefore runs Codex in a
