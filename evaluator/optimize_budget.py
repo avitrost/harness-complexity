@@ -66,6 +66,7 @@ def optimize_budget(
             ) as temp_dir:
                 codex_workspace = Path(temp_dir) / "workspace"
                 make_workspace(codex_workspace, Path("candidate"), history_dirs)
+                _pad_seed_to_bucket(codex_workspace / "candidate" / "harness.py", budget)
                 _write_history_index(codex_workspace / "history", history_dirs)
                 command = build_codex_command(
                     budget,
