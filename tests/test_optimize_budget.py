@@ -1,6 +1,13 @@
 from pathlib import Path
 
-from evaluator.optimize_budget import build_codex_command
+import pytest
+
+from evaluator.optimize_budget import (
+    _candidate_complete,
+    _new_run_dir,
+    _run_val,
+    build_codex_command,
+)
 
 
 def test_build_codex_command_uses_resolved_exec_binary(tmp_path: Path) -> None:
@@ -20,3 +27,39 @@ def test_build_codex_command_uses_resolved_exec_binary(tmp_path: Path) -> None:
     assert "--skip-git-repo-check" in command
     assert "Do not inspect parent directories" in command[-1]
     assert "Read history/ first" in command[-1]
+
+
+def test_resume_run_dir_requires_existing_run_id(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run_existing"
+    run_dir.mkdir()
+
+    assert _new_run_dir(tmp_path, False, "existing", resume=True) == run_dir
+    with pytest.raises(RuntimeError):
+        _new_run_dir(tmp_path, False, "missing", resume=True)
+
+
+def test_candidate_complete_requires_summary_validation_and_workspace(tmp_path: Path) -> None:
+    iter_dir = tmp_path / "iter_001_cand_01"
+    candidate_dir = iter_dir / "workspace" / "candidate"
+    candidate_dir.mkdir(parents=True)
+    (candidate_dir / "harness.py").write_text("x = 1\n", encoding="utf-8")
+    (iter_dir / "validation.json").write_text('{"ok": true}\n', encoding="utf-8")
+    (iter_dir / "summary.json").write_text('{"dry_run": false}\n', encoding="utf-8")
+
+    assert _candidate_complete(iter_dir, dry_run=False)
+    (iter_dir / "summary.json").write_text('{"dry_run": true}\n', encoding="utf-8")
+    assert not _candidate_complete(iter_dir, dry_run=False)
+    assert _candidate_complete(iter_dir, dry_run=True)
+
+
+def test_run_val_passes_concurrency(monkeypatch, tmp_path: Path) -> None:
+    calls = []
+    monkeypatch.setattr(
+        "evaluator.optimize_budget.subprocess.run",
+        lambda command, **kwargs: calls.append((command, kwargs)),
+    )
+
+    _run_val(tmp_path / "workspace", 128, tmp_path / "iter", "slurm-pyxis", concurrency=20)
+
+    command = calls[0][0]
+    assert command[command.index("--concurrency") + 1] == "20"

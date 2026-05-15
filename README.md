@@ -121,6 +121,18 @@ Run one real budget:
 python -m evaluator.optimize_budget --budget 128 --cycles 10 --k 2 --codex-model gpt-5.5 --codex-reasoning-effort medium
 ```
 
+Resume an existing budget run and override Harbor concurrency:
+
+```bash
+python -m evaluator.optimize_budget \
+  --budget 128 \
+  --run-id overnight_YYYYMMDD \
+  --cycles 10 \
+  --resume \
+  --concurrency 20 \
+  --backend slurm-pyxis
+```
+
 Run the overnight budget set under one run id:
 
 ```bash

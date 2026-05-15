@@ -19,6 +19,8 @@ def main() -> int:
     parser.add_argument("--codex-model", default="gpt-5.5")
     parser.add_argument("--terminal-model", default="gpt-5.4-mini")
     parser.add_argument("--codex-reasoning-effort", default="medium")
+    parser.add_argument("--resume", action="store_true")
+    parser.add_argument("--concurrency", type=int)
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
     env = {**os.environ, "OPENAI_AUTH_MODE": os.environ.get("OPENAI_AUTH_MODE", "codex")}
@@ -42,6 +44,8 @@ def main() -> int:
         args.terminal_model,
         "--codex-reasoning-effort",
         args.codex_reasoning_effort,
+        *(("--resume",) if args.resume else ()),
+        *(("--concurrency", str(args.concurrency)) if args.concurrency is not None else ()),
         *(("--dry-run",) if args.dry_run else ()),
     ]
     print(" ".join(command), flush=True)

@@ -33,11 +33,23 @@ def main() -> int:
     parser.add_argument("--k", type=int, default=2, dest="candidates_per_iteration")
     parser.add_argument("--budgets", default=",".join(str(b) for b in DEFAULT_BUDGETS))
     parser.add_argument("--run-id")
+    parser.add_argument("--resume", action="store_true")
+    parser.add_argument("--concurrency", type=int)
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--skip-optimization", action="store_true")
     args = parser.parse_args()
     budgets = _parse_budgets(args.budgets)
+    if args.concurrency is not None and args.concurrency < 1:
+        raise ValueError("concurrency must be >= 1")
+    if args.resume and not args.run_id:
+        raise ValueError("--resume requires --run-id")
     run_id = args.run_id or datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
+    if (
+        args.resume
+        and not args.dry_run
+        and not any(_run_dir(budget, args.dry_run, run_id).exists() for budget in budgets)
+    ):
+        raise RuntimeError(f"no matching run directories found for --run-id {run_id}")
     os.environ["OPENAI_TERMINAL_MODEL"] = args.terminal_model
     if not args.skip_optimization:
         for budget in budgets:
@@ -60,6 +72,16 @@ def main() -> int:
                     str(args.candidates_per_iteration),
                     "--run-id",
                     run_id,
+                    *(
+                        ("--resume",)
+                        if args.resume and _run_dir(budget, args.dry_run, run_id).exists()
+                        else ()
+                    ),
+                    *(
+                        ("--concurrency", str(args.concurrency))
+                        if args.concurrency is not None
+                        else ()
+                    ),
                     *(("--codex-bin", args.codex_bin) if args.codex_bin else ()),
                     *(("--dry-run",) if args.dry_run else ()),
                 ]
@@ -96,6 +118,7 @@ def main() -> int:
                 str(final_dir),
                 "--backend",
                 args.backend,
+                *(("--concurrency", str(args.concurrency)) if args.concurrency is not None else ()),
                 *(("--dry-run",) if args.dry_run else ()),
             ]
         )
@@ -110,6 +133,11 @@ def _parse_budgets(value: str) -> list[int]:
     if not budgets:
         raise ValueError("at least one budget is required")
     return budgets
+
+
+def _run_dir(budget: int, dry_run: bool, run_id: str) -> Path:
+    prefix = "dry_run" if dry_run else "run"
+    return Path(f"experience/B{budget:04d}/{prefix}_{run_id}")
 
 
 def _run(command: list[str]) -> None:

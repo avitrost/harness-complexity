@@ -33,6 +33,8 @@ def optimize_budget(
     backend: str = "docker",
     candidates_per_iteration: int = DEFAULT_K,
     run_id: str | None = None,
+    resume: bool = False,
+    concurrency: int | None = None,
 ) -> list[dict[str, Any]]:
     if budget not in BUDGETS:
         raise ValueError(f"unsupported budget: {budget}")
@@ -40,20 +42,38 @@ def optimize_budget(
         raise ValueError(f"unsupported backend: {backend}")
     if candidates_per_iteration < 1:
         raise ValueError("candidates_per_iteration must be >= 1")
+    if concurrency is not None and concurrency < 1:
+        raise ValueError("concurrency must be >= 1")
     if not dry_run:
         _require_backend(backend)
         _require_terminal_model()
     budget_dir = Path(f"experience/B{budget:04d}")
     budget_dir.mkdir(parents=True, exist_ok=True)
-    run_dir = _new_run_dir(budget_dir, dry_run, run_id)
+    run_dir = _new_run_dir(budget_dir, dry_run, run_id, resume)
     reports = []
-    seed_report = _ensure_seed_candidate(run_dir, budget, dry_run, backend)
+    seed_report = _ensure_seed_candidate(run_dir, budget, dry_run, backend, concurrency, resume)
     if seed_report:
         reports.append(seed_report)
     for iteration in range(1, cycles + 1):
         history_dirs = _history_dirs(run_dir)
         for candidate_index in range(1, candidates_per_iteration + 1):
             iter_dir = _proposal_dir(run_dir, iteration, candidate_index)
+            if resume and _candidate_complete(iter_dir, dry_run):
+                reports.append(
+                    {
+                        "iteration": iteration,
+                        "candidate": candidate_index,
+                        "workspace": str(iter_dir / "workspace"),
+                        "valid": _read_json(iter_dir / "validation.json").get("ok", False),
+                        "skipped": True,
+                    }
+                )
+                continue
+            if resume and iter_dir.exists():
+                raise RuntimeError(
+                    f"incomplete candidate exists: {iter_dir}. Wait for it to finish "
+                    "or remove that directory after confirming no jobs are active."
+                )
             if iter_dir.exists():
                 shutil.rmtree(iter_dir)
             iter_dir.mkdir(parents=True, exist_ok=True)
@@ -91,7 +111,7 @@ def optimize_budget(
                 )
             _write_json(iter_dir / "validation.json", validation, sort_keys=True)
             if validation["ok"] and not dry_run:
-                _run_val(workspace, budget, iter_dir, backend)
+                _run_val(workspace, budget, iter_dir, backend, concurrency)
             else:
                 summary = {
                     "split": "val",
@@ -181,6 +201,8 @@ def _ensure_seed_candidate(
     budget: int,
     dry_run: bool,
     backend: str,
+    concurrency: int | None,
+    resume: bool,
 ) -> dict[str, Any] | None:
     iter_dir = run_dir / "iter_000_seed"
     summary = _read_json(iter_dir / "summary.json")
@@ -191,6 +213,11 @@ def _ensure_seed_candidate(
         and not (summary.get("dry_run") and not dry_run)
     ):
         return None
+    if resume and iter_dir.exists():
+        raise RuntimeError(
+            f"incomplete seed candidate exists: {iter_dir}. Wait for it to finish "
+            "or remove that directory after confirming no jobs are active."
+        )
     workspace = iter_dir / "workspace"
     if iter_dir.exists():
         shutil.rmtree(iter_dir)
@@ -206,7 +233,7 @@ def _ensure_seed_candidate(
     )
     _write_json(iter_dir / "validation.json", validation, sort_keys=True)
     if validation["ok"] and not dry_run:
-        _run_val(workspace, budget, iter_dir, backend)
+        _run_val(workspace, budget, iter_dir, backend, concurrency)
     else:
         summary = {
             "split": "val",
@@ -238,10 +265,22 @@ def _pad_seed_to_bucket(path: Path, budget: int) -> None:
         path.write_text(text, encoding="utf-8")
 
 
-def _new_run_dir(budget_dir: Path, dry_run: bool, run_id: str | None) -> Path:
+def _new_run_dir(
+    budget_dir: Path,
+    dry_run: bool,
+    run_id: str | None,
+    resume: bool = False,
+) -> Path:
     prefix = "dry_run" if dry_run else "run"
     label = _clean_run_id(run_id) if run_id else datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
     run_dir = budget_dir / f"{prefix}_{label}"
+    if resume:
+        if not run_id:
+            raise ValueError("--resume requires --run-id")
+        if not run_dir.exists():
+            raise RuntimeError(f"run directory does not exist: {run_dir}")
+        (budget_dir / "latest_run.txt").write_text(f"{run_dir.name}\n", encoding="utf-8")
+        return run_dir
     if run_id and run_dir.exists():
         raise RuntimeError(f"run directory already exists: {run_dir}")
     suffix = 1
@@ -251,6 +290,16 @@ def _new_run_dir(budget_dir: Path, dry_run: bool, run_id: str | None) -> Path:
     run_dir.mkdir(parents=True)
     (budget_dir / "latest_run.txt").write_text(f"{run_dir.name}\n", encoding="utf-8")
     return run_dir
+
+
+def _candidate_complete(iter_dir: Path, dry_run: bool) -> bool:
+    summary = _read_json(iter_dir / "summary.json")
+    return (
+        (iter_dir / "validation.json").exists()
+        and summary
+        and (iter_dir / "workspace" / "candidate" / "harness.py").exists()
+        and not (summary.get("dry_run") and not dry_run)
+    )
 
 
 def _clean_run_id(value: str) -> str:
@@ -383,7 +432,14 @@ def _require_terminal_model() -> None:
         ) from exc
 
 
-def _run_val(workspace: Path, budget: int, iter_dir: Path, backend: str) -> None:
+def _run_val(
+    workspace: Path,
+    budget: int,
+    iter_dir: Path,
+    backend: str,
+    concurrency: int | None,
+) -> None:
+    concurrency_args = ["--concurrency", str(concurrency)] if concurrency is not None else []
     subprocess.run(
         [
             sys.executable,
@@ -397,6 +453,7 @@ def _run_val(workspace: Path, budget: int, iter_dir: Path, backend: str) -> None
             str(iter_dir),
             "--backend",
             backend,
+            *concurrency_args,
         ],
         check=False,
     )
@@ -414,6 +471,8 @@ def main() -> int:
     parser.add_argument("--backend", choices=sorted(BACKENDS), default="docker")
     parser.add_argument("--k", type=int, default=DEFAULT_K, dest="candidates_per_iteration")
     parser.add_argument("--run-id")
+    parser.add_argument("--resume", action="store_true")
+    parser.add_argument("--concurrency", type=int)
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
     try:
@@ -427,6 +486,8 @@ def main() -> int:
             backend=args.backend,
             candidates_per_iteration=args.candidates_per_iteration,
             run_id=args.run_id,
+            resume=args.resume,
+            concurrency=args.concurrency,
         )
     except (RuntimeError, ValueError) as exc:
         print(json.dumps({"ok": False, "error": str(exc)}, indent=2), file=sys.stderr)

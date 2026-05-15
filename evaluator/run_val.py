@@ -32,6 +32,8 @@ def run_split(
 ) -> dict[str, Any]:
     if backend not in BACKENDS:
         raise ValueError(f"unsupported backend: {backend}")
+    if concurrency < 1:
+        raise ValueError("concurrency must be >= 1")
     out_dir.mkdir(parents=True, exist_ok=True)
     spec = HarborRunSpec(candidate_dir, out_dir, tasks, trials, concurrency, split, backend)
     plan = build_harbor_command(spec, executable=harbor_bin, help_text=harbor_help_text)
@@ -123,6 +125,7 @@ def main() -> int:
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--harbor-bin")
     parser.add_argument("--backend", choices=sorted(BACKENDS), default="docker")
+    parser.add_argument("--concurrency", type=int, default=VAL_CONCURRENCY)
     args = parser.parse_args()
     summary = run_split(
         "val",
@@ -131,7 +134,7 @@ def main() -> int:
         args.out_dir,
         get_val_tasks(),
         VAL_TRIALS,
-        VAL_CONCURRENCY,
+        args.concurrency,
         args.dry_run,
         args.harbor_bin,
         backend=args.backend,

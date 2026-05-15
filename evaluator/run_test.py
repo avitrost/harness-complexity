@@ -16,6 +16,7 @@ def main() -> int:
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--harbor-bin")
     parser.add_argument("--backend", choices=sorted(BACKENDS), default="docker")
+    parser.add_argument("--concurrency", type=int, default=TEST_CONCURRENCY)
     args = parser.parse_args()
     summary = run_split(
         "test",
@@ -24,7 +25,7 @@ def main() -> int:
         args.out_dir,
         get_test_tasks(),
         TEST_TRIALS,
-        TEST_CONCURRENCY,
+        args.concurrency,
         args.dry_run,
         args.harbor_bin,
         backend=args.backend,
