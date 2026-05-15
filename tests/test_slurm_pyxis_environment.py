@@ -22,6 +22,8 @@ def test_stdlib_exec_server_has_required_routes_without_fastapi() -> None:
     assert "ThreadingHTTPServer" in STDLIB_EXEC_SERVER
     assert 'self.path == "/health"' in STDLIB_EXEC_SERVER
     assert 'self.path == "/exec"' in STDLIB_EXEC_SERVER
+    assert "__HARBOR_PYXIS_READY__" in STDLIB_EXEC_SERVER
+    assert "server.server_address[1]" in STDLIB_EXEC_SERVER
     assert "fastapi" not in STDLIB_EXEC_SERVER.lower()
 
 
@@ -70,6 +72,7 @@ def test_srun_command_uses_unique_job_name(tmp_path: Path) -> None:
     job_name_index = command.index("--job-name") + 1
     assert command[job_name_index] == env._slurm_job_name
     assert env._slurm_job_name.startswith("hb-")
+    assert "--port 0" in command[-1]
 
 
 def test_cancel_slurm_job_is_scoped_to_current_user(tmp_path: Path, monkeypatch) -> None:

@@ -61,6 +61,7 @@ import json
 import os
 import shutil
 import signal
+import socket
 import subprocess
 import threading
 import time
@@ -180,7 +181,9 @@ def main():
     args = parser.parse_args()
     _setup(args.workdir)
     server = ThreadingHTTPServer(("0.0.0.0", args.port), Handler)
-    print(f"[harbor] stdlib exec server listening on {args.port}", flush=True)
+    port = server.server_address[1]
+    print(f"__HARBOR_PYXIS_READY__{socket.gethostname()}:{port}", flush=True)
+    print(f"[harbor] stdlib exec server listening on {port}", flush=True)
     server.serve_forever()
 
 
@@ -214,8 +217,8 @@ class SlurmPyxisEnvironment(BaseEnvironment):
         self._process: asyncio.subprocess.Process | None = None
         self._stream_task: asyncio.Task | None = None
         self._node: str | None = None
-        self._port = random.randint(20000, 60000)
-        self._slurm_job_name = f"hb-{os.getpid()}-{self._port}"
+        self._port = 0
+        self._slurm_job_name = f"hb-{os.getpid()}-{random.randint(100000, 999999)}"
         self._staging_dir: Path | None = None
         self._enroot_sysconf_dir: Path | None = None
         self._workdir = "/app"
@@ -428,7 +431,6 @@ class SlurmPyxisEnvironment(BaseEnvironment):
         if env_files.exists():
             mounts.append(f"{env_files}:/staging/env_files")
         boot = (
-            f"echo __HARBOR_PYXIS_NODE__$(hostname); "
             f"exec /staging/bootstrap.sh {shlex.quote(self._workdir)} "
             f"/staging/_hbexec.py --port {self._port} --workdir {shlex.quote(self._workdir)}"
         )
@@ -475,6 +477,10 @@ class SlurmPyxisEnvironment(BaseEnvironment):
             text = line.decode(errors="replace").rstrip()
             if text:
                 self.logger.debug(text)
+            if text.startswith("__HARBOR_PYXIS_READY__"):
+                node, port = text.removeprefix("__HARBOR_PYXIS_READY__").rsplit(":", 1)
+                self._port = int(port)
+                return node
             if text.startswith("__HARBOR_PYXIS_NODE__"):
                 return text.removeprefix("__HARBOR_PYXIS_NODE__")
             if self._process.returncode is not None:
@@ -490,6 +496,8 @@ class SlurmPyxisEnvironment(BaseEnvironment):
 
     async def _wait_for_health(self) -> None:
         for _ in range(self._health_timeout_sec):
+            if self._process and self._process.returncode is not None:
+                raise RuntimeError(f"srun exited before health check: {self._process.returncode}")
             try:
                 data = await self._get("/health", timeout=5)
                 if data.get("status") in {"ok", "healthy"}:
