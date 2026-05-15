@@ -60,6 +60,7 @@ behavior.
 
 The adapter imposes no independent harness turn cap; it loops until the candidate
 returns `done`, returns an empty command, or Harbor stops the run.
+It logs per-turn command observations plus `model-call-XX.json` prompt/response traces.
 
 ## Install
 
@@ -105,7 +106,7 @@ $env:PATH = "$HOME\.local\bin;$env:PATH"
 Validate the starter harness:
 
 ```bash
-python -m evaluator.validate_candidate candidate/harness.py --max-lines 64
+python -m evaluator.validate_candidate candidate/harness.py --max-lines 128
 ```
 
 Dry-run one budget:
@@ -118,6 +119,16 @@ Run one real budget:
 
 ```bash
 python -m evaluator.optimize_budget --budget 128 --cycles 10 --k 2 --codex-model gpt-5.5 --codex-reasoning-effort medium
+```
+
+Run the overnight budget set under one run id:
+
+```bash
+python scripts/run_overnight.py \
+  --run-id overnight_YYYYMMDD \
+  --iterations 10 \
+  --codex-model gpt-5.5 \
+  --terminal-model gpt-5.4-mini
 ```
 
 On Windows the optimizer resolves `codex.cmd` explicitly. If Codex is installed in a
@@ -196,7 +207,7 @@ python scripts/plot_complexity_curve.py
 - Terminal-solving model: GPT-5.4 Nano, fixed in uncounted plumbing.
 - Counted file: `candidate/harness.py` only.
 - Independent variable: Black-formatted physical lines, including comments and blank lines.
-- Budgets: 64, 128, 256, 512.
+- Budgets: 128, 256, 512, 1024, 2048.
 - Optimization iterations: 10 per budget by default.
 - Default proposal batch size: `k=2` candidates per iteration, matching the explicit
   candidate count reported for Meta-Harness search runs in the paper.

@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -16,7 +17,7 @@ from evaluator.validate_candidate import validate_candidate
 from plumbing.openai_client import check_terminal_model_available, using_codex_auth
 from scripts.make_workspace import make_workspace
 
-BUDGETS = {64, 128, 256, 512}
+BUDGETS = {128, 256, 512, 1024, 2048}
 CODEX_REASONING_EFFORTS = ("low", "medium", "high", "xhigh")
 DEFAULT_K = 2
 
@@ -30,6 +31,7 @@ def optimize_budget(
     codex_bin: str | None = None,
     backend: str = "docker",
     candidates_per_iteration: int = DEFAULT_K,
+    run_id: str | None = None,
 ) -> list[dict[str, Any]]:
     if budget not in BUDGETS:
         raise ValueError(f"unsupported budget: {budget}")
@@ -42,7 +44,7 @@ def optimize_budget(
         _require_terminal_model()
     budget_dir = Path(f"experience/B{budget:04d}")
     budget_dir.mkdir(parents=True, exist_ok=True)
-    run_dir = _new_run_dir(budget_dir, dry_run)
+    run_dir = _new_run_dir(budget_dir, dry_run, run_id)
     reports = []
     seed_report = _ensure_seed_candidate(run_dir, budget, dry_run, backend)
     if seed_report:
@@ -203,17 +205,26 @@ def _proposal_dir(budget_dir: Path, iteration: int, candidate_index: int) -> Pat
     return budget_dir / f"iter_{iteration:03d}_cand_{candidate_index:02d}"
 
 
-def _new_run_dir(budget_dir: Path, dry_run: bool) -> Path:
+def _new_run_dir(budget_dir: Path, dry_run: bool, run_id: str | None) -> Path:
     prefix = "dry_run" if dry_run else "run"
-    stamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
-    run_dir = budget_dir / f"{prefix}_{stamp}"
+    label = _clean_run_id(run_id) if run_id else datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
+    run_dir = budget_dir / f"{prefix}_{label}"
+    if run_id and run_dir.exists():
+        raise RuntimeError(f"run directory already exists: {run_dir}")
     suffix = 1
     while run_dir.exists():
         suffix += 1
-        run_dir = budget_dir / f"{prefix}_{stamp}_{suffix:02d}"
+        run_dir = budget_dir / f"{prefix}_{label}_{suffix:02d}"
     run_dir.mkdir(parents=True)
     (budget_dir / "latest_run.txt").write_text(f"{run_dir.name}\n", encoding="utf-8")
     return run_dir
+
+
+def _clean_run_id(value: str) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9_.-]+", "_", value.strip())
+    if not cleaned or cleaned in {".", ".."}:
+        raise ValueError("run_id must contain at least one safe path character")
+    return cleaned
 
 
 def _run_codex(command: list[str], workspace: Path, iter_dir: Path) -> None:
@@ -369,6 +380,7 @@ def main() -> int:
     parser.add_argument("--codex-bin")
     parser.add_argument("--backend", choices=sorted(BACKENDS), default="docker")
     parser.add_argument("--k", type=int, default=DEFAULT_K, dest="candidates_per_iteration")
+    parser.add_argument("--run-id")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
     try:
@@ -381,6 +393,7 @@ def main() -> int:
             codex_bin=args.codex_bin,
             backend=args.backend,
             candidates_per_iteration=args.candidates_per_iteration,
+            run_id=args.run_id,
         )
     except (RuntimeError, ValueError) as exc:
         print(json.dumps({"ok": False, "error": str(exc)}, indent=2), file=sys.stderr)

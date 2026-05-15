@@ -24,9 +24,9 @@ def pareto_frontier(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return sorted(frontier, key=_selection_key)
 
 
-def load_budget_rows(budget_dir: Path) -> list[dict[str, Any]]:
+def load_budget_rows(budget_dir: Path, run_id: str | None = None) -> list[dict[str, Any]]:
     rows = []
-    for iter_dir in _iter_dirs(budget_dir):
+    for iter_dir in _iter_dirs(budget_dir, run_id):
         iteration, candidate = _iteration_candidate(iter_dir.name)
         validation = _read_json(iter_dir / "validation.json")
         summary = _read_json(iter_dir / "summary.json") or _read_json(iter_dir / "val_summary.json")
@@ -38,6 +38,7 @@ def load_budget_rows(budget_dir: Path) -> list[dict[str, Any]]:
         rows.append(
             {
                 "budget": _budget_from_dir(budget_dir),
+                "run_id": _run_id(iter_dir),
                 "iteration": iteration,
                 "candidate": candidate,
                 "candidate_dir": str(iter_dir / "workspace"),
@@ -122,8 +123,15 @@ def _read_json(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def _iter_dirs(budget_dir: Path) -> list[Path]:
+def _iter_dirs(budget_dir: Path, run_id: str | None = None) -> list[Path]:
+    if run_id:
+        return sorted((budget_dir / f"run_{run_id}").glob("iter_*"))
     return sorted([*budget_dir.glob("iter_*"), *budget_dir.glob("run_*/iter_*")])
+
+
+def _run_id(iter_dir: Path) -> str:
+    parent = iter_dir.parent.name
+    return parent.removeprefix("run_") if parent.startswith("run_") else ""
 
 
 def _write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
@@ -132,6 +140,7 @@ def _write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
             handle,
             fieldnames=[
                 "budget",
+                "run_id",
                 "iteration",
                 "candidate",
                 "candidate_dir",
@@ -202,8 +211,9 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--budget-dir", type=Path, required=True)
     parser.add_argument("--out-dir", type=Path, default=Path("results"))
+    parser.add_argument("--run-id")
     args = parser.parse_args()
-    selected = write_selection(load_budget_rows(args.budget_dir), args.out_dir)
+    selected = write_selection(load_budget_rows(args.budget_dir, args.run_id), args.out_dir)
     print(json.dumps(selected or {}, indent=2, sort_keys=True))
     return 0 if selected else 1
 

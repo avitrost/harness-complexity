@@ -12,10 +12,12 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 
 
-def plot_complexity_curve(selected_csv: Path, final_test_dir: Path, out_dir: Path) -> list[Path]:
+def plot_complexity_curve(
+    selected_csv: Path, final_test_dir: Path, out_dir: Path, run_id: str | None = None
+) -> list[Path]:
     out_dir.mkdir(parents=True, exist_ok=True)
     outputs = _plot_complexity(selected_csv, final_test_dir, out_dir)
-    outputs.extend(_plot_cycle_metrics(Path("experience"), out_dir))
+    outputs.extend(_plot_cycle_metrics(Path("experience"), out_dir, run_id))
     return outputs
 
 
@@ -71,16 +73,20 @@ def _bootstrap_errors(data: pd.DataFrame, final_test_dir: Path) -> list[list[flo
     return [lower, upper]
 
 
-def _plot_cycle_metrics(experience_dir: Path, out_dir: Path) -> list[Path]:
+def _plot_cycle_metrics(
+    experience_dir: Path, out_dir: Path, run_id: str | None = None
+) -> list[Path]:
     rows = []
     for budget_dir in sorted(experience_dir.glob("B*")):
-        for iter_dir in sorted(budget_dir.glob("iter_*")):
+        for cycle, iter_dir in enumerate(_iter_dirs(budget_dir, run_id), start=1):
             summary = _read_json(iter_dir / "summary.json")
+            if summary.get("dry_run"):
+                continue
             validation = _read_json(iter_dir / "validation.json")
             rows.append(
                 {
                     "budget": int(budget_dir.name[1:]),
-                    "cycle": int(iter_dir.name.rsplit("_", 1)[-1]),
+                    "cycle": cycle,
                     "val_split_mean": float(summary.get("split_mean", 0) or 0),
                     "actual_loc": _loc_from_validation(validation),
                     "invalid": not bool(validation.get("ok", False)),
@@ -140,6 +146,12 @@ def _invalid_rate_plot(data: pd.DataFrame, path: Path) -> Path:
     return path
 
 
+def _iter_dirs(budget_dir: Path, run_id: str | None = None) -> list[Path]:
+    if run_id:
+        return sorted((budget_dir / f"run_{run_id}").glob("iter_*"))
+    return sorted([*budget_dir.glob("iter_*"), *budget_dir.glob("run_*/iter_*")])
+
+
 def _plot_task_heatmap(data: pd.DataFrame, out_dir: Path) -> Path | None:
     rows = []
     for _, item in data.iterrows():
@@ -181,8 +193,11 @@ def main() -> int:
     )
     parser.add_argument("--final-test-dir", type=Path, default=Path("final_test"))
     parser.add_argument("--out-dir", type=Path, default=Path("results"))
+    parser.add_argument("--run-id")
     args = parser.parse_args()
-    outputs = plot_complexity_curve(args.selected_csv, args.final_test_dir, args.out_dir)
+    outputs = plot_complexity_curve(
+        args.selected_csv, args.final_test_dir, args.out_dir, args.run_id
+    )
     print(json.dumps([str(path) for path in outputs], indent=2))
     return 0
 

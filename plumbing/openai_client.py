@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import contextvars
 import json
 import os
 import time
@@ -26,11 +27,27 @@ CODEX_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 
 _client_factory: Callable[[], OpenAI] | None = None
 _last_request_at = 0.0
+_trace_dir: contextvars.ContextVar[Path | None] = contextvars.ContextVar(
+    "terminal_model_trace_dir", default=None
+)
+_trace_count: contextvars.ContextVar[int] = contextvars.ContextVar(
+    "terminal_model_trace_count", default=0
+)
 
 
 def set_client_factory(factory: Callable[[], OpenAI] | None) -> None:
     global _client_factory
     _client_factory = factory
+
+
+def set_trace_dir(path: Path | str | None) -> object:
+    _trace_count.set(0)
+    return _trace_dir.set(Path(path) if path is not None else None)
+
+
+def reset_trace_dir(token: object) -> None:
+    _trace_dir.reset(token)  # type: ignore[arg-type]
+    _trace_count.set(0)
 
 
 def _make_client() -> OpenAI:
@@ -43,23 +60,32 @@ def using_codex_auth() -> bool:
     return os.getenv("OPENAI_AUTH_MODE", "").lower() == "codex"
 
 
+def terminal_model() -> str:
+    return os.getenv("OPENAI_TERMINAL_MODEL", TERMINAL_MODEL)
+
+
 def call_terminal_model(messages: list[dict[str, str]]) -> str:
     last_error: Exception | None = None
     for attempt in range(MAX_RETRIES + 1):
         try:
             _throttle_if_requested()
             if using_codex_auth():
-                return _call_codex_backend(messages)
+                text = _call_codex_backend(messages)
+                _write_model_trace(messages, text)
+                return text
             response = _make_client().responses.create(
-                model=TERMINAL_MODEL,
+                model=terminal_model(),
                 input=messages,
                 max_output_tokens=MAX_OUTPUT_TOKENS,
                 timeout=TIMEOUT_SEC,
             )
-            return _extract_text(response)
+            text = _extract_text(response)
+            _write_model_trace(messages, text)
+            return text
         except Exception as exc:  # pragma: no cover - real API path
             last_error = exc
             if attempt >= MAX_RETRIES:
+                _write_model_trace(messages, "", error=str(exc))
                 break
             time.sleep(_retry_delay(exc, attempt))
     raise RuntimeError("terminal model call failed") from last_error
@@ -71,7 +97,7 @@ def check_terminal_model_available() -> None:
         _call_codex_backend([{"role": "user", "content": "Reply OK."}])
         return
     response = _make_client().responses.create(
-        model=TERMINAL_MODEL,
+        model=terminal_model(),
         input=[{"role": "user", "content": "Reply OK."}],
         max_output_tokens=PREFLIGHT_OUTPUT_TOKENS,
         timeout=TIMEOUT_SEC,
@@ -101,6 +127,30 @@ def _retry_delay(exc: Exception, attempt: int) -> float:
     if "rate limit" in str(exc).lower() or "429" in str(exc):
         return 65.0
     return float(2**attempt)
+
+
+def _write_model_trace(
+    messages: list[dict[str, str]],
+    response_text: str,
+    error: str | None = None,
+) -> None:
+    trace_dir = _trace_dir.get()
+    if trace_dir is None:
+        return
+    trace_dir.mkdir(parents=True, exist_ok=True)
+    index = _trace_count.get() + 1
+    _trace_count.set(index)
+    payload: dict[str, Any] = {
+        "model": terminal_model(),
+        "messages": messages,
+        "response": response_text,
+    }
+    if error:
+        payload["error"] = error
+    (trace_dir / f"model-call-{index:02d}.json").write_text(
+        json.dumps(payload, indent=2),
+        encoding="utf-8",
+    )
 
 
 def _call_codex_backend(messages: list[dict[str, str]]) -> str:
@@ -141,7 +191,7 @@ def _codex_body(messages: list[dict[str, str]]) -> dict[str, Any]:
         if item.get("role") not in {"system", "developer"}
     ]
     return {
-        "model": TERMINAL_MODEL,
+        "model": terminal_model(),
         "instructions": instructions or "You are a concise assistant.",
         "input": input_messages or [{"role": "user", "content": ""}],
         "stream": True,

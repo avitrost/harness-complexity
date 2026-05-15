@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from plumbing.base_agent import load_harness
+from plumbing.openai_client import reset_trace_dir, set_trace_dir
 from plumbing.types import CommandResult, TaskContext
 
 try:  # Harbor is installed as a CLI tool, not as a project test dependency.
@@ -75,22 +76,26 @@ class HarborHarnessAgent(HarborBaseAgent):
         self.logs_dir.mkdir(parents=True, exist_ok=True)
         done = False
         turn_index = 0
-        while True:
-            turn_index += 1
-            turn = agent.next_command(task, history)
-            command = turn.command.strip()
-            if turn.done or not command:
-                done = turn.done
-                break
-            result = await environment.exec(command=command)
-            record = CommandResult(
-                command=command,
-                return_code=getattr(result, "return_code", None),
-                stdout=_tail(getattr(result, "stdout", "") or ""),
-                stderr=_tail(getattr(result, "stderr", "") or ""),
-            )
-            history.append(record)
-            self._write_turn_log(turn_index, record)
+        token = set_trace_dir(self.logs_dir)
+        try:
+            while True:
+                turn_index += 1
+                turn = agent.next_command(task, history)
+                command = turn.command.strip()
+                if turn.done or not command:
+                    done = turn.done
+                    break
+                result = await environment.exec(command=command)
+                record = CommandResult(
+                    command=command,
+                    return_code=getattr(result, "return_code", None),
+                    stdout=_tail(getattr(result, "stdout", "") or ""),
+                    stderr=_tail(getattr(result, "stderr", "") or ""),
+                )
+                history.append(record)
+                self._write_turn_log(turn_index, record)
+        finally:
+            reset_trace_dir(token)
         self._write_result_logs(history, done)
         context.metadata = {
             "candidate_dir": str(self.candidate_dir),

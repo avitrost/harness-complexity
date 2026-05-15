@@ -2,13 +2,15 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 
 from scripts.bootstrap_ci import bootstrap_ci
 
-BUDGETS = (64, 128, 256, 512)
+DEFAULT_BUDGETS = (128, 256, 512, 1024, 2048)
 
 
 def main() -> int:
@@ -20,6 +22,7 @@ def main() -> int:
     )
     parser.add_argument("--cycles", type=int, default=10)
     parser.add_argument("--codex-model", default="gpt-5.5")
+    parser.add_argument("--terminal-model", default="gpt-5.4-mini")
     parser.add_argument(
         "--codex-reasoning-effort",
         choices=("low", "medium", "high", "xhigh"),
@@ -28,11 +31,16 @@ def main() -> int:
     parser.add_argument("--codex-bin")
     parser.add_argument("--backend", choices=("docker", "slurm-pyxis"), default="docker")
     parser.add_argument("--k", type=int, default=2, dest="candidates_per_iteration")
+    parser.add_argument("--budgets", default=",".join(str(b) for b in DEFAULT_BUDGETS))
+    parser.add_argument("--run-id")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--skip-optimization", action="store_true")
     args = parser.parse_args()
+    budgets = _parse_budgets(args.budgets)
+    run_id = args.run_id or datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
+    os.environ["OPENAI_TERMINAL_MODEL"] = args.terminal_model
     if not args.skip_optimization:
-        for budget in BUDGETS:
+        for budget in budgets:
             _run(
                 [
                     sys.executable,
@@ -50,11 +58,16 @@ def main() -> int:
                     args.backend,
                     "--k",
                     str(args.candidates_per_iteration),
+                    "--run-id",
+                    run_id,
                     *(("--codex-bin", args.codex_bin) if args.codex_bin else ()),
                     *(("--dry-run",) if args.dry_run else ()),
                 ]
             )
-    for budget in BUDGETS:
+    if args.dry_run:
+        return 0
+    _clear_selection_outputs(Path("results"))
+    for budget in budgets:
         _run(
             [
                 sys.executable,
@@ -63,6 +76,8 @@ def main() -> int:
                 f"experience/B{budget:04d}",
                 "--out-dir",
                 "results",
+                "--run-id",
+                run_id,
             ]
         )
     for row in _selected_rows(Path("results/selected_candidates.json")):
@@ -86,12 +101,29 @@ def main() -> int:
         )
         if not args.dry_run:
             _write_bootstrap(final_dir)
-    _run([sys.executable, "scripts/plot_complexity_curve.py"])
+    _run([sys.executable, "scripts/plot_complexity_curve.py", "--run-id", run_id])
     return 0
 
 
+def _parse_budgets(value: str) -> list[int]:
+    budgets = [int(item.strip()) for item in value.split(",") if item.strip()]
+    if not budgets:
+        raise ValueError("at least one budget is required")
+    return budgets
+
+
 def _run(command: list[str]) -> None:
-    subprocess.run(command, check=False)
+    subprocess.run(command, check=True)
+
+
+def _clear_selection_outputs(out_dir: Path) -> None:
+    for name in (
+        "selected_candidates.json",
+        "selected_candidates.csv",
+        "pareto_frontier.json",
+        "pareto_frontier.csv",
+    ):
+        (out_dir / name).unlink(missing_ok=True)
 
 
 def _selected_rows(path: Path) -> list[dict[str, object]]:
