@@ -149,7 +149,7 @@ def _invalid_rate_plot(data: pd.DataFrame, path: Path) -> Path:
 def _iter_dirs(budget_dir: Path, run_id: str | None = None) -> list[Path]:
     if run_id:
         return sorted((budget_dir / f"run_{run_id}").glob("iter_*"))
-    return sorted([*budget_dir.glob("iter_*"), *budget_dir.glob("run_*/iter_*")])
+    return sorted(budget_dir.glob("run_*/iter_*"))
 
 
 def _plot_task_heatmap(data: pd.DataFrame, out_dir: Path) -> Path | None:

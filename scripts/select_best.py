@@ -29,7 +29,7 @@ def load_budget_rows(budget_dir: Path, run_id: str | None = None) -> list[dict[s
     for iter_dir in _iter_dirs(budget_dir, run_id):
         iteration, candidate = _iteration_candidate(iter_dir.name)
         validation = _read_json(iter_dir / "validation.json")
-        summary = _read_json(iter_dir / "summary.json") or _read_json(iter_dir / "val_summary.json")
+        summary = _read_json(iter_dir / "summary.json")
         if summary.get("dry_run"):
             continue
         count = _extract_count(validation)
@@ -126,7 +126,7 @@ def _read_json(path: Path) -> dict[str, Any]:
 def _iter_dirs(budget_dir: Path, run_id: str | None = None) -> list[Path]:
     if run_id:
         return sorted((budget_dir / f"run_{run_id}").glob("iter_*"))
-    return sorted([*budget_dir.glob("iter_*"), *budget_dir.glob("run_*/iter_*")])
+    return sorted(budget_dir.glob("run_*/iter_*"))
 
 
 def _run_id(iter_dir: Path) -> str:
