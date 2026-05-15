@@ -14,9 +14,9 @@ def test_split_definitions() -> None:
     ]
     assert len(splits.get_test_tasks()) == 15
     assert splits.VAL_TRIALS == 4
-    assert splits.VAL_CONCURRENCY == 8
+    assert splits.VAL_CONCURRENCY == 10
     assert splits.TEST_TRIALS == 5
-    assert splits.TEST_CONCURRENCY == 8
+    assert splits.TEST_CONCURRENCY == 10
 
 
 def test_score_formulas() -> None:

@@ -216,8 +216,8 @@ python scripts/plot_complexity_curve.py
 - Each budget has independent search history.
 - No cross-budget sharing in the primary experiment.
 - No test feedback may be used during optimization.
-- Validation split: 5 listed tasks, N=4 trials per task, concurrency 8.
-- Final test split: 15 listed tasks, N=5 trials per task, concurrency 8.
+- Validation split: 5 listed tasks, N=4 trials per task, concurrency 10.
+- Final test split: 15 listed tasks, N=5 trials per task, concurrency 10.
 
 Validation monitoring score:
 
