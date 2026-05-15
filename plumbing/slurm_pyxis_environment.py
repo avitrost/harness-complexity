@@ -20,6 +20,170 @@ from harbor.models.task.config import TaskOS
 DEFAULT_SHARED_DIR = Path("/wbl-fast/usrs/trost/harbor-slurm-pyxis")
 DEFAULT_SQSH_CACHE = Path("/wbl-fast/usrs/trost/tbench-sqsh-cache/images")
 DEFAULT_TAR_CACHE = Path("/wbl-fast/usrs/ee/agent-collab/docker-image-cache")
+DEFAULT_ENROOT_SYSCONF = Path("/etc/enroot")
+SLURM_BOOTSTRAP = """#!/bin/bash
+export WORKDIR="${1:-/app}"; shift
+export HARBOR_STAGING="/staging/env_files"
+export DEBIAN_FRONTEND=noninteractive
+mkdir -p "$WORKDIR"
+
+_SYS_PY=/usr/bin/python3
+if [ ! -x "$_SYS_PY" ]; then
+  echo "[harbor] /usr/bin/python3 not found, installing..." >&2
+  if command -v apt-get >/dev/null 2>&1; then
+    apt-get update -qq 2>/dev/null || true
+    apt-get install -y -qq python3 2>/dev/null || true
+  elif command -v apk >/dev/null 2>&1; then
+    apk add --no-cache python3 2>/dev/null || true
+  elif command -v dnf >/dev/null 2>&1; then
+    dnf install -y python3 2>/dev/null || true
+  elif command -v yum >/dev/null 2>&1; then
+    yum install -y python3 2>/dev/null || true
+  fi
+fi
+if [ ! -x "$_SYS_PY" ]; then
+  echo "[harbor] FATAL: cannot install /usr/bin/python3" >&2
+  exit 1
+fi
+
+if [ -f "$HARBOR_STAGING/setup.sh" ]; then
+  echo "[harbor] Running task setup.sh..." >&2
+  source "$HARBOR_STAGING/setup.sh"
+fi
+
+exec "$_SYS_PY" "$@"
+"""
+STDLIB_EXEC_SERVER = r"""import argparse
+import json
+import os
+import shutil
+import signal
+import subprocess
+import threading
+import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+
+def _setup(workdir):
+    os.makedirs(workdir, exist_ok=True)
+    os.environ["SINGULARITY_WORKDIR"] = workdir
+    for path in (
+        "/etc/apt/apt.conf.d",
+        "/var/lib/apt/lists/partial",
+        "/var/cache/apt/archives/partial",
+        "/tmp",
+        "/var/tmp",
+        "/root/.cache",
+        "/root/.local/bin",
+        "/usr/local/bin",
+    ):
+        try:
+            os.makedirs(path, exist_ok=True)
+        except OSError:
+            pass
+    _setup_dpkg()
+    _fake_sudo()
+
+
+def _setup_dpkg():
+    cfg = "/etc/dpkg/dpkg.cfg.d"
+    if not os.path.isdir("/etc/dpkg"):
+        return
+    try:
+        os.makedirs(cfg, exist_ok=True)
+        with open(os.path.join(cfg, "harbor-pyxis"), "w", encoding="utf-8") as f:
+            f.write("force-overwrite\nforce-overwrite-dir\nforce-unsafe-io\n")
+    except OSError:
+        pass
+
+
+def _fake_sudo():
+    path = "/usr/local/bin/sudo"
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("#!/bin/sh\nexec \"$@\"\n")
+        os.chmod(path, 0o755)
+    except OSError:
+        pass
+
+
+class Handler(BaseHTTPRequestHandler):
+    def log_message(self, fmt, *args):
+        return
+
+    def _send(self, code, payload):
+        body = json.dumps(payload).encode("utf-8")
+        self.send_response(code)
+        self.send_header("content-type", "application/json")
+        self.send_header("content-length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_GET(self):
+        if self.path == "/health":
+            self._send(200, {"status": "ok"})
+        else:
+            self._send(404, {"error": "not found"})
+
+    def do_POST(self):
+        length = int(self.headers.get("content-length") or 0)
+        data = json.loads(self.rfile.read(length) or b"{}")
+        if self.path == "/shutdown":
+            self._send(200, {"message": "shutdown initiated"})
+            threading.Thread(target=_exit_later, daemon=True).start()
+        elif self.path == "/exec":
+            self._send(200, _exec(data))
+        else:
+            self._send(404, {"error": "not found"})
+
+
+def _exec(data):
+    env = os.environ.copy()
+    env["PATH"] = "/usr/bin:/usr/local/bin:" + env.get("PATH", "/bin")
+    env.update(data.get("env") or {})
+    cwd = data.get("cwd") or os.environ.get("SINGULARITY_WORKDIR", "/app")
+    try:
+        result = subprocess.run(
+            data["command"],
+            shell=True,
+            executable="/bin/bash",
+            cwd=cwd,
+            env=env,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            timeout=data.get("timeout_sec"),
+        )
+        return {"stdout": (result.stdout or "").strip(), "stderr": None, "return_code": result.returncode}
+    except subprocess.TimeoutExpired as exc:
+        output = exc.stdout or ""
+        if isinstance(output, bytes):
+            output = output.decode("utf-8", "replace")
+        return {"stdout": output.strip(), "stderr": None, "return_code": 124}
+
+
+def _exit_later():
+    time.sleep(0.1)
+    os.kill(os.getpid(), signal.SIGTERM)
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--port", type=int, required=True)
+    parser.add_argument("--workdir", default="/app")
+    args = parser.parse_args()
+    _setup(args.workdir)
+    server = ThreadingHTTPServer(("0.0.0.0", args.port), Handler)
+    print(f"[harbor] stdlib exec server listening on {args.port}", flush=True)
+    server.serve_forever()
+
+
+if __name__ == "__main__":
+    main()
+"""
 
 
 class SlurmPyxisEnvironment(BaseEnvironment):
@@ -45,6 +209,7 @@ class SlurmPyxisEnvironment(BaseEnvironment):
         self._node: str | None = None
         self._port = random.randint(20000, 60000)
         self._staging_dir: Path | None = None
+        self._enroot_sysconf_dir: Path | None = None
         self._workdir = "/app"
         super().__init__(*args, **kwargs)
 
@@ -73,6 +238,9 @@ class SlurmPyxisEnvironment(BaseEnvironment):
     async def start(self, force_build: bool) -> None:
         image = await asyncio.to_thread(self._resolve_sqsh, force_build)
         self._staging_dir = self._prepare_staging()
+        self._enroot_sysconf_dir = _prepare_enroot_sysconf(
+            self._shared_dir / self.session_id / "enroot-sysconf"
+        )
         self._workdir = self.task_env_config.workdir or self._dockerfile_workdir()
         cmd = self._srun_command(image)
         self.logger.info("Starting Slurm/Pyxis environment")
@@ -80,6 +248,7 @@ class SlurmPyxisEnvironment(BaseEnvironment):
             *cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
+            env=self._srun_env(),
         )
         self._node = await self._read_startup_node()
         self._stream_task = asyncio.create_task(self._stream_output())
@@ -107,6 +276,8 @@ class SlurmPyxisEnvironment(BaseEnvironment):
                 pass
         if delete and self._staging_dir:
             shutil.rmtree(self._staging_dir, ignore_errors=True)
+        if delete and self._enroot_sysconf_dir:
+            shutil.rmtree(self._enroot_sysconf_dir, ignore_errors=True)
 
     async def exec(
         self,
@@ -192,15 +363,18 @@ class SlurmPyxisEnvironment(BaseEnvironment):
         staging = self._shared_dir / self.session_id / "staging"
         staging.mkdir(parents=True, exist_ok=True)
         staging.chmod(0o755)
-        from harbor.environments.singularity import singularity
-
-        src = Path(singularity.__file__).parent
-        shutil.copy2(src / "bootstrap.sh", staging / "bootstrap.sh")
-        server_text = (src / "server.py").read_text(encoding="utf-8")
-        server_text = server_text.replace('host="127.0.0.1"', 'host="0.0.0.0"')
-        (staging / "_hbexec.py").write_text(server_text, encoding="utf-8")
+        (staging / "bootstrap.sh").write_text(SLURM_BOOTSTRAP, encoding="utf-8")
+        (staging / "_hbexec.py").write_text(STDLIB_EXEC_SERVER, encoding="utf-8")
         (staging / "bootstrap.sh").chmod(0o755)
         return staging
+
+    def _srun_env(self) -> dict[str, str]:
+        env = os.environ.copy()
+        env.setdefault("TZ", "Etc/UTC")
+        env["DEBIAN_FRONTEND"] = "noninteractive"
+        if self._enroot_sysconf_dir:
+            env["ENROOT_SYSCONF_PATH"] = str(self._enroot_sysconf_dir)
+        return env
 
     def _srun_command(self, image: Path) -> list[str]:
         mounts = [f"{self._staging}:/staging"]
@@ -319,6 +493,11 @@ class SlurmPyxisEnvironment(BaseEnvironment):
         out = self._sqsh_cache_dir / f"{_safe_image_name(tag)}.sqsh"
         if out.exists() and not force_build:
             return out
+        if shutil.which("docker") is None:
+            raise RuntimeError(
+                f"No cached SquashFS image found at {out}. Preconvert {tar_path} into "
+                f"{self._sqsh_cache_dir}, or run on a host with Docker available for conversion."
+            )
         _convert_archive(tar_path, tag, out, self._sqsh_cache_dir.parent / "enroot")
         return out
 
@@ -353,6 +532,29 @@ def _image_ref_candidates(image: str) -> list[str]:
 
 def _safe_image_name(image: str) -> str:
     return image.replace("/", "_").replace(":", "_").replace("#", "_")
+
+
+def _prepare_enroot_sysconf(target: Path, source: Path = DEFAULT_ENROOT_SYSCONF) -> Path | None:
+    if not source.exists():
+        return None
+    if target.exists():
+        shutil.rmtree(target)
+    shutil.copytree(source, target, symlinks=True)
+    _remove_localtime_mount(target / "mounts.d" / "20-config.fstab")
+    return target
+
+
+def _remove_localtime_mount(path: Path) -> None:
+    if not path.exists():
+        return
+    lines = path.read_text(encoding="utf-8").splitlines()
+    kept = [line for line in lines if not _is_localtime_mount(line)]
+    path.write_text("\n".join(kept) + ("\n" if kept else ""), encoding="utf-8")
+
+
+def _is_localtime_mount(line: str) -> bool:
+    fields = line.split()
+    return len(fields) >= 2 and fields[0] == "/etc/localtime" and fields[1] == "/etc/localtime"
 
 
 def _docker_archive_tag(path: Path) -> str:

@@ -146,6 +146,14 @@ read from `/wbl-fast/usrs/ee/agent-collab/docker-image-cache`; converted images
 and Slurm staging live under `/wbl-fast/usrs/trost`. Direct
 `--container-image=<cached>.tar` fails with Enroot `Invalid image format`.
 
+The Slurm/Pyxis wrapper stages a small stdlib HTTP exec server instead of
+Harbor's FastAPI/uvicorn bootstrap, so compute nodes do not need pip, network
+package downloads, or `asciinema` setup just to start the control plane. It also
+uses a private Enroot config without the host `/etc/localtime` bind mount so
+`tzdata` package setup does not poison the container dpkg state. These changes
+are for Harbor's control server only; the TerminalBench task image, working
+directory, task files, verifier, and result flow stay under Harbor.
+
 On Windows, Codex `workspace-write` sandboxing can fail with
 `CreateProcessWithLogonW failed: 1056`. The optimizer therefore runs Codex in a
 temporary isolated workspace with `--sandbox danger-full-access`, then copies back only
