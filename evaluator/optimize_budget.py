@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 import json
 import os
 import re
@@ -13,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from evaluator.run_val import BACKENDS
+from evaluator.splits import VAL_CONCURRENCY
 from evaluator.validate_candidate import validate_candidate
 from plumbing.openai_client import check_terminal_model_available, using_codex_auth
 from scripts.count_loc import count_loc
@@ -55,11 +57,13 @@ def optimize_budget(
     if seed_report:
         reports.append(seed_report)
     for iteration in range(1, cycles + 1):
-        history_dirs = _history_dirs(run_dir)
+        history_dirs = _history_dirs(run_dir, before_iteration=iteration)
+        val_runs = []
+        iteration_reports = []
         for candidate_index in range(1, candidates_per_iteration + 1):
             iter_dir = _proposal_dir(run_dir, iteration, candidate_index)
             if resume and _candidate_complete(iter_dir, dry_run):
-                reports.append(
+                iteration_reports.append(
                     {
                         "iteration": iteration,
                         "candidate": candidate_index,
@@ -111,7 +115,7 @@ def optimize_budget(
                 )
             _write_json(iter_dir / "validation.json", validation, sort_keys=True)
             if validation["ok"] and not dry_run:
-                _run_val(workspace, budget, iter_dir, backend, concurrency)
+                val_runs.append((workspace, budget, iter_dir, backend))
             else:
                 summary = {
                     "split": "val",
@@ -120,7 +124,7 @@ def optimize_budget(
                     "dry_run": dry_run,
                 }
                 _write_json(iter_dir / "summary.json", summary)
-            reports.append(
+            iteration_reports.append(
                 {
                     "iteration": iteration,
                     "candidate": candidate_index,
@@ -128,6 +132,8 @@ def optimize_budget(
                     "valid": validation["ok"],
                 }
             )
+        _run_val_batch(val_runs, concurrency or VAL_CONCURRENCY)
+        reports.extend(iteration_reports)
     return reports
 
 
@@ -327,16 +333,29 @@ def _strip_workspace_history(workspace: Path) -> None:
     shutil.rmtree(workspace / "history", ignore_errors=True)
 
 
-def _history_dirs(budget_dir: Path) -> list[Path]:
-    return [
-        path
-        for path in sorted(budget_dir.iterdir())
-        if path.is_dir()
-        and _read_json(path / "validation.json").get("ok") is True
-        and (path / "summary.json").exists()
-        and _read_json(path / "summary.json").get("dry_run") is not True
-        and (path / "workspace" / "candidate" / "harness.py").exists()
-    ]
+def _history_dirs(budget_dir: Path, before_iteration: int | None = None) -> list[Path]:
+    rows = []
+    for path in sorted(budget_dir.iterdir()):
+        if before_iteration is not None:
+            iteration = _candidate_iteration(path.name)
+            if iteration is not None and iteration >= before_iteration:
+                continue
+        if (
+            path.is_dir()
+            and _read_json(path / "validation.json").get("ok") is True
+            and (path / "summary.json").exists()
+            and _read_json(path / "summary.json").get("dry_run") is not True
+            and (path / "workspace" / "candidate" / "harness.py").exists()
+        ):
+            rows.append(path)
+    return rows
+
+
+def _candidate_iteration(name: str) -> int | None:
+    if name == "iter_000_seed":
+        return 0
+    match = re.fullmatch(r"iter_(\d{3})_cand_\d{2}", name)
+    return int(match.group(1)) if match else None
 
 
 def _write_history_index(history_dir: Path, history_dirs: list[Path]) -> None:
@@ -457,6 +476,31 @@ def _run_val(
         ],
         check=False,
     )
+
+
+def _run_val_batch(
+    runs: list[tuple[Path, int, Path, str]],
+    total_concurrency: int,
+) -> None:
+    if not runs:
+        return
+    concurrencies = _split_concurrency(total_concurrency, len(runs))
+    with ThreadPoolExecutor(max_workers=len(runs)) as pool:
+        futures = [
+            pool.submit(_run_val, workspace, budget, iter_dir, backend, concurrency)
+            for (workspace, budget, iter_dir, backend), concurrency in zip(runs, concurrencies)
+        ]
+        for future in futures:
+            future.result()
+
+
+def _split_concurrency(total: int, count: int) -> list[int]:
+    if count < 1:
+        return []
+    if total < count:
+        return [1] * count
+    base, remainder = divmod(total, count)
+    return [base + (1 if index < remainder else 0) for index in range(count)]
 
 
 def main() -> int:

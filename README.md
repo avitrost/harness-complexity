@@ -133,6 +133,11 @@ python -m evaluator.optimize_budget \
   --backend slurm-pyxis
 ```
 
+During optimization, `--concurrency` is the per-iteration validation target. With
+`k=2 --concurrency 20`, both candidates in an iteration validate at the same time
+with Harbor concurrency 10 each, then the next optimizer iteration starts after
+both finish.
+
 Run the overnight budget set under one run id:
 
 ```bash

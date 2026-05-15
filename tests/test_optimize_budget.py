@@ -4,8 +4,11 @@ import pytest
 
 from evaluator.optimize_budget import (
     _candidate_complete,
+    _history_dirs,
     _new_run_dir,
     _run_val,
+    _run_val_batch,
+    _split_concurrency,
     build_codex_command,
 )
 
@@ -63,3 +66,40 @@ def test_run_val_passes_concurrency(monkeypatch, tmp_path: Path) -> None:
 
     command = calls[0][0]
     assert command[command.index("--concurrency") + 1] == "20"
+
+
+def test_run_val_batch_splits_total_concurrency(monkeypatch, tmp_path: Path) -> None:
+    calls = []
+    monkeypatch.setattr(
+        "evaluator.optimize_budget._run_val",
+        lambda workspace, budget, iter_dir, backend, concurrency: calls.append(concurrency),
+    )
+
+    _run_val_batch(
+        [
+            (tmp_path / "w1", 128, tmp_path / "i1", "slurm-pyxis"),
+            (tmp_path / "w2", 128, tmp_path / "i2", "slurm-pyxis"),
+        ],
+        total_concurrency=20,
+    )
+
+    assert sorted(calls) == [10, 10]
+    assert _split_concurrency(21, 2) == [11, 10]
+
+
+def test_history_dirs_exclude_current_iteration(tmp_path: Path) -> None:
+    _complete_candidate(tmp_path / "iter_000_seed")
+    _complete_candidate(tmp_path / "iter_001_cand_01")
+    _complete_candidate(tmp_path / "iter_002_cand_01")
+
+    history = [path.name for path in _history_dirs(tmp_path, before_iteration=2)]
+
+    assert history == ["iter_000_seed", "iter_001_cand_01"]
+
+
+def _complete_candidate(iter_dir: Path) -> None:
+    candidate_dir = iter_dir / "workspace" / "candidate"
+    candidate_dir.mkdir(parents=True)
+    (candidate_dir / "harness.py").write_text("x = 1\n", encoding="utf-8")
+    (iter_dir / "validation.json").write_text('{"ok": true}\n', encoding="utf-8")
+    (iter_dir / "summary.json").write_text('{"dry_run": false}\n', encoding="utf-8")
