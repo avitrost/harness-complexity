@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +18,7 @@ from scripts.make_workspace import make_workspace
 
 BUDGETS = {64, 128, 256, 512}
 CODEX_REASONING_EFFORTS = ("low", "medium", "high", "xhigh")
+DEFAULT_K = 2
 
 
 def optimize_budget(
@@ -27,65 +29,77 @@ def optimize_budget(
     dry_run: bool = False,
     codex_bin: str | None = None,
     backend: str = "docker",
+    candidates_per_iteration: int = DEFAULT_K,
 ) -> list[dict[str, Any]]:
     if budget not in BUDGETS:
         raise ValueError(f"unsupported budget: {budget}")
     if backend not in BACKENDS:
         raise ValueError(f"unsupported backend: {backend}")
+    if candidates_per_iteration < 1:
+        raise ValueError("candidates_per_iteration must be >= 1")
     if not dry_run:
         _require_backend(backend)
         _require_terminal_model()
     budget_dir = Path(f"experience/B{budget:04d}")
     budget_dir.mkdir(parents=True, exist_ok=True)
+    run_dir = _new_run_dir(budget_dir, dry_run)
     reports = []
-    for cycle in range(1, cycles + 1):
-        iter_dir = budget_dir / f"iter_{cycle:03d}"
-        if iter_dir.exists():
-            shutil.rmtree(iter_dir)
-        iter_dir.mkdir(parents=True, exist_ok=True)
-        workspace = iter_dir / "workspace"
-        with tempfile.TemporaryDirectory(
-            prefix=f"harness_complexity_B{budget:04d}_iter_{cycle:03d}_"
-        ) as temp_dir:
-            codex_workspace = Path(temp_dir) / "workspace"
-            make_workspace(codex_workspace, Path("candidate"))
-            command = build_codex_command(
-                budget,
-                codex_model,
-                codex_reasoning_effort,
-                repair=False,
-                codex_bin=codex_bin,
-            )
-            (iter_dir / "codex_command.json").write_text(
-                json.dumps(command, indent=2), encoding="utf-8"
-            )
-            if not dry_run:
-                _run_codex(command, codex_workspace)
-            _copy_workspace(codex_workspace, workspace)
-            validation = validate_candidate(workspace / "candidate" / "harness.py", budget)
-            for repair in range(1, 3):
-                if validation["ok"] or dry_run:
-                    break
-                repair_command = build_codex_command(
+    seed_report = _ensure_seed_candidate(run_dir, budget, dry_run, backend)
+    if seed_report:
+        reports.append(seed_report)
+    for iteration in range(1, cycles + 1):
+        history_dirs = _history_dirs(run_dir)
+        for candidate_index in range(1, candidates_per_iteration + 1):
+            iter_dir = _proposal_dir(run_dir, iteration, candidate_index)
+            if iter_dir.exists():
+                shutil.rmtree(iter_dir)
+            iter_dir.mkdir(parents=True, exist_ok=True)
+            workspace = iter_dir / "workspace"
+            with tempfile.TemporaryDirectory(
+                prefix=(
+                    f"harness_complexity_B{budget:04d}_iter_{iteration:03d}_"
+                    f"cand_{candidate_index:02d}_"
+                )
+            ) as temp_dir:
+                codex_workspace = Path(temp_dir) / "workspace"
+                make_workspace(codex_workspace, Path("candidate"), history_dirs)
+                _write_history_index(codex_workspace / "history", history_dirs)
+                command = build_codex_command(
                     budget,
                     codex_model,
                     codex_reasoning_effort,
-                    repair=True,
+                    repair=False,
                     codex_bin=codex_bin,
+                    iteration=iteration,
+                    candidate_index=candidate_index,
+                    candidates_per_iteration=candidates_per_iteration,
                 )
-                _run_codex(repair_command, codex_workspace)
+                _write_json(iter_dir / "codex_command.json", command)
+                _write_meta(iter_dir, budget, iteration, candidate_index, "proposal")
+                if not dry_run:
+                    _run_codex(command, codex_workspace, iter_dir)
                 _copy_workspace(codex_workspace, workspace)
+                _strip_workspace_history(workspace)
                 validation = validate_candidate(workspace / "candidate" / "harness.py", budget)
-        (iter_dir / "validation.json").write_text(
-            json.dumps(validation, indent=2, sort_keys=True),
-            encoding="utf-8",
-        )
-        if validation["ok"] and not dry_run:
-            _run_val(workspace, budget, iter_dir, backend)
-        else:
-            summary = {"split": "val", "split_mean": 0.0, "invalid": not validation["ok"]}
-            (iter_dir / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
-        reports.append({"iteration": cycle, "workspace": str(workspace), "valid": validation["ok"]})
+            _write_json(iter_dir / "validation.json", validation, sort_keys=True)
+            if validation["ok"] and not dry_run:
+                _run_val(workspace, budget, iter_dir, backend)
+            else:
+                summary = {
+                    "split": "val",
+                    "split_mean": 0.0,
+                    "invalid": not validation["ok"],
+                    "dry_run": dry_run,
+                }
+                _write_json(iter_dir / "summary.json", summary)
+            reports.append(
+                {
+                    "iteration": iteration,
+                    "candidate": candidate_index,
+                    "workspace": str(workspace),
+                    "valid": validation["ok"],
+                }
+            )
     return reports
 
 
@@ -95,12 +109,25 @@ def build_codex_command(
     codex_reasoning_effort: str,
     repair: bool,
     codex_bin: str | None = None,
+    iteration: int | None = None,
+    candidate_index: int | None = None,
+    candidates_per_iteration: int = DEFAULT_K,
 ) -> list[str]:
+    slot = (
+        f" This is iteration {iteration}, candidate {candidate_index} of "
+        f"{candidates_per_iteration}."
+        if iteration is not None and candidate_index is not None
+        else ""
+    )
     prompt = (
-        "You are in an isolated workspace. Edit only candidate/harness.py and proposal.md. "
-        "Do not inspect parent directories, absolute repository paths, or prior experiment "
-        f"artifacts. Keep candidate/harness.py at most {budget} Black-formatted physical "
-        "lines. Improve general TerminalBench behavior without task-specific hacks."
+        "You are in an isolated Meta-Harness workspace."
+        f"{slot} Read history/ first: it contains prior candidate source, proposals, "
+        "validation, scores, and terminal traces for this budget. Edit only "
+        "candidate/harness.py and proposal.md. Do not inspect parent directories, "
+        "absolute repository paths, experience/ directly, final_test/, or results/. "
+        f"Keep candidate/harness.py at most {budget} Black-formatted physical lines. "
+        "Improve general TerminalBench behavior without task-specific hacks. Propose "
+        "one new harness; you may base it on any prior harness in history/."
     )
     if repair:
         prompt = f"Repair validation failures. {prompt}"
@@ -135,8 +162,64 @@ def resolve_codex_executable(codex_bin: str | None = None) -> str:
     )
 
 
-def _run_codex(command: list[str], workspace: Path) -> None:
-    result = subprocess.run(command, cwd=workspace, check=False)
+def _ensure_seed_candidate(
+    run_dir: Path,
+    budget: int,
+    dry_run: bool,
+    backend: str,
+) -> dict[str, Any] | None:
+    iter_dir = run_dir / "iter_000_seed"
+    summary = _read_json(iter_dir / "summary.json")
+    if (
+        (iter_dir / "validation.json").exists()
+        and summary
+        and (iter_dir / "workspace" / "candidate" / "harness.py").exists()
+        and not (summary.get("dry_run") and not dry_run)
+    ):
+        return None
+    workspace = iter_dir / "workspace"
+    if iter_dir.exists():
+        shutil.rmtree(iter_dir)
+    iter_dir.mkdir(parents=True, exist_ok=True)
+    make_workspace(workspace, Path("candidate"))
+    _strip_workspace_history(workspace)
+    _write_meta(iter_dir, budget, 0, 0, "seed")
+    validation = validate_candidate(workspace / "candidate" / "harness.py", budget)
+    _write_json(iter_dir / "validation.json", validation, sort_keys=True)
+    if validation["ok"] and not dry_run:
+        _run_val(workspace, budget, iter_dir, backend)
+    else:
+        summary = {
+            "split": "val",
+            "split_mean": 0.0,
+            "invalid": not validation["ok"],
+            "dry_run": dry_run,
+        }
+        _write_json(iter_dir / "summary.json", summary)
+    return {"iteration": 0, "candidate": 0, "workspace": str(workspace), "valid": validation["ok"]}
+
+
+def _proposal_dir(budget_dir: Path, iteration: int, candidate_index: int) -> Path:
+    return budget_dir / f"iter_{iteration:03d}_cand_{candidate_index:02d}"
+
+
+def _new_run_dir(budget_dir: Path, dry_run: bool) -> Path:
+    prefix = "dry_run" if dry_run else "run"
+    stamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
+    run_dir = budget_dir / f"{prefix}_{stamp}"
+    suffix = 1
+    while run_dir.exists():
+        suffix += 1
+        run_dir = budget_dir / f"{prefix}_{stamp}_{suffix:02d}"
+    run_dir.mkdir(parents=True)
+    (budget_dir / "latest_run.txt").write_text(f"{run_dir.name}\n", encoding="utf-8")
+    return run_dir
+
+
+def _run_codex(command: list[str], workspace: Path, iter_dir: Path) -> None:
+    result = subprocess.run(command, cwd=workspace, check=False, capture_output=True, text=True)
+    (iter_dir / "codex_stdout.log").write_text(result.stdout, encoding="utf-8")
+    (iter_dir / "codex_stderr.log").write_text(result.stderr, encoding="utf-8")
     if result.returncode != 0:
         raise RuntimeError(f"Codex CLI exited with status {result.returncode}")
 
@@ -145,6 +228,84 @@ def _copy_workspace(source: Path, destination: Path) -> None:
     if destination.exists():
         shutil.rmtree(destination)
     shutil.copytree(source, destination, ignore=shutil.ignore_patterns("__pycache__"))
+
+
+def _strip_workspace_history(workspace: Path) -> None:
+    shutil.rmtree(workspace / "history", ignore_errors=True)
+
+
+def _history_dirs(budget_dir: Path) -> list[Path]:
+    return [
+        path
+        for path in sorted(budget_dir.iterdir())
+        if path.is_dir()
+        and _read_json(path / "validation.json").get("ok") is True
+        and (path / "summary.json").exists()
+        and _read_json(path / "summary.json").get("dry_run") is not True
+        and (path / "workspace" / "candidate" / "harness.py").exists()
+    ]
+
+
+def _write_history_index(history_dir: Path, history_dirs: list[Path]) -> None:
+    rows = []
+    for path in history_dirs:
+        summary = _read_json(path / "summary.json")
+        validation = _read_json(path / "validation.json")
+        count = _extract_count(validation)
+        rows.append(
+            {
+                "dir": path.name,
+                "split_mean": summary.get("split_mean"),
+                "estimated_full_score": summary.get("estimated_full_score"),
+                "num_trials": summary.get("num_trials"),
+                "num_crashes": summary.get("num_crashes"),
+                "physical_loc": count.get("physical_loc"),
+                "valid": validation.get("ok", False),
+            }
+        )
+    _write_json(history_dir / "index.json", rows, sort_keys=True)
+
+
+def _extract_count(validation: dict[str, Any]) -> dict[str, Any]:
+    for check in validation.get("checks", []):
+        data = check.get("json")
+        if isinstance(data, dict) and "physical_loc" in data:
+            return data
+    return {}
+
+
+def _write_meta(
+    iter_dir: Path,
+    budget: int,
+    iteration: int,
+    candidate_index: int,
+    role: str,
+) -> None:
+    _write_json(
+        iter_dir / "candidate_meta.json",
+        {
+            "budget": budget,
+            "iteration": iteration,
+            "candidate": candidate_index,
+            "role": role,
+            "default_k": DEFAULT_K,
+        },
+        sort_keys=True,
+    )
+
+
+def _write_json(path: Path, payload: Any, sort_keys: bool = False) -> None:
+    path.write_text(json.dumps(payload, indent=2, sort_keys=sort_keys), encoding="utf-8")
+
+
+def _read_json(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {}
+    return payload if isinstance(payload, dict) else {}
 
 
 def _require_backend(backend: str) -> None:
@@ -207,19 +368,21 @@ def main() -> int:
     )
     parser.add_argument("--codex-bin")
     parser.add_argument("--backend", choices=sorted(BACKENDS), default="docker")
+    parser.add_argument("--k", type=int, default=DEFAULT_K, dest="candidates_per_iteration")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
     try:
         reports = optimize_budget(
-            args.budget,
-            args.cycles,
-            args.codex_model,
-            args.codex_reasoning_effort,
-            args.dry_run,
-            args.codex_bin,
-            args.backend,
+            budget=args.budget,
+            cycles=args.cycles,
+            codex_model=args.codex_model,
+            codex_reasoning_effort=args.codex_reasoning_effort,
+            dry_run=args.dry_run,
+            codex_bin=args.codex_bin,
+            backend=args.backend,
+            candidates_per_iteration=args.candidates_per_iteration,
         )
-    except RuntimeError as exc:
+    except (RuntimeError, ValueError) as exc:
         print(json.dumps({"ok": False, "error": str(exc)}, indent=2), file=sys.stderr)
         return 1
     print(json.dumps(reports, indent=2, sort_keys=True))

@@ -19,6 +19,14 @@ def test_audit_rejects_task_slug(tmp_path: Path) -> None:
     assert any("forbidden task slug" in error for error in result["errors"])
 
 
+def test_audit_rejects_history_reads(tmp_path: Path) -> None:
+    path = tmp_path / "harness.py"
+    path.write_text("open('history/index.json').read()\n", encoding="utf-8")
+    result = audit_candidate(path)
+    assert not result["ok"]
+    assert any("forbidden path read: history" in error for error in result["errors"])
+
+
 def test_audit_accepts_seed_candidate() -> None:
     result = audit_candidate(Path("candidate/harness.py"))
     assert result["ok"], result["errors"]

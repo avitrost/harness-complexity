@@ -26,6 +26,8 @@ def main() -> int:
         default="medium",
     )
     parser.add_argument("--codex-bin")
+    parser.add_argument("--backend", choices=("docker", "slurm-pyxis"), default="docker")
+    parser.add_argument("--k", type=int, default=2, dest="candidates_per_iteration")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--skip-optimization", action="store_true")
     args = parser.parse_args()
@@ -44,6 +46,10 @@ def main() -> int:
                     args.codex_model,
                     "--codex-reasoning-effort",
                     args.codex_reasoning_effort,
+                    "--backend",
+                    args.backend,
+                    "--k",
+                    str(args.candidates_per_iteration),
                     *(("--codex-bin", args.codex_bin) if args.codex_bin else ()),
                     *(("--dry-run",) if args.dry_run else ()),
                 ]
@@ -73,6 +79,8 @@ def main() -> int:
                 str(budget),
                 "--out-dir",
                 str(final_dir),
+                "--backend",
+                args.backend,
                 *(("--dry-run",) if args.dry_run else ()),
             ]
         )

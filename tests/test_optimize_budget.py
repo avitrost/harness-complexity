@@ -19,3 +19,4 @@ def test_build_codex_command_uses_resolved_exec_binary(tmp_path: Path) -> None:
     assert "--ephemeral" in command
     assert "--skip-git-repo-check" in command
     assert "Do not inspect parent directories" in command[-1]
+    assert "Read history/ first" in command[-1]

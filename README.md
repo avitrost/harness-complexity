@@ -35,10 +35,15 @@ The terminal-solving model is not named in `candidate/harness.py`. It is frozen 
 optimization cycles may change harness behavior only inside `candidate/harness.py`;
 prompt text in that file counts toward the budget.
 
-Budget optimization invokes Codex in a temporary isolated workspace containing only
-`candidate/harness.py`, `proposal.md`, and local workspace instructions. After Codex
-returns, those files are copied into `experience/Bxxxx/iter_NNN/workspace` for
-validation and record keeping.
+Budget optimization follows the Meta-Harness loop: the canonical seed is first
+validated and evaluated as `iter_000_seed`, then each iteration asks Codex for `k`
+new candidate harnesses. Codex runs in a temporary isolated workspace containing
+`candidate/harness.py`, `proposal.md`, local workspace instructions, and a
+`history/` snapshot of prior valid candidates from the same budget. After Codex
+returns, the candidate is copied into
+`experience/Bxxxx/run_YYYYMMDD_HHMMSS/iter_NNN_cand_KK/workspace` for validation,
+evaluation, and record keeping; the `history/` snapshot is stripped before validation
+so candidate runtime code cannot read prior traces.
 
 ## Plumbing Boundary
 
@@ -106,20 +111,20 @@ python -m evaluator.validate_candidate candidate/harness.py --max-lines 64
 Dry-run one budget:
 
 ```bash
-python -m evaluator.optimize_budget --budget 128 --cycles 10 --dry-run
+python -m evaluator.optimize_budget --budget 128 --cycles 10 --k 2 --dry-run
 ```
 
 Run one real budget:
 
 ```bash
-python -m evaluator.optimize_budget --budget 128 --cycles 10 --codex-model gpt-5.5 --codex-reasoning-effort medium
+python -m evaluator.optimize_budget --budget 128 --cycles 10 --k 2 --codex-model gpt-5.5 --codex-reasoning-effort medium
 ```
 
 On Windows the optimizer resolves `codex.cmd` explicitly. If Codex is installed in a
 non-standard location, pass:
 
 ```powershell
-python -m evaluator.optimize_budget --budget 128 --cycles 10 --codex-bin C:\path\to\codex.cmd
+python -m evaluator.optimize_budget --budget 128 --cycles 10 --k 2 --codex-bin C:\path\to\codex.cmd
 ```
 
 For ChatGPT-authenticated Codex CLI accounts, model names are slugs such as `gpt-5.5`;
@@ -157,7 +162,9 @@ directory, task files, verifier, and result flow stay under Harbor.
 On Windows, Codex `workspace-write` sandboxing can fail with
 `CreateProcessWithLogonW failed: 1056`. The optimizer therefore runs Codex in a
 temporary isolated workspace with `--sandbox danger-full-access`, then copies back only
-the candidate workspace artifacts.
+the candidate workspace artifacts. The only prior-run material exposed to Codex is the
+run-local `history/` snapshot created by the optimizer; test results, stale runs, and
+other budget histories are not included.
 
 Dry-run validation Harbor command construction:
 
@@ -190,8 +197,10 @@ python scripts/plot_complexity_curve.py
 - Counted file: `candidate/harness.py` only.
 - Independent variable: Black-formatted physical lines, including comments and blank lines.
 - Budgets: 64, 128, 256, 512.
-- Optimization budget: 10 evaluated candidates per budget.
-- One evaluated candidate per budget per cycle.
+- Optimization iterations: 10 per budget by default.
+- Default proposal batch size: `k=2` candidates per iteration, matching the explicit
+  candidate count reported for Meta-Harness search runs in the paper.
+- The canonical seed is evaluated once as the initial population before proposals.
 - Each budget has independent search history.
 - No cross-budget sharing in the primary experiment.
 - No test feedback may be used during optimization.
@@ -211,7 +220,9 @@ estimated_full_score = 0.510101 * test_split_mean + 0.108900
 ```
 
 Do not expose final-test results to optimization cycles. Keep `final_test/` and `results/`
-outside any candidate runtime path.
+outside any candidate runtime path. Candidate selection writes both
+`results/selected_candidates.*` for the single representative per budget and
+`results/pareto_frontier.*` for the non-dominated validation frontier.
 
 ## Harbor Integration
 

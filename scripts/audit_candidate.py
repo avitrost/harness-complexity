@@ -44,6 +44,7 @@ FORBIDDEN_PATTERNS = {
 FORBIDDEN_DIRS = (
     "experience",
     "final_test",
+    "history",
     "results",
     "splits",
     "recommendation_records",

@@ -9,4 +9,5 @@ def test_make_workspace_writes_isolation_instructions(tmp_path: Path) -> None:
     workspace = make_workspace(tmp_path / "workspace", source)
     agents = (workspace / "AGENTS.md").read_text(encoding="utf-8")
     assert "Do not inspect parent directories" in agents
-    assert "experience/" in agents
+    assert "history/" in agents
+    assert (workspace / "history").is_dir()
