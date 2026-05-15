@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 import random
+import signal
 import shlex
 import shutil
 import subprocess
@@ -214,6 +215,7 @@ class SlurmPyxisEnvironment(BaseEnvironment):
         self._stream_task: asyncio.Task | None = None
         self._node: str | None = None
         self._port = random.randint(20000, 60000)
+        self._slurm_job_name = f"hb-{os.getpid()}-{self._port}"
         self._staging_dir: Path | None = None
         self._enroot_sysconf_dir: Path | None = None
         self._workdir = "/app"
@@ -255,6 +257,7 @@ class SlurmPyxisEnvironment(BaseEnvironment):
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
             env=self._srun_env(),
+            start_new_session=True,
         )
         self._node = await self._read_startup_node()
         self._stream_task = asyncio.create_task(self._stream_output())
@@ -268,12 +271,7 @@ class SlurmPyxisEnvironment(BaseEnvironment):
                     await self._post("/shutdown", {})
                 except Exception:
                     pass
-            self._process.terminate()
-            try:
-                await asyncio.wait_for(self._process.wait(), timeout=10)
-            except asyncio.TimeoutError:
-                self._process.kill()
-                await self._process.wait()
+            await self._stop_srun()
         if self._stream_task:
             self._stream_task.cancel()
             try:
@@ -284,6 +282,42 @@ class SlurmPyxisEnvironment(BaseEnvironment):
             shutil.rmtree(self._staging_dir, ignore_errors=True)
         if delete and self._enroot_sysconf_dir:
             shutil.rmtree(self._enroot_sysconf_dir, ignore_errors=True)
+
+    async def _stop_srun(self) -> None:
+        assert self._process
+        pid = self._process.pid
+        await asyncio.to_thread(self._cancel_slurm_job)
+        for sig, timeout in ((signal.SIGTERM, 10), (signal.SIGKILL, 5)):
+            if self._process.returncode is not None:
+                break
+            try:
+                os.killpg(pid, sig)
+            except ProcessLookupError:
+                break
+            try:
+                await asyncio.wait_for(self._process.wait(), timeout=timeout)
+            except asyncio.TimeoutError:
+                continue
+        if self._process.returncode is None:
+            self._process.kill()
+            await self._process.wait()
+
+    def _cancel_slurm_job(self) -> None:
+        if shutil.which("scancel") is None:
+            return
+        command = ["scancel", "--name", self._slurm_job_name]
+        if user := os.environ.get("USER"):
+            command.extend(["--user", user])
+        try:
+            subprocess.run(
+                command,
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=10,
+            )
+        except subprocess.TimeoutExpired:
+            pass
 
     async def exec(
         self,
@@ -400,6 +434,8 @@ class SlurmPyxisEnvironment(BaseEnvironment):
         )
         cmd = [
             "srun",
+            "--job-name",
+            self._slurm_job_name,
             "--partition",
             self._slurm_partition,
             "--nodes",

@@ -1,7 +1,12 @@
 from pathlib import Path
 
+from harbor.models.task.config import EnvironmentConfig
+from harbor.models.trial.paths import TrialPaths
+
+import plumbing.slurm_pyxis_environment as slurm_pyxis
 from plumbing.slurm_pyxis_environment import (
     SLURM_BOOTSTRAP,
+    SlurmPyxisEnvironment,
     STDLIB_EXEC_SERVER,
     _prepare_enroot_sysconf,
 )
@@ -37,3 +42,49 @@ def test_prepare_enroot_sysconf_removes_localtime_mount(tmp_path: Path) -> None:
     patched = (target / "mounts.d" / "20-config.fstab").read_text(encoding="utf-8")
     assert "/etc/hosts /etc/hosts" in patched
     assert "/etc/localtime" not in patched
+
+
+def _make_env(tmp_path: Path) -> SlurmPyxisEnvironment:
+    environment_dir = tmp_path / "env"
+    environment_dir.mkdir()
+    trial_dir = tmp_path / "trial"
+    trial_dir.mkdir()
+    env = SlurmPyxisEnvironment(
+        environment_dir=environment_dir,
+        environment_name="task",
+        session_id="session",
+        trial_paths=TrialPaths(trial_dir),
+        task_env_config=EnvironmentConfig(docker_image="ubuntu:latest"),
+        shared_dir=tmp_path / "shared",
+    )
+    env._staging_dir = tmp_path / "staging"
+    env._staging_dir.mkdir()
+    return env
+
+
+def test_srun_command_uses_unique_job_name(tmp_path: Path) -> None:
+    env = _make_env(tmp_path)
+
+    command = env._srun_command(tmp_path / "image.sqsh")
+
+    job_name_index = command.index("--job-name") + 1
+    assert command[job_name_index] == env._slurm_job_name
+    assert env._slurm_job_name.startswith("hb-")
+
+
+def test_cancel_slurm_job_is_scoped_to_current_user(tmp_path: Path, monkeypatch) -> None:
+    env = _make_env(tmp_path)
+    calls = []
+
+    monkeypatch.setenv("USER", "trost")
+    monkeypatch.setattr(slurm_pyxis.shutil, "which", lambda name: "/usr/bin/scancel")
+    monkeypatch.setattr(
+        slurm_pyxis.subprocess,
+        "run",
+        lambda command, **kwargs: calls.append((command, kwargs)),
+    )
+
+    env._cancel_slurm_job()
+
+    assert calls
+    assert calls[0][0] == ["scancel", "--name", env._slurm_job_name, "--user", "trost"]
