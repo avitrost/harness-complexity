@@ -4,6 +4,7 @@ import pytest
 
 from evaluator.optimize_budget import (
     _candidate_complete,
+    _copy_workspace,
     _history_dirs,
     _new_run_dir,
     _run_val,
@@ -95,6 +96,20 @@ def test_history_dirs_exclude_current_iteration(tmp_path: Path) -> None:
     history = [path.name for path in _history_dirs(tmp_path, before_iteration=2)]
 
     assert history == ["iter_000_seed", "iter_001_cand_01"]
+
+
+def test_copy_workspace_excludes_history(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    (source / "candidate").mkdir(parents=True)
+    (source / "history" / "old").mkdir(parents=True)
+    (source / "candidate" / "harness.py").write_text("x = 1\n", encoding="utf-8")
+    (source / "history" / "old" / "summary.json").write_text("{}\n", encoding="utf-8")
+
+    destination = tmp_path / "destination"
+    _copy_workspace(source, destination)
+
+    assert (destination / "candidate" / "harness.py").exists()
+    assert not (destination / "history").exists()
 
 
 def _complete_candidate(iter_dir: Path) -> None:

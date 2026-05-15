@@ -326,7 +326,11 @@ def _run_codex(command: list[str], workspace: Path, iter_dir: Path) -> None:
 def _copy_workspace(source: Path, destination: Path) -> None:
     if destination.exists():
         shutil.rmtree(destination)
-    shutil.copytree(source, destination, ignore=shutil.ignore_patterns("__pycache__"))
+    shutil.copytree(
+        source,
+        destination,
+        ignore=shutil.ignore_patterns("__pycache__", "history"),
+    )
 
 
 def _strip_workspace_history(workspace: Path) -> None:
