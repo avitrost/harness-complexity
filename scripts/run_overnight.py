@@ -22,6 +22,7 @@ def main() -> int:
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--concurrency", type=int)
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--run-final-test", action="store_true")
     args = parser.parse_args()
     env = {**os.environ, "OPENAI_AUTH_MODE": os.environ.get("OPENAI_AUTH_MODE", "codex")}
     command = [
@@ -47,6 +48,7 @@ def main() -> int:
         *(("--resume",) if args.resume else ()),
         *(("--concurrency", str(args.concurrency)) if args.concurrency is not None else ()),
         *(("--dry-run",) if args.dry_run else ()),
+        *(("--run-final-test",) if args.run_final_test else ()),
     ]
     print(" ".join(command), flush=True)
     return subprocess.run(command, env=env, check=False).returncode

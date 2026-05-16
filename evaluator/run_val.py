@@ -34,6 +34,8 @@ def run_split(
         raise ValueError(f"unsupported backend: {backend}")
     if concurrency < 1:
         raise ValueError("concurrency must be >= 1")
+    if not tasks:
+        raise ValueError(f"no tasks configured for {split} split")
     out_dir.mkdir(parents=True, exist_ok=True)
     spec = HarborRunSpec(candidate_dir, out_dir, tasks, trials, concurrency, split, backend)
     plan = build_harbor_command(spec, executable=harbor_bin, help_text=harbor_help_text)

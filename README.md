@@ -206,11 +206,14 @@ The Harbor command shape is:
 harbor run --dataset terminal-bench@2.0 --include-task-name <task> --n-attempts <trials> --n-concurrent <concurrency> --jobs-dir <out-dir> --agent-import-path plumbing.harbor_adapter:HarborHarnessAgent --agent-kwarg candidate_dir=<candidate-dir>
 ```
 
-Run final test for a selected candidate:
+Run final test for a selected candidate after a held-out task list has been configured:
 
 ```bash
 python -m evaluator.run_test --candidate-dir path/to/workspace --budget 128 --out-dir final_test/B0128
 ```
+
+The default experiment command does not run a final test. Pass `--run-final-test`
+only when you intentionally want that extra manual evaluation.
 
 Regenerate plots:
 
@@ -232,24 +235,18 @@ python scripts/plot_complexity_curve.py
   higher buckets, the seed workspace is padded with comments to satisfy the bucket floor.
 - Each budget has independent search history.
 - No cross-budget sharing in the primary experiment.
-- No test feedback may be used during optimization.
-- Validation split: 5 listed tasks, N=4 trials per task, concurrency 10.
-- Final test split: 15 listed tasks, N=5 trials per task, concurrency 10.
+- Optimization split: the prior validation and test task lists are combined into
+  one 20-task set, N=4 trials per task.
+- There is no automatic held-out test set in this phase; final evaluation is run
+  manually later with a separate task set.
 
 Validation monitoring score:
 
 ```text
-estimated_full_score = 0.361193 * val_split_mean + 0.295842
+optimization_score = split_mean
 ```
 
-Held-out test score:
-
-```text
-estimated_full_score = 0.510101 * test_split_mean + 0.108900
-```
-
-Do not expose final-test results to optimization cycles. Keep `final_test/` and `results/`
-outside any candidate runtime path. Candidate selection writes both
+Keep `final_test/` and `results/` outside any candidate runtime path. Candidate selection writes both
 `results/selected_candidates.*` for the single representative per budget and
 `results/pareto_frontier.*` for the non-dominated validation frontier.
 

@@ -35,6 +35,15 @@ def _plot_complexity(selected_csv: Path, final_test_dir: Path, out_dir: Path) ->
         summary = _read_json(final_test_dir / f"B{budget:04d}" / "summary.json")
         if summary and "estimated_full_score" in summary:
             rows.append({**row.to_dict(), **summary})
+        else:
+            rows.append(
+                {
+                    **row.to_dict(),
+                    "split_mean": float(row["val_split_mean"]),
+                    "estimated_full_score": float(row["val_split_mean"]),
+                    "per_task": [],
+                }
+            )
     if not rows:
         return []
     data = pd.DataFrame(rows)
@@ -49,7 +58,7 @@ def _plot_complexity(selected_csv: Path, final_test_dir: Path, out_dir: Path) ->
     for _, item in data.iterrows():
         plt.annotate(str(int(item["budget"])), (item["actual_loc"], item["estimated_full_score"]))
     plt.xlabel("Formatted physical LOC")
-    plt.ylabel("Estimated full score")
+    plt.ylabel("Optimization score")
     plt.tight_layout()
     plt.savefig(path)
     plt.close()

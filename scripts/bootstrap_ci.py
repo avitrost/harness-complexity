@@ -28,8 +28,7 @@ def bootstrap_ci(
             trials = by_task[task]
             rewards = [float(rng.choice(trials).get("reward", 0)) for _ in trials]
             task_means.append(mean(rewards))
-        split_mean = mean(task_means)
-        estimates.append(0.510101 * split_mean + 0.108900)
+        estimates.append(mean(task_means))
     estimates.sort()
     return {
         "samples": samples,

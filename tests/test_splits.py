@@ -5,23 +5,24 @@ from plumbing.harbor_adapter import HarborRunSpec, build_harbor_command
 
 
 def test_split_definitions() -> None:
-    assert splits.get_val_tasks() == [
+    assert splits.get_val_tasks()[:5] == [
         "fix-git",
         "qemu-alpine-ssh",
         "sparql-university",
         "sqlite-db-truncate",
         "write-compressor",
     ]
-    assert len(splits.get_test_tasks()) == 15
+    assert len(splits.get_val_tasks()) == 20
+    assert splits.get_test_tasks() == []
     assert splits.VAL_TRIALS == 4
     assert splits.VAL_CONCURRENCY == 10
-    assert splits.TEST_TRIALS == 5
+    assert splits.TEST_TRIALS == 4
     assert splits.TEST_CONCURRENCY == 10
 
 
 def test_score_formulas() -> None:
-    assert splits.val_estimated_full_score(1.0) == 0.361193 + 0.295842
-    assert splits.test_estimated_full_score(1.0) == 0.510101 + 0.108900
+    assert splits.val_estimated_full_score(0.4) == 0.4
+    assert splits.test_estimated_full_score(0.4) == 0.4
 
 
 def test_harbor_command_dry_run_constructs_task_flags() -> None:

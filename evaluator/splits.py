@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-VAL_TASKS = [
+BASE_VAL_TASKS = [
     "fix-git",
     "qemu-alpine-ssh",
     "sparql-university",
@@ -8,7 +8,7 @@ VAL_TASKS = [
     "write-compressor",
 ]
 
-TEST_TASKS = [
+BASE_TEST_TASKS = [
     "adaptive-rejection-sampler",
     "feal-differential-cryptanalysis",
     "fix-code-vulnerability",
@@ -26,9 +26,11 @@ TEST_TASKS = [
     "reshard-c4-data",
 ]
 
+VAL_TASKS = [*BASE_VAL_TASKS, *BASE_TEST_TASKS]
+TEST_TASKS: list[str] = []
 VAL_TRIALS = 4
 VAL_CONCURRENCY = 10
-TEST_TRIALS = 5
+TEST_TRIALS = 4
 TEST_CONCURRENCY = 10
 
 
@@ -41,8 +43,8 @@ def get_test_tasks() -> list[str]:
 
 
 def val_estimated_full_score(val_split_mean: float) -> float:
-    return 0.361193 * val_split_mean + 0.295842
+    return val_split_mean
 
 
 def test_estimated_full_score(test_split_mean: float) -> float:
-    return 0.510101 * test_split_mean + 0.108900
+    return test_split_mean

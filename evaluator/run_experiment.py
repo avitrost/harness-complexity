@@ -37,6 +37,7 @@ def main() -> int:
     parser.add_argument("--concurrency", type=int)
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--skip-optimization", action="store_true")
+    parser.add_argument("--run-final-test", action="store_true")
     args = parser.parse_args()
     budgets = _parse_budgets(args.budgets)
     if args.concurrency is not None and args.concurrency < 1:
@@ -102,28 +103,33 @@ def main() -> int:
                 run_id,
             ]
         )
-    for row in _selected_rows(Path("results/selected_candidates.json")):
-        budget = int(row["budget"])
-        final_dir = Path(f"final_test/B{budget:04d}")
-        _run(
-            [
-                sys.executable,
-                "-m",
-                "evaluator.run_test",
-                "--candidate-dir",
-                str(row["candidate_dir"]),
-                "--budget",
-                str(budget),
-                "--out-dir",
-                str(final_dir),
-                "--backend",
-                args.backend,
-                *(("--concurrency", str(args.concurrency)) if args.concurrency is not None else ()),
-                *(("--dry-run",) if args.dry_run else ()),
-            ]
-        )
-        if not args.dry_run:
-            _write_bootstrap(final_dir)
+    if args.run_final_test:
+        for row in _selected_rows(Path("results/selected_candidates.json")):
+            budget = int(row["budget"])
+            final_dir = Path(f"final_test/B{budget:04d}")
+            _run(
+                [
+                    sys.executable,
+                    "-m",
+                    "evaluator.run_test",
+                    "--candidate-dir",
+                    str(row["candidate_dir"]),
+                    "--budget",
+                    str(budget),
+                    "--out-dir",
+                    str(final_dir),
+                    "--backend",
+                    args.backend,
+                    *(
+                        ("--concurrency", str(args.concurrency))
+                        if args.concurrency is not None
+                        else ()
+                    ),
+                    *(("--dry-run",) if args.dry_run else ()),
+                ]
+            )
+            if not args.dry_run:
+                _write_bootstrap(final_dir)
     _run([sys.executable, "scripts/plot_complexity_curve.py", "--run-id", run_id])
     return 0
 
