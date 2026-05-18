@@ -10,6 +10,8 @@ from evaluator.optimize_budget import (
     _run_val,
     _run_val_batch,
     _split_concurrency,
+    _sync_agent_alias_from_candidate,
+    _sync_candidate_from_agent_alias,
     build_codex_command,
 )
 
@@ -29,8 +31,10 @@ def test_build_codex_command_uses_resolved_exec_binary(tmp_path: Path) -> None:
     assert command[6:8] == ["--sandbox", "danger-full-access"]
     assert "--ephemeral" in command
     assert "--skip-git-repo-check" in command
-    assert "Do not inspect parent directories" in command[-1]
-    assert "Read history/ first" in command[-1]
+    assert "scaffold evolution loop (KIRA track)" in command[-1]
+    assert "Start from agents/baseline_kira.py" in command[-1]
+    assert "logs/frontier_val.json" in command[-1]
+    assert "Keep candidate/harness.py at most 128" in command[-1]
 
 
 def test_resume_run_dir_requires_existing_run_id(tmp_path: Path) -> None:
@@ -101,15 +105,45 @@ def test_history_dirs_exclude_current_iteration(tmp_path: Path) -> None:
 def test_copy_workspace_excludes_history(tmp_path: Path) -> None:
     source = tmp_path / "source"
     (source / "candidate").mkdir(parents=True)
+    (source / "agents").mkdir(parents=True)
     (source / "history" / "old").mkdir(parents=True)
+    (source / "jobs").mkdir(parents=True)
+    (source / "logs").mkdir(parents=True)
+    (source / "references").mkdir(parents=True)
     (source / "candidate" / "harness.py").write_text("x = 1\n", encoding="utf-8")
+    (source / "agents" / "baseline_kira.py").write_text("x = 1\n", encoding="utf-8")
     (source / "history" / "old" / "summary.json").write_text("{}\n", encoding="utf-8")
+    (source / "jobs" / "README.md").write_text("jobs\n", encoding="utf-8")
+    (source / "logs" / "frontier_val.json").write_text("{}\n", encoding="utf-8")
+    (source / "references" / "terminus_kira.md").write_text("ref\n", encoding="utf-8")
 
     destination = tmp_path / "destination"
     _copy_workspace(source, destination)
 
     assert (destination / "candidate" / "harness.py").exists()
+    assert not (destination / "agents").exists()
     assert not (destination / "history").exists()
+    assert not (destination / "jobs").exists()
+    assert not (destination / "logs").exists()
+    assert not (destination / "references").exists()
+
+
+def test_agent_alias_syncs_back_to_counted_candidate(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    candidate = workspace / "candidate" / "harness.py"
+    agent = workspace / "agents" / "baseline_kira.py"
+    candidate.parent.mkdir(parents=True)
+    agent.parent.mkdir(parents=True)
+    candidate.write_text("x = 1\n", encoding="utf-8")
+
+    _sync_agent_alias_from_candidate(workspace)
+    original_candidate = candidate.read_text(encoding="utf-8")
+    original_agent = agent.read_text(encoding="utf-8")
+    agent.write_text("x = 2\n", encoding="utf-8")
+
+    _sync_candidate_from_agent_alias(workspace, original_candidate, original_agent)
+
+    assert candidate.read_text(encoding="utf-8") == "x = 2\n"
 
 
 def _complete_candidate(iter_dir: Path) -> None:

@@ -4,17 +4,37 @@ import argparse
 import shutil
 from pathlib import Path
 
-WORKSPACE_AGENTS = """# Candidate Workspace
+ROOT = Path(__file__).resolve().parents[1]
+REFERENCES = ROOT / "references"
+OFFICIAL_SKILL = REFERENCES / "meta_harness_terminal_bench_2_skill.md"
 
-Edit only candidate/harness.py and proposal.md.
-You may inspect history/ for prior candidates from this budget, including source,
-proposals, validation, scores, and terminal traces.
-Do not inspect parent directories or experience/ directly; use the history/ snapshot.
-Do not read final_test/, results/, tests/, benchmark solutions, or hidden files.
+LOCAL_ADAPTATION = """
 
-proposal.md should describe current workspace files inspected, observed failure modes,
-hypothesis, changes made, expected benefit, and risks.
+## LOCAL ADAPTATION
+
+These notes override the reference instructions above wherever they conflict with
+this repository:
+
+- Edit `agents/baseline_kira.py` and `proposal.md` only. The outer loop copies
+  `agents/baseline_kira.py` to `candidate/harness.py` before validation.
+- The final `candidate/harness.py` must expose `create_agent()` returning a
+  `plumbing.base_agent.BaseHarness`; it does not subclass Terminus2.
+- The task prompt gives the exact Black-formatted physical line budget, and the
+  final `candidate/harness.py` must satisfy it.
+- Use `logs/frontier_val.json`, `logs/evolution_summary.jsonl`,
+  `logs/trace_index.json`, `logs/failures.md`, `logs/jobs/`, and `history/` as
+  the local run-history filesystem.
+- You may inspect `references/terminus_kira.md` for Terminus-KIRA design
+  patterns, but do not import from references or prior runs at runtime.
+- Do not inspect parent directories; use the workspace-local snapshots.
+- If Agent subagents are unavailable, perform the Analyze and Implement steps
+  yourself in the main session.
+- Write `proposal.md` instead of `pending_eval.json`; include inspected files,
+  failure modes, hypothesis, changes, expected benefit, risks, and exact trace
+  paths used as evidence.
 """
+
+WORKSPACE_AGENTS = OFFICIAL_SKILL.read_text(encoding="utf-8") + LOCAL_ADAPTATION
 
 
 def make_workspace(
@@ -24,8 +44,11 @@ def make_workspace(
 ) -> Path:
     candidate_dir = destination / "candidate"
     candidate_dir.mkdir(parents=True, exist_ok=True)
+    agents_dir = destination / "agents"
+    agents_dir.mkdir(parents=True, exist_ok=True)
     source_file = source / "harness.py" if source.is_dir() else source
     shutil.copy2(source_file, candidate_dir / "harness.py")
+    shutil.copy2(source_file, agents_dir / "baseline_kira.py")
     proposal = destination / "proposal.md"
     if not proposal.exists():
         proposal.write_text("# Proposal\n", encoding="utf-8")
@@ -37,7 +60,16 @@ def make_workspace(
             history / path.name,
             ignore=shutil.ignore_patterns("__pycache__", "history"),
         )
+    if REFERENCES.exists():
+        shutil.copytree(
+            REFERENCES,
+            destination / "references",
+            ignore=shutil.ignore_patterns("__pycache__"),
+        )
     (destination / "AGENTS.md").write_text(WORKSPACE_AGENTS, encoding="utf-8")
+    skill_dir = destination / ".claude" / "skills" / "meta-harness-terminal-bench-2"
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    (skill_dir / "SKILL.md").write_text(WORKSPACE_AGENTS, encoding="utf-8")
     return destination
 
 

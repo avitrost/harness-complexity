@@ -45,6 +45,25 @@ returns, the candidate is copied into
 evaluation, and record keeping; the `history/` snapshot is stripped before validation
 so candidate runtime code cannot read prior traces.
 
+The proposer workspace treats `history/` as a queryable filesystem, not a prompt
+summary. It also exposes official-style `logs/` and `jobs/` aliases so the proposer
+sees the same shape as the Meta-Harness TerminalBench reference. In addition to the
+copied raw candidate directories, the optimizer writes:
+`history/index.json` for candidate-level scores, `history/frontier.json` for the
+best prior candidate overall and by task, `history/evolution_summary.jsonl` for an
+append-only compact run history, `history/trace_index.json` for machine-readable
+paths to raw trial logs, and `history/failures.md` as a short table of contents for
+failed/crashed traces worth inspecting first. The raw `trial.log`,
+`harness-turn-*.json`, `model-call-*.json`, `result.json`, and `exception.txt` files
+remain the source of truth.
+
+Proposer workspaces edit `agents/baseline_kira.py`, matching the official reference
+parent name. Before validation, the optimizer copies that file back to
+`candidate/harness.py`, which remains the counted and evaluated artifact. Workspaces
+also include `references/terminus_kira.md` as a read-only design reference for
+Terminus-KIRA patterns. These alias/reference directories are excluded from
+copied-back candidate workspaces and cannot be imported at runtime.
+
 ## Plumbing Boundary
 
 Uncounted plumbing must stay mechanical. It may load `OPENAI_API_KEY`, call the fixed

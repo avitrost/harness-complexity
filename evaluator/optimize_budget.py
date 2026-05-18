@@ -13,10 +13,15 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from evaluator.history_artifacts import write_history_artifacts
 from evaluator.run_val import BACKENDS
-from evaluator.splits import VAL_CONCURRENCY
+from evaluator.splits import VAL_CONCURRENCY, VAL_TRIALS, get_val_tasks
 from evaluator.validate_candidate import validate_candidate
-from plumbing.openai_client import check_terminal_model_available, using_codex_auth
+from plumbing.openai_client import (
+    check_terminal_model_available,
+    terminal_model,
+    using_codex_auth,
+)
 from scripts.count_loc import count_loc
 from scripts.make_workspace import make_workspace
 
@@ -91,7 +96,8 @@ def optimize_budget(
                 codex_workspace = Path(temp_dir) / "workspace"
                 make_workspace(codex_workspace, Path("candidate"), history_dirs)
                 _pad_seed_to_bucket(codex_workspace / "candidate" / "harness.py", budget)
-                _write_history_index(codex_workspace / "history", history_dirs)
+                _sync_agent_alias_from_candidate(codex_workspace)
+                write_history_artifacts(codex_workspace / "history", history_dirs)
                 command = build_codex_command(
                     budget,
                     codex_model,
@@ -104,8 +110,15 @@ def optimize_budget(
                 )
                 _write_json(iter_dir / "codex_command.json", command)
                 _write_meta(iter_dir, budget, iteration, candidate_index, "proposal")
+                original_candidate = _read_text(codex_workspace / "candidate" / "harness.py")
+                original_agent = _read_text(codex_workspace / "agents" / "baseline_kira.py")
                 if not dry_run:
                     _run_codex(command, codex_workspace, iter_dir)
+                _sync_candidate_from_agent_alias(
+                    codex_workspace,
+                    original_candidate,
+                    original_agent,
+                )
                 _copy_workspace(codex_workspace, workspace)
                 _strip_workspace_history(workspace)
                 validation = validate_candidate(
@@ -147,27 +160,29 @@ def build_codex_command(
     candidate_index: int | None = None,
     candidates_per_iteration: int = DEFAULT_K,
 ) -> list[str]:
-    slot = (
-        f" This is iteration {iteration}, candidate {candidate_index} of "
-        f"{candidates_per_iteration}."
-        if iteration is not None and candidate_index is not None
-        else ""
-    )
     min_lines = _budget_min_lines(budget)
     line_rule = (
         f"Keep candidate/harness.py between {min_lines} and {budget}"
         if min_lines > 1
         else f"Keep candidate/harness.py at most {budget}"
     )
+    iteration_label = str(iteration) if iteration is not None else "the next"
     prompt = (
-        "You are in an isolated Meta-Harness workspace."
-        f"{slot} Read history/ first: it contains prior candidate source, proposals, "
-        "validation, scores, and terminal traces for this budget. Edit only "
-        "candidate/harness.py and proposal.md. Do not inspect parent directories, "
-        "absolute repository paths, experience/ directly, final_test/, or results/. "
-        f"{line_rule} Black-formatted physical lines. "
-        "Improve general TerminalBench behavior without task-specific hacks. Propose "
-        "one new harness; you may base it on any prior harness in history/."
+        f"Run iteration {iteration_label} of the scaffold evolution loop (KIRA track)."
+        f" Model: {terminal_model()}. Start from agents/baseline_kira.py "
+        "as the parent.\n\n"
+        f"## Eval split: {len(get_val_tasks())} selected TB2 optimization tasks x "
+        f"{VAL_TRIALS} trials\n\n"
+        "This reference example uses the selected TB2 optimization tasks. Focus on "
+        "scaffold changes that help the agent solve complex, long-horizon tasks.\n\n"
+        "## Line budget\n"
+        f"{line_rule} after Black formatting.\n\n"
+        "## Run directories\n"
+        "All logs and results for this run are under `logs/`.\n"
+        "- `logs/evolution_summary.jsonl` — past results\n"
+        "- `logs/frontier_val.json` — frontier\n"
+        "- `logs/reports/` — post-eval reports\n"
+        "- Write proposal.md to: `proposal.md`"
     )
     if repair:
         prompt = f"Repair validation failures. {prompt}"
@@ -329,12 +344,49 @@ def _copy_workspace(source: Path, destination: Path) -> None:
     shutil.copytree(
         source,
         destination,
-        ignore=shutil.ignore_patterns("__pycache__", "history"),
+        ignore=shutil.ignore_patterns(
+            "__pycache__",
+            ".claude",
+            "agents",
+            "history",
+            "jobs",
+            "logs",
+            "references",
+        ),
     )
 
 
 def _strip_workspace_history(workspace: Path) -> None:
-    shutil.rmtree(workspace / "history", ignore_errors=True)
+    for name in ("agents", "history", "jobs", "logs", "references"):
+        shutil.rmtree(workspace / name, ignore_errors=True)
+
+
+def _sync_agent_alias_from_candidate(workspace: Path) -> None:
+    candidate = workspace / "candidate" / "harness.py"
+    agent = workspace / "agents" / "baseline_kira.py"
+    if candidate.exists() and agent.parent.exists():
+        shutil.copy2(candidate, agent)
+
+
+def _sync_candidate_from_agent_alias(
+    workspace: Path,
+    original_candidate: str,
+    original_agent: str,
+) -> None:
+    candidate = workspace / "candidate" / "harness.py"
+    agent = workspace / "agents" / "baseline_kira.py"
+    if not agent.exists() or not candidate.exists():
+        return
+    agent_text = _read_text(agent)
+    candidate_text = _read_text(candidate)
+    if agent_text != original_agent:
+        candidate.write_text(agent_text, encoding="utf-8")
+    elif candidate_text != original_candidate:
+        agent.write_text(candidate_text, encoding="utf-8")
+
+
+def _read_text(path: Path) -> str:
+    return path.read_text(encoding="utf-8") if path.exists() else ""
 
 
 def _history_dirs(budget_dir: Path, before_iteration: int | None = None) -> list[Path]:
@@ -360,34 +412,6 @@ def _candidate_iteration(name: str) -> int | None:
         return 0
     match = re.fullmatch(r"iter_(\d{3})_cand_\d{2}", name)
     return int(match.group(1)) if match else None
-
-
-def _write_history_index(history_dir: Path, history_dirs: list[Path]) -> None:
-    rows = []
-    for path in history_dirs:
-        summary = _read_json(path / "summary.json")
-        validation = _read_json(path / "validation.json")
-        count = _extract_count(validation)
-        rows.append(
-            {
-                "dir": path.name,
-                "split_mean": summary.get("split_mean"),
-                "estimated_full_score": summary.get("estimated_full_score"),
-                "num_trials": summary.get("num_trials"),
-                "num_crashes": summary.get("num_crashes"),
-                "physical_loc": count.get("physical_loc"),
-                "valid": validation.get("ok", False),
-            }
-        )
-    _write_json(history_dir / "index.json", rows, sort_keys=True)
-
-
-def _extract_count(validation: dict[str, Any]) -> dict[str, Any]:
-    for check in validation.get("checks", []):
-        data = check.get("json")
-        if isinstance(data, dict) and "physical_loc" in data:
-            return data
-    return {}
 
 
 def _write_meta(
