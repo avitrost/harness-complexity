@@ -141,7 +141,7 @@ Run one real budget:
 python -m evaluator.optimize_budget --budget 128 --cycles 10 --k 2 --codex-model gpt-5.5 --codex-reasoning-effort medium
 ```
 
-Resume an existing budget run and override Harbor concurrency:
+Resume an existing budget run and set Harbor concurrency explicitly:
 
 ```bash
 python -m evaluator.optimize_budget \
@@ -149,14 +149,14 @@ python -m evaluator.optimize_budget \
   --run-id overnight_YYYYMMDD \
   --cycles 10 \
   --resume \
-  --concurrency 20 \
+  --concurrency 160 \
   --backend slurm-pyxis
 ```
 
 During optimization, `--concurrency` is the per-iteration validation target. With
-`k=2 --concurrency 20`, both candidates in an iteration validate at the same time
-with Harbor concurrency 10 each, then the next optimizer iteration starts after
-both finish.
+`k=2` and the default `--concurrency 160`, both candidates in an iteration validate
+at the same time with Harbor concurrency 80 each, then the next optimizer iteration
+starts after both finish.
 
 Run the overnight budget set under one run id:
 
