@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 
 from evaluator.optimize_budget import (
+    _bwrap_codex_command,
     _candidate_complete,
     _copy_workspace,
     _history_dirs,
@@ -25,14 +26,23 @@ def test_build_codex_command_uses_resolved_exec_binary(tmp_path: Path) -> None:
         codex_reasoning_effort="medium",
         repair=False,
         codex_bin=str(codex),
+        workspace=tmp_path,
     )
     assert command[:4] == [str(codex), "exec", "--model", "gpt-5.5"]
     assert command[4:6] == ["-c", 'model_reasoning_effort="medium"']
-    assert command[6:8] == ["--sandbox", "danger-full-access"]
+    assert "sandbox_workspace_write.exclude_tmpdir_env_var=true" in command
+    assert "sandbox_workspace_write.exclude_slash_tmp=true" in command
+    assert "sandbox_workspace_write.writable_roots=[]" in command
+    assert command[command.index("--sandbox") + 1] == "workspace-write"
+    assert command[command.index("--cd") + 1] == str(tmp_path)
+    assert "danger-full-access" not in command
+    assert "--ignore-user-config" in command
     assert "--ephemeral" in command
     assert "--skip-git-repo-check" in command
     assert "scaffold evolution loop (KIRA track)" in command[-1]
     assert "Start from agents/baseline_kira.py" in command[-1]
+    assert "Prefer concrete KIRA patterns when they fit" in command[-1]
+    assert "consider whether a useful KIRA pattern can" in command[-1]
     assert "logs/frontier_val.json" in command[-1]
     assert "Keep candidate/harness.py at most 128" in command[-1]
 
@@ -128,6 +138,45 @@ def test_copy_workspace_excludes_history(tmp_path: Path) -> None:
     assert not (destination / "references").exists()
 
 
+def test_bwrap_codex_command_mounts_only_workspace_and_minimal_auth(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    workspace = tmp_path / "workspace"
+    codex_home = tmp_path / "home" / ".codex"
+    workspace.mkdir()
+    codex_home.mkdir(parents=True)
+    (codex_home / "auth.json").write_text("{}\n", encoding="utf-8")
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    monkeypatch.setattr("evaluator.optimize_budget.shutil.which", lambda name: "/usr/bin/bwrap")
+
+    command = _bwrap_codex_command(["/usr/bin/codex", "exec", "prompt"], workspace)
+
+    assert command[:6] == [
+        "/usr/bin/bwrap",
+        "--die-with-parent",
+        "--new-session",
+        "--unshare-pid",
+        "--unshare-ipc",
+        "--clearenv",
+    ]
+    triples = list(zip(command, command[1:], command[2:]))
+    assert ("--bind", str(workspace.resolve()), str(workspace.resolve())) in triples
+    assert str(codex_home / "auth.json") in command
+    assert "--chdir" in command
+    assert command[-3:] == ["/usr/bin/codex", "exec", "prompt"]
+
+
+def test_copy_workspace_rejects_symlinked_candidate(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    outside = tmp_path / "outside.py"
+    outside.write_text("x = 2\n", encoding="utf-8")
+    (source / "candidate").mkdir(parents=True)
+    (source / "candidate" / "harness.py").symlink_to(outside)
+
+    with pytest.raises(RuntimeError, match="unsafe workspace path"):
+        _copy_workspace(source, tmp_path / "destination")
+
+
 def test_agent_alias_syncs_back_to_counted_candidate(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     candidate = workspace / "candidate" / "harness.py"
@@ -144,6 +193,21 @@ def test_agent_alias_syncs_back_to_counted_candidate(tmp_path: Path) -> None:
     _sync_candidate_from_agent_alias(workspace, original_candidate, original_agent)
 
     assert candidate.read_text(encoding="utf-8") == "x = 2\n"
+
+
+def test_agent_alias_sync_rejects_symlink_escape(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    outside = tmp_path / "outside.py"
+    candidate = workspace / "candidate" / "harness.py"
+    agent = workspace / "agents" / "baseline_kira.py"
+    candidate.parent.mkdir(parents=True)
+    agent.parent.mkdir(parents=True)
+    outside.write_text("x = 3\n", encoding="utf-8")
+    candidate.write_text("x = 1\n", encoding="utf-8")
+    agent.symlink_to(outside)
+
+    with pytest.raises(RuntimeError, match="unsafe workspace path"):
+        _sync_candidate_from_agent_alias(workspace, "x = 1\n", "x = 1\n")
 
 
 def _complete_candidate(iter_dir: Path) -> None:

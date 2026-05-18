@@ -104,14 +104,15 @@ def optimize_budget(
                     codex_reasoning_effort,
                     repair=False,
                     codex_bin=codex_bin,
+                    workspace=codex_workspace,
                     iteration=iteration,
                     candidate_index=candidate_index,
                     candidates_per_iteration=candidates_per_iteration,
                 )
                 _write_json(iter_dir / "codex_command.json", command)
                 _write_meta(iter_dir, budget, iteration, candidate_index, "proposal")
-                original_candidate = _read_text(codex_workspace / "candidate" / "harness.py")
-                original_agent = _read_text(codex_workspace / "agents" / "baseline_kira.py")
+                original_candidate = _read_workspace_text(codex_workspace, "candidate/harness.py")
+                original_agent = _read_workspace_text(codex_workspace, "agents/baseline_kira.py")
                 if not dry_run:
                     _run_codex(command, codex_workspace, iter_dir)
                 _sync_candidate_from_agent_alias(
@@ -156,6 +157,7 @@ def build_codex_command(
     codex_reasoning_effort: str,
     repair: bool,
     codex_bin: str | None = None,
+    workspace: Path | None = None,
     iteration: int | None = None,
     candidate_index: int | None = None,
     candidates_per_iteration: int = DEFAULT_K,
@@ -170,13 +172,17 @@ def build_codex_command(
     prompt = (
         f"Run iteration {iteration_label} of the scaffold evolution loop (KIRA track)."
         f" Model: {terminal_model()}. Start from agents/baseline_kira.py "
-        "as the parent.\n\n"
+        "as the parent. Before editing, inspect references/terminus_kira.py as "
+        "the strong Terminus-KIRA baseline reference. Prefer concrete KIRA "
+        "patterns when they fit, but do not force them.\n\n"
         f"## Eval split: {len(get_val_tasks())} selected TB2 optimization tasks x "
         f"{VAL_TRIALS} trials\n\n"
         "This reference example uses the selected TB2 optimization tasks. Focus on "
         "scaffold changes that help the agent solve complex, long-horizon tasks.\n\n"
         "## Line budget\n"
         f"{line_rule} after Black formatting.\n\n"
+        "For budgets of 512 or more, consider whether a useful KIRA pattern can "
+        "be compressed into the counted harness.\n\n"
         "## Run directories\n"
         "All logs and results for this run are under `logs/`.\n"
         "- `logs/evolution_summary.jsonl` — past results\n"
@@ -186,19 +192,33 @@ def build_codex_command(
     )
     if repair:
         prompt = f"Repair validation failures. {prompt}"
-    return [
+    command = [
         resolve_codex_executable(codex_bin),
         "exec",
         "--model",
         codex_model,
         "-c",
         f'model_reasoning_effort="{codex_reasoning_effort}"',
+        "-c",
+        "sandbox_workspace_write.exclude_tmpdir_env_var=true",
+        "-c",
+        "sandbox_workspace_write.exclude_slash_tmp=true",
+        "-c",
+        "sandbox_workspace_write.writable_roots=[]",
         "--sandbox",
-        "danger-full-access",
-        "--ephemeral",
-        "--skip-git-repo-check",
-        prompt,
+        "workspace-write",
     ]
+    if workspace is not None:
+        command.extend(["--cd", str(workspace)])
+    command.extend(
+        [
+            "--ignore-user-config",
+            "--ephemeral",
+            "--skip-git-repo-check",
+            prompt,
+        ]
+    )
+    return command
 
 
 def resolve_codex_executable(codex_bin: str | None = None) -> str:
@@ -331,41 +351,145 @@ def _clean_run_id(value: str) -> str:
 
 
 def _run_codex(command: list[str], workspace: Path, iter_dir: Path) -> None:
-    result = subprocess.run(command, cwd=workspace, check=False, capture_output=True, text=True)
+    wrapped = _bwrap_codex_command(command, workspace)
+    _write_json(iter_dir / "codex_sandbox_command.json", wrapped)
+    result = subprocess.run(
+        wrapped,
+        cwd=workspace,
+        check=False,
+        capture_output=True,
+        text=True,
+        stdin=subprocess.DEVNULL,
+    )
     (iter_dir / "codex_stdout.log").write_text(result.stdout, encoding="utf-8")
     (iter_dir / "codex_stderr.log").write_text(result.stderr, encoding="utf-8")
     if result.returncode != 0:
         raise RuntimeError(f"Codex CLI exited with status {result.returncode}")
 
 
+def _bwrap_codex_command(command: list[str], workspace: Path) -> list[str]:
+    bwrap = shutil.which("bwrap")
+    if not bwrap:
+        raise RuntimeError("bubblewrap (bwrap) is required for isolated Codex proposer runs")
+    workspace = workspace.resolve(strict=True)
+    tmp_dir = workspace / ".tmp"
+    tmp_dir.mkdir(exist_ok=True)
+    auth = _codex_auth_file()
+    if not auth.exists():
+        raise RuntimeError(f"Codex auth file not found: {auth}")
+    codex_home = auth.parent.resolve(strict=True)
+    args = [
+        bwrap,
+        "--die-with-parent",
+        "--new-session",
+        "--unshare-pid",
+        "--unshare-ipc",
+        "--clearenv",
+        "--dev",
+        "/dev",
+        "--proc",
+        "/proc",
+    ]
+    seen_dirs: set[str] = set()
+    for path in (workspace, codex_home, Path.home(), Path(sys.prefix).resolve()):
+        _add_bwrap_parent_dirs(args, path, seen_dirs)
+    for path in ("/usr", "/bin", "/lib", "/lib64", "/etc"):
+        if Path(path).exists():
+            args.extend(["--ro-bind", path, path])
+    resolve_dir = Path("/run/systemd/resolve")
+    if resolve_dir.exists():
+        _add_bwrap_parent_dirs(args, resolve_dir, seen_dirs)
+        args.extend(["--ro-bind", str(resolve_dir), str(resolve_dir)])
+    prefix = Path(sys.prefix).resolve()
+    if prefix.exists() and not _covered_by_system_bind(prefix):
+        args.extend(["--ro-bind", str(prefix), str(prefix)])
+    executable = Path(command[0]).resolve()
+    if executable.exists() and not _covered_by_system_bind(executable):
+        _add_bwrap_parent_dirs(args, executable, seen_dirs)
+        args.extend(["--ro-bind", str(executable.parent), str(executable.parent)])
+    args.extend(
+        [
+            "--dir",
+            str(codex_home),
+            "--bind",
+            str(auth),
+            str(codex_home / "auth.json"),
+            "--bind",
+            str(workspace),
+            str(workspace),
+            "--setenv",
+            "HOME",
+            str(Path.home()),
+            "--setenv",
+            "CODEX_HOME",
+            str(codex_home),
+            "--setenv",
+            "PATH",
+            _sandbox_path(),
+            "--setenv",
+            "TMPDIR",
+            str(tmp_dir),
+            "--chdir",
+            str(workspace),
+        ]
+    )
+    return args + command
+
+
+def _codex_auth_file() -> Path:
+    return Path(os.getenv("CODEX_HOME", Path.home() / ".codex")).expanduser() / "auth.json"
+
+
+def _add_bwrap_parent_dirs(args: list[str], path: Path, seen: set[str]) -> None:
+    current = Path("/")
+    for part in path.resolve(strict=False).parent.parts[1:]:
+        current /= part
+        key = str(current)
+        if key not in seen:
+            args.extend(["--dir", key])
+            seen.add(key)
+
+
+def _covered_by_system_bind(path: Path) -> bool:
+    return any(path.is_relative_to(Path(root)) for root in ("/usr", "/bin", "/lib", "/lib64"))
+
+
+def _sandbox_path() -> str:
+    entries = [
+        str(Path(sys.prefix).resolve() / "bin"),
+        "/usr/local/bin",
+        "/usr/bin",
+        "/bin",
+    ]
+    return ":".join(dict.fromkeys(entries))
+
+
 def _copy_workspace(source: Path, destination: Path) -> None:
     if destination.exists():
         shutil.rmtree(destination)
-    shutil.copytree(
-        source,
+    destination.mkdir(parents=True)
+    _write_workspace_file(
         destination,
-        ignore=shutil.ignore_patterns(
-            "__pycache__",
-            ".claude",
-            "agents",
-            "history",
-            "jobs",
-            "logs",
-            "references",
-        ),
+        "candidate/harness.py",
+        _read_workspace_text(source, "candidate/harness.py"),
     )
+    for relative in ("proposal.md", "AGENTS.md"):
+        if _workspace_file_exists(source, relative):
+            _write_workspace_file(destination, relative, _read_workspace_text(source, relative))
 
 
 def _strip_workspace_history(workspace: Path) -> None:
     for name in ("agents", "history", "jobs", "logs", "references"):
-        shutil.rmtree(workspace / name, ignore_errors=True)
+        _remove_path(workspace / name)
 
 
 def _sync_agent_alias_from_candidate(workspace: Path) -> None:
-    candidate = workspace / "candidate" / "harness.py"
-    agent = workspace / "agents" / "baseline_kira.py"
-    if candidate.exists() and agent.parent.exists():
-        shutil.copy2(candidate, agent)
+    if _workspace_file_exists(workspace, "candidate/harness.py"):
+        _write_workspace_file(
+            workspace,
+            "agents/baseline_kira.py",
+            _read_workspace_text(workspace, "candidate/harness.py"),
+        )
 
 
 def _sync_candidate_from_agent_alias(
@@ -373,20 +497,110 @@ def _sync_candidate_from_agent_alias(
     original_candidate: str,
     original_agent: str,
 ) -> None:
-    candidate = workspace / "candidate" / "harness.py"
-    agent = workspace / "agents" / "baseline_kira.py"
-    if not agent.exists() or not candidate.exists():
+    if not _workspace_file_exists(workspace, "agents/baseline_kira.py"):
         return
-    agent_text = _read_text(agent)
-    candidate_text = _read_text(candidate)
+    agent_text = _read_workspace_text(workspace, "agents/baseline_kira.py")
+    candidate_text = (
+        _read_workspace_text(workspace, "candidate/harness.py")
+        if _workspace_file_exists(workspace, "candidate/harness.py")
+        else ""
+    )
     if agent_text != original_agent:
-        candidate.write_text(agent_text, encoding="utf-8")
+        _write_workspace_file(workspace, "candidate/harness.py", agent_text)
     elif candidate_text != original_candidate:
-        agent.write_text(candidate_text, encoding="utf-8")
+        _write_workspace_file(workspace, "agents/baseline_kira.py", candidate_text)
 
 
 def _read_text(path: Path) -> str:
     return path.read_text(encoding="utf-8") if path.exists() else ""
+
+
+def _read_workspace_text(workspace: Path, relative: str) -> str:
+    return _workspace_file(workspace, relative).read_text(encoding="utf-8")
+
+
+def _write_workspace_file(workspace: Path, relative: str, text: str) -> None:
+    path = _workspace_output_path(workspace, relative)
+    path.write_text(text, encoding="utf-8")
+
+
+def _workspace_file_exists(workspace: Path, relative: str) -> bool:
+    path = _workspace_relative_path(workspace, relative)
+    _assert_safe_existing_parents(workspace, path)
+    if path.is_symlink():
+        _raise_unsafe_workspace_path(path, "is a symlink")
+    if path.exists() and not path.is_file():
+        _raise_unsafe_workspace_path(path, "is not a regular file")
+    if path.exists():
+        _assert_under_workspace(workspace, path.resolve(strict=True))
+    return path.exists()
+
+
+def _workspace_file(workspace: Path, relative: str) -> Path:
+    path = _workspace_relative_path(workspace, relative)
+    _assert_safe_existing_parents(workspace, path)
+    if path.is_symlink():
+        _raise_unsafe_workspace_path(path, "is a symlink")
+    if not path.is_file():
+        _raise_unsafe_workspace_path(path, "is not a regular file")
+    _assert_under_workspace(workspace, path.resolve(strict=True))
+    return path
+
+
+def _workspace_output_path(workspace: Path, relative: str) -> Path:
+    path = _workspace_relative_path(workspace, relative)
+    current = workspace
+    for part in Path(relative).parts[:-1]:
+        current /= part
+        if current.is_symlink():
+            _raise_unsafe_workspace_path(current, "has a symlink parent")
+        if current.exists() and not current.is_dir():
+            _raise_unsafe_workspace_path(current, "is not a regular directory")
+        if not current.exists():
+            current.mkdir()
+    if path.is_symlink() or (path.exists() and not path.is_file()):
+        _raise_unsafe_workspace_path(path, "is not a regular file")
+    _assert_under_workspace(workspace, path.resolve(strict=False))
+    return path
+
+
+def _workspace_relative_path(workspace: Path, relative: str) -> Path:
+    path = Path(relative)
+    if path.is_absolute() or ".." in path.parts:
+        _raise_unsafe_workspace_path(path, "is not workspace-relative")
+    target = workspace / path
+    _assert_under_workspace(workspace, target.resolve(strict=False))
+    return target
+
+
+def _assert_safe_existing_parents(workspace: Path, path: Path) -> None:
+    current = workspace
+    relative = path.relative_to(workspace)
+    for part in relative.parts[:-1]:
+        current /= part
+        if current.is_symlink():
+            _raise_unsafe_workspace_path(current, "has a symlink parent")
+        if current.exists() and not current.is_dir():
+            _raise_unsafe_workspace_path(current, "is not a regular directory")
+        if not current.exists():
+            return
+
+
+def _assert_under_workspace(workspace: Path, path: Path) -> None:
+    root = workspace.resolve(strict=True)
+    if not path.is_relative_to(root):
+        _raise_unsafe_workspace_path(path, "escapes workspace")
+
+
+def _raise_unsafe_workspace_path(path: Path, reason: str) -> None:
+    raise RuntimeError(f"unsafe workspace path: {path} ({reason})")
+
+
+def _remove_path(path: Path) -> None:
+    if path.is_symlink() or path.is_file():
+        path.unlink()
+    elif path.is_dir():
+        shutil.rmtree(path)
 
 
 def _history_dirs(budget_dir: Path, before_iteration: int | None = None) -> list[Path]:

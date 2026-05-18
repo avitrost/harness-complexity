@@ -207,12 +207,16 @@ uses a private Enroot config without the host `/etc/localtime` bind mount so
 are for Harbor's control server only; the TerminalBench task image, working
 directory, task files, verifier, and result flow stay under Harbor.
 
-On Windows, Codex `workspace-write` sandboxing can fail with
-`CreateProcessWithLogonW failed: 1056`. The optimizer therefore runs Codex in a
-temporary isolated workspace with `--sandbox danger-full-access`, then copies back only
-the candidate workspace artifacts. The only prior-run material exposed to Codex is the
-run-local `history/` snapshot created by the optimizer; test results, stale runs, and
-other budget histories are not included.
+The optimizer runs Codex inside a Bubblewrap filesystem namespace, rooted at a
+temporary workspace, and also passes Codex
+`--sandbox workspace-write --cd <workspace>`. The namespace mounts system tooling,
+DNS, the temp workspace, and only the Codex auth file needed for login; repo parent
+directories and prior experiment runs are not mounted. The optimizer then copies
+back only the explicit outputs: `candidate/harness.py`, `proposal.md`, and the
+workspace instructions for recordkeeping. Symlinked output paths are rejected before
+reading or copying. The only prior-run material exposed to Codex is the run-local
+`history/` snapshot created by the optimizer; test results, stale runs, and other
+budget histories are not included.
 
 Dry-run validation Harbor command construction:
 

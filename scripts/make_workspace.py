@@ -25,15 +25,17 @@ this repository:
 - Use `logs/frontier_val.json`, `logs/evolution_summary.jsonl`,
   `logs/trace_index.json`, `logs/failures.md`, `logs/jobs/`, and `history/` as
   the local run-history filesystem.
-- You may inspect `references/terminus_kira.py`, an exact Terminus-KIRA source
-  reference, but do not import from references or prior runs at runtime.
+- Before proposing changes, inspect `references/terminus_kira.py` as a strong
+  Terminus-KIRA baseline reference. Prefer concrete patterns from it when they
+  fit the local harness, but do not force them. Do not import from references or
+  prior runs at runtime.
 - Stay inside this workspace: do not read or write `..`, absolute paths outside
   it, prior experiment dirs, or symlink targets outside it.
 - If Agent subagents are unavailable, perform the Analyze and Implement steps
   yourself in the main session.
 - Write `proposal.md` instead of `pending_eval.json`; include inspected files,
-  failure modes, hypothesis, changes, expected benefit, risks, and exact trace
-  paths used as evidence.
+  reference patterns used, failure modes, hypothesis, changes, expected benefit,
+  risks, and exact trace paths used as evidence.
 """
 
 WORKSPACE_AGENTS = OFFICIAL_SKILL.read_text(encoding="utf-8") + LOCAL_ADAPTATION

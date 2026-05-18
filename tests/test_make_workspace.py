@@ -12,7 +12,8 @@ def test_make_workspace_writes_isolation_instructions(tmp_path: Path) -> None:
     assert "history/" in agents
     assert "logs/failures.md" in agents
     assert "logs/trace_index.json" in agents
-    assert "Terminus-KIRA" in agents
+    assert "Prefer concrete patterns from it when they" in agents
+    assert "reference patterns used" in agents
     assert (workspace / "history").is_dir()
     assert (workspace / "agents" / "baseline_kira.py").is_file()
     assert (workspace / "references" / "terminus_kira.py").is_file()
