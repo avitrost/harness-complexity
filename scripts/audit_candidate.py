@@ -17,7 +17,6 @@ from evaluator.splits import TEST_TASKS, VAL_TASKS  # noqa: E402
 ALLOWED_LOCAL_IMPORTS = {
     "plumbing.base_agent",
     "plumbing.openai_client",
-    "plumbing.text",
     "plumbing.types",
 }
 LOCAL_ROOTS = {
