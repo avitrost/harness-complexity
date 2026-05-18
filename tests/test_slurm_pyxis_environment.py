@@ -5,9 +5,11 @@ from harbor.models.trial.paths import TrialPaths
 
 import plumbing.slurm_pyxis_environment as slurm_pyxis
 from plumbing.slurm_pyxis_environment import (
+    DEFAULT_STARTUP_PARALLELISM,
     SLURM_BOOTSTRAP,
     SlurmPyxisEnvironment,
     STDLIB_EXEC_SERVER,
+    _is_transient_startup_error,
     _prepare_enroot_sysconf,
 )
 
@@ -71,8 +73,17 @@ def test_srun_command_uses_unique_job_name(tmp_path: Path) -> None:
 
     job_name_index = command.index("--job-name") + 1
     assert command[job_name_index] == env._slurm_job_name
+    assert command[command.index("--partition") + 1] == "m7i-cpu"
     assert env._slurm_job_name.startswith("hb-")
     assert "--port 0" in command[-1]
+    assert env._startup_parallelism == DEFAULT_STARTUP_PARALLELISM
+
+
+def test_transient_startup_error_detects_cloud_node_boot_failures() -> None:
+    assert _is_transient_startup_error("srun: error: Node failure on m7i-cpu2-dy-0")
+    assert _is_transient_startup_error("Nodes m7i-cpu2-dy-0 are still not ready")
+    assert _is_transient_startup_error("Something is wrong with the boot of the nodes.")
+    assert not _is_transient_startup_error("FATAL: cannot install /usr/bin/python3")
 
 
 def test_cancel_slurm_job_is_scoped_to_current_user(tmp_path: Path, monkeypatch) -> None:
