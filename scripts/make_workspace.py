@@ -15,8 +15,9 @@ LOCAL_ADAPTATION = """
 These notes override the reference instructions above wherever they conflict with
 this repository:
 
-- Edit `agents/baseline_kira.py` and `proposal.md` only. The outer loop copies
-  `agents/baseline_kira.py` to `candidate/harness.py` before validation.
+- Edit `agents/baseline_kira.py` and `proposal.md` only.
+  `agents/baseline_kira.py` starts as this repo's <128-line baseline harness;
+  the outer loop copies it to `candidate/harness.py` before validation.
 - The final `candidate/harness.py` must expose `create_agent()` returning a
   `plumbing.base_agent.BaseHarness`; it does not subclass Terminus2.
 - The task prompt gives the exact Black-formatted physical line budget, and the
@@ -24,9 +25,10 @@ this repository:
 - Use `logs/frontier_val.json`, `logs/evolution_summary.jsonl`,
   `logs/trace_index.json`, `logs/failures.md`, `logs/jobs/`, and `history/` as
   the local run-history filesystem.
-- You may inspect `references/terminus_kira.md` for Terminus-KIRA design
-  patterns, but do not import from references or prior runs at runtime.
-- Do not inspect parent directories; use the workspace-local snapshots.
+- You may inspect `references/terminus_kira.py`, an exact Terminus-KIRA source
+  reference, but do not import from references or prior runs at runtime.
+- Stay inside this workspace: do not read or write `..`, absolute paths outside
+  it, prior experiment dirs, or symlink targets outside it.
 - If Agent subagents are unavailable, perform the Analyze and Implement steps
   yourself in the main session.
 - Write `proposal.md` instead of `pending_eval.json`; include inspected files,

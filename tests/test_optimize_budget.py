@@ -115,7 +115,7 @@ def test_copy_workspace_excludes_history(tmp_path: Path) -> None:
     (source / "history" / "old" / "summary.json").write_text("{}\n", encoding="utf-8")
     (source / "jobs" / "README.md").write_text("jobs\n", encoding="utf-8")
     (source / "logs" / "frontier_val.json").write_text("{}\n", encoding="utf-8")
-    (source / "references" / "terminus_kira.md").write_text("ref\n", encoding="utf-8")
+    (source / "references" / "terminus_kira.py").write_text("ref\n", encoding="utf-8")
 
     destination = tmp_path / "destination"
     _copy_workspace(source, destination)
