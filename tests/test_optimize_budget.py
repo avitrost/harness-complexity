@@ -42,7 +42,7 @@ def test_build_codex_command_uses_resolved_exec_binary(tmp_path: Path) -> None:
     assert "scaffold evolution loop (KIRA track)" in command[-1]
     assert "Start from agents/baseline_kira.py" in command[-1]
     assert "Prefer concrete KIRA patterns when they fit" in command[-1]
-    assert "consider whether a useful KIRA pattern can" in command[-1]
+    assert "compressed or adapted into the counted harness" in command[-1]
     assert "logs/frontier_val.json" in command[-1]
     assert "Keep candidate/harness.py at most 128" in command[-1]
 
