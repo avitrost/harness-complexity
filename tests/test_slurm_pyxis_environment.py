@@ -139,6 +139,30 @@ def test_exec_raises_like_harbor_on_command_timeout(tmp_path: Path, monkeypatch)
         asyncio.run(env.exec("sleep 10", timeout_sec=3))
 
 
+def test_http_requests_use_slurm_executor(tmp_path: Path, monkeypatch) -> None:
+    env = _make_env(tmp_path)
+
+    def fake_request(path, payload, timeout):
+        return {"path": path, "payload": payload, "timeout": timeout}
+
+    async def fail_to_thread(*args, **kwargs):
+        raise AssertionError("Slurm/Pyxis requests should not use asyncio.to_thread")
+
+    monkeypatch.setattr(env, "_request", fake_request)
+    monkeypatch.setattr(slurm_pyxis.asyncio, "to_thread", fail_to_thread)
+
+    assert asyncio.run(env._get("/health", timeout=5)) == {
+        "path": "/health",
+        "payload": None,
+        "timeout": 5,
+    }
+    assert asyncio.run(env._post("/shutdown", {}, timeout=5)) == {
+        "path": "/shutdown",
+        "payload": {},
+        "timeout": 5,
+    }
+
+
 def test_slurm_time_to_seconds() -> None:
     assert _slurm_time_to_seconds("02:00:00") == 7200
     assert _slurm_time_to_seconds("15:30") == 930

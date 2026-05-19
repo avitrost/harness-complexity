@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
+from functools import partial
 from http.client import HTTPException
 import json
 import os
@@ -31,11 +33,23 @@ DEFAULT_HEALTH_TIMEOUT_SEC = 20 * 60
 DEFAULT_STARTUP_RETRIES = 3
 DEFAULT_STARTUP_RETRY_DELAY_SEC = 60
 DEFAULT_EXEC_REQUEST_GRACE_SEC = 120
+DEFAULT_IO_WORKERS = 512
 _TRANSIENT_STARTUP_ERRORS = (
     "node failure",
     "still not ready",
     "something is wrong with the boot",
 )
+_IO_EXECUTOR = ThreadPoolExecutor(
+    max_workers=int(os.environ.get("HARBOR_SLURM_PYXIS_IO_WORKERS", DEFAULT_IO_WORKERS)),
+    thread_name_prefix="slurm-pyxis-io",
+)
+
+
+async def _run_blocking(func, *args):
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(_IO_EXECUTOR, partial(func, *args))
+
+
 SLURM_BOOTSTRAP = """#!/bin/bash
 export WORKDIR="${1:-/app}"; shift
 export HARBOR_STAGING="/staging/env_files"
@@ -281,7 +295,7 @@ class SlurmPyxisEnvironment(BaseEnvironment):
             raise SystemExit(f"Missing Slurm/Pyxis dependency: {', '.join(missing)}")
 
     async def start(self, force_build: bool) -> None:
-        image = await asyncio.to_thread(self._resolve_sqsh, force_build)
+        image = await _run_blocking(self._resolve_sqsh, force_build)
         self._staging_dir = self._prepare_staging()
         self._enroot_sysconf_dir = _prepare_enroot_sysconf(
             self._shared_dir / self.session_id / "enroot-sysconf"
@@ -360,7 +374,7 @@ class SlurmPyxisEnvironment(BaseEnvironment):
     async def _stop_srun(self) -> None:
         assert self._process
         pid = self._process.pid
-        await asyncio.to_thread(self._cancel_slurm_job)
+        await _run_blocking(self._cancel_slurm_job)
         for sig, timeout in ((signal.SIGTERM, 10), (signal.SIGKILL, 5)):
             if self._process.returncode is not None:
                 break
@@ -605,12 +619,12 @@ class SlurmPyxisEnvironment(BaseEnvironment):
         )
 
     async def _get(self, path: str, timeout: int) -> dict[str, object]:
-        return await asyncio.to_thread(self._request, path, None, timeout)
+        return await _run_blocking(self._request, path, None, timeout)
 
     async def _post(
         self, path: str, payload: dict[str, object], timeout: int = 30
     ) -> dict[str, object]:
-        return await asyncio.to_thread(self._request, path, payload, timeout)
+        return await _run_blocking(self._request, path, payload, timeout)
 
     def _request(
         self, path: str, payload: dict[str, object] | None, timeout: int
