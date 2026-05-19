@@ -8,7 +8,7 @@ FIRST_COMMAND = "pwd && ls -la"
 EDIT_MARKERS = ("cat >", "tee ", "sed -i", "perl -pi", "python - <<", "cat <<")
 SYSTEM = (
     "You are a terminal coding agent with one tool: run shell commands. "
-    'Return only JSON: {"action":"run","command":"..."} or {"action":"done"}. '
+    'Return only JSON: {"action":"run","command":"...","timeout_sec":N} or {"action":"done"}. '
     "Use the loop: inspect/list/read, edit narrowly, verify, then done. "
     "Prefer rg/find/sed/python for precise work. Avoid interactive commands, "
     "background servers, and unbounded output. Done requires evidence."
@@ -37,7 +37,8 @@ class CandidateHarness(BaseHarness):
         )
         done = action["action"] == "done"
         command = _clean_command(action.get("command", ""))
-        return HarnessTurn(done=done, command="" if done else command or FIRST_COMMAND)
+        timeout = _timeout(action.get("timeout_sec"))
+        return HarnessTurn("" if done else command or FIRST_COMMAND, done, timeout)
 
 
 def _history(history: list[CommandResult]) -> str:
@@ -68,23 +69,13 @@ def _state(history: list[CommandResult]) -> str:
     return "; ".join(hints)
 
 
-def _parse_action(text: str) -> dict[str, str]:
+def _parse_action(text: str) -> dict[str, object]:
     text = _strip_fence(text.strip())
     if text.upper().startswith("DONE"):
         return {"action": "done", "command": ""}
     value = _json_object(text)
     if value is not None:
         return _normalize(value)
-    for raw in text.splitlines():
-        line = raw.strip()
-        if not line.startswith("tool:") or not line.endswith(")"):
-            continue
-        name, _, rest = line[5:].strip().partition("(")
-        if name.strip().lower() in {"done", "finish"}:
-            return {"action": "done", "command": ""}
-        args = _json_object(rest[:-1])
-        if args is not None:
-            return _normalize({"action": name.strip(), "args": args})
     return {"action": "run", "command": text}
 
 
@@ -99,7 +90,7 @@ def _json_object(text: str) -> dict[str, object] | None:
     return value if isinstance(value, dict) else None
 
 
-def _normalize(value: dict[str, object]) -> dict[str, str]:
+def _normalize(value: dict[str, object]) -> dict[str, object]:
     action = str(value.get("action") or value.get("tool") or value.get("name") or "run").lower()
     args = value.get("args") or value.get("arguments") or {}
     if isinstance(args, str):
@@ -109,7 +100,14 @@ def _normalize(value: dict[str, object]) -> dict[str, str]:
     command = value.get("command") or value.get("cmd")
     if command is None and isinstance(args, dict):
         command = args.get("command") or args.get("cmd")
-    return {"action": "run", "command": str(command or "")}
+    timeout = value.get("timeout_sec")
+    if timeout is None and isinstance(args, dict):
+        timeout = args.get("timeout_sec")
+    return {"action": "run", "command": str(command or ""), "timeout_sec": timeout}
+
+
+def _timeout(value: object) -> int | None:
+    return value if type(value) is int and 1 <= value <= 600 else None
 
 
 def _clean_command(text: str) -> str:

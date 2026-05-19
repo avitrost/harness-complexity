@@ -1,5 +1,10 @@
+import asyncio
+import io
+import json
+import tarfile
 from pathlib import Path
 
+import pytest
 from harbor.models.task.config import EnvironmentConfig
 from harbor.models.trial.paths import TrialPaths
 
@@ -102,6 +107,38 @@ def test_default_exec_request_timeout_tracks_slurm_time(tmp_path: Path) -> None:
     assert env._exec_request_timeout_sec == 2 * 60 * 60 + 120
 
 
+def test_dockerfile_workdir_uses_final_workdir_with_relative_steps(tmp_path: Path) -> None:
+    env = _make_env(tmp_path)
+    (env.environment_dir / "Dockerfile").write_text(
+        "FROM ubuntu:latest\nWORKDIR /app\nWORKDIR project\n",
+        encoding="utf-8",
+    )
+
+    assert env._dockerfile_workdir() == "/app/project"
+
+
+def test_image_workdir_uses_cached_docker_config(tmp_path: Path) -> None:
+    env = _make_env(tmp_path)
+    env._docker_tar_cache_dir = tmp_path / "docker-cache"
+    env._docker_tar_cache_dir.mkdir()
+    tar_path = env._docker_tar_cache_dir / "ubuntu_latest.tar"
+    _write_image_tar(tar_path, "/image/workdir")
+
+    assert env._image_workdir() == "/image/workdir"
+
+
+def test_exec_raises_like_harbor_on_command_timeout(tmp_path: Path, monkeypatch) -> None:
+    env = _make_env(tmp_path)
+
+    async def fake_post(path, payload, timeout):
+        return {"timeout": True, "timeout_sec": payload["timeout_sec"]}
+
+    monkeypatch.setattr(env, "_post", fake_post)
+
+    with pytest.raises(RuntimeError, match="Command timed out after 3 seconds"):
+        asyncio.run(env.exec("sleep 10", timeout_sec=3))
+
+
 def test_slurm_time_to_seconds() -> None:
     assert _slurm_time_to_seconds("02:00:00") == 7200
     assert _slurm_time_to_seconds("15:30") == 930
@@ -131,3 +168,13 @@ def test_cancel_slurm_job_is_scoped_to_current_user(tmp_path: Path, monkeypatch)
 
     assert calls
     assert calls[0][0] == ["scancel", "--name", env._slurm_job_name, "--user", "trost"]
+
+
+def _write_image_tar(path: Path, workdir: str) -> None:
+    config = json.dumps({"config": {"WorkingDir": workdir}}).encode()
+    manifest = json.dumps([{"Config": "config.json", "RepoTags": ["ubuntu:latest"]}]).encode()
+    with tarfile.open(path, "w") as tar:
+        for name, payload in (("manifest.json", manifest), ("config.json", config)):
+            info = tarfile.TarInfo(name)
+            info.size = len(payload)
+            tar.addfile(info, io.BytesIO(payload))

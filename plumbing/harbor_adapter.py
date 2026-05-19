@@ -43,7 +43,7 @@ class HarborCommandPlan:
 
 
 class HarborHarnessAgent(HarborBaseAgent):
-    SUPPORTS_WINDOWS: bool = True
+    SUPPORTS_WINDOWS: bool = False
 
     def __init__(
         self,
@@ -86,13 +86,18 @@ class HarborHarnessAgent(HarborBaseAgent):
                 if turn.done or not command:
                     done = turn.done
                     break
-                result = await environment.exec(command=command, timeout_sec=turn.timeout_sec)
-                record = CommandResult(
-                    command=command,
-                    return_code=getattr(result, "return_code", None),
-                    stdout=_tail(getattr(result, "stdout", "") or ""),
-                    stderr=_tail(getattr(result, "stderr", "") or ""),
-                )
+                try:
+                    result = await environment.exec(command=command, timeout_sec=turn.timeout_sec)
+                    record = CommandResult(
+                        command=command,
+                        return_code=getattr(result, "return_code", None),
+                        stdout=_tail(getattr(result, "stdout", "") or ""),
+                        stderr=_tail(getattr(result, "stderr", "") or ""),
+                    )
+                except RuntimeError as exc:
+                    if turn.timeout_sec is None or "timed out" not in str(exc):
+                        raise
+                    record = CommandResult(command=command, return_code=124, stderr=str(exc))
                 history.append(record)
                 self._write_turn_log(turn_index, record)
         finally:

@@ -12,7 +12,7 @@ import subprocess
 import sys
 import tarfile
 import time
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 
@@ -180,7 +180,13 @@ def _exec(data):
         output = exc.stdout or ""
         if isinstance(output, bytes):
             output = output.decode("utf-8", "replace")
-        return {"stdout": output.strip(), "stderr": None, "return_code": 124}
+        return {
+            "stdout": output.strip(),
+            "stderr": None,
+            "return_code": 124,
+            "timeout": True,
+            "timeout_sec": data.get("timeout_sec"),
+        }
 
 
 def _exit_later():
@@ -280,7 +286,9 @@ class SlurmPyxisEnvironment(BaseEnvironment):
         self._enroot_sysconf_dir = _prepare_enroot_sysconf(
             self._shared_dir / self.session_id / "enroot-sysconf"
         )
-        self._workdir = self.task_env_config.workdir or self._dockerfile_workdir()
+        self._workdir = (
+            self.task_env_config.workdir or self._image_workdir() or self._dockerfile_workdir()
+        )
         await self._start_with_retries(image)
         await self.ensure_dirs(self._mount_targets(writable_only=True))
 
@@ -406,6 +414,9 @@ class SlurmPyxisEnvironment(BaseEnvironment):
             timeout_sec + 10 if timeout_sec is not None else self._exec_request_timeout_sec
         )
         data = await self._post("/exec", payload, timeout=request_timeout)
+        if data.get("timeout"):
+            seconds = data.get("timeout_sec", timeout_sec)
+            raise RuntimeError(f"Command timed out after {seconds} seconds")
         return ExecResult(
             stdout=data.get("stdout"),
             stderr=data.get("stderr"),
@@ -646,13 +657,37 @@ class SlurmPyxisEnvironment(BaseEnvironment):
                 return path
         raise FileNotFoundError(f"No cached Docker archive found for image {image!r}")
 
+    def _image_workdir(self) -> str | None:
+        image = self.task_env_config.docker_image
+        if not image:
+            return None
+        image_path = Path(image)
+        try:
+            tar_path = image_path if image_path.suffix == ".tar" else self._tar_for_image(image)
+        except FileNotFoundError:
+            return None
+        try:
+            with tarfile.open(tar_path) as tar:
+                manifest_file = tar.extractfile("manifest.json")
+                if manifest_file is None:
+                    return None
+                config_name = json.load(manifest_file)[0].get("Config")
+                config_file = tar.extractfile(config_name) if config_name else None
+                if config_file is None:
+                    return None
+                return json.load(config_file).get("config", {}).get("WorkingDir") or None
+        except (OSError, KeyError, IndexError, json.JSONDecodeError, tarfile.TarError):
+            return None
+
     def _dockerfile_workdir(self) -> str:
         dockerfile = self.environment_dir / "Dockerfile"
+        workdir = PurePosixPath("/")
         if dockerfile.exists():
             for line in dockerfile.read_text(errors="ignore").splitlines():
                 if line.strip().upper().startswith("WORKDIR "):
-                    return line.split(None, 1)[1].strip()
-        return "/app"
+                    value = line.split(None, 1)[1].strip()
+                    workdir = PurePosixPath(value) if value.startswith("/") else workdir / value
+        return workdir.as_posix()
 
 
 def _startup_failure_message(returncode: int | None, startup_lines: list[str]) -> str:

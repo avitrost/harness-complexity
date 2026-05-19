@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -78,6 +79,32 @@ def test_harbor_agent_forwards_candidate_timeout(tmp_path: Path) -> None:
     asyncio.run(agent.run("instruction", env, SimpleNamespace(metadata=None)))
     assert env.commands == ["sleep 10"]
     assert env.timeouts == [3]
+
+
+def test_harbor_agent_records_candidate_timeout_as_observation(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    candidate = workspace / "candidate"
+    candidate.mkdir(parents=True)
+    (candidate / "harness.py").write_text(
+        "from plumbing.base_agent import BaseHarness\n"
+        "from plumbing.types import HarnessTurn\n"
+        "class H(BaseHarness):\n"
+        "    def next_command(self, task, history):\n"
+        "        if history:\n"
+        "            return HarnessTurn(done=True)\n"
+        "        return HarnessTurn(command='sleep 10', timeout_sec=3)\n"
+        "def create_agent():\n"
+        "    return H()\n",
+        encoding="utf-8",
+    )
+    env = TimeoutEnvironment()
+    agent = HarborHarnessAgent(logs_dir=tmp_path / "logs", candidate_dir=workspace)
+    context = SimpleNamespace(metadata=None)
+    asyncio.run(agent.run("instruction", env, context))
+    payload = json.loads((tmp_path / "logs" / "harness-turn-01.json").read_text())
+    assert payload["return_code"] == 124
+    assert payload["stderr"] == "Command timed out after 3 seconds"
+    assert context.metadata["done"] is True
 
 
 def test_harbor_agent_logs_model_call_traces(monkeypatch, tmp_path: Path) -> None:
@@ -170,6 +197,11 @@ class FakeEnvironment:
 class FailingEnvironment:
     async def exec(self, command: str, timeout_sec: int | None = None):
         raise RuntimeError("exec failed")
+
+
+class TimeoutEnvironment:
+    async def exec(self, command: str, timeout_sec: int | None = None):
+        raise RuntimeError(f"Command timed out after {timeout_sec} seconds")
 
 
 class FakeOpenAI:
