@@ -25,10 +25,11 @@ this repository:
 - Use `logs/frontier_val.json`, `logs/evolution_summary.jsonl`,
   `logs/trace_index.json`, `logs/failures.md`, `logs/jobs/`, and `history/` as
   the local run-history filesystem.
-- Before proposing changes, inspect `references/terminus_kira.py` as a strong
-  Terminus-KIRA baseline reference. Prefer concrete patterns from it when they
-  fit the local harness, but do not force them. Do not import from references or
-  prior runs at runtime.
+- Before proposing changes, inspect `references/terminus_kira.py` and
+  `references/open_source_harnesses.md` as strong harness references. Codex is
+  the most important GPT reference; also consider Terminus-KIRA, opencode,
+  gemini-cli, and qwen-code. Prefer concrete patterns from them when they fit,
+  but do not force them. Do not import from references or prior runs at runtime.
 - Stay inside this workspace: do not read or write `..`, absolute paths outside
   it, prior experiment dirs, or symlink targets outside it.
 - If Agent subagents are unavailable, perform the Analyze and Implement steps

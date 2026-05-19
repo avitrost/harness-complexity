@@ -39,10 +39,11 @@ def test_build_codex_command_uses_resolved_exec_binary(tmp_path: Path) -> None:
     assert "--ignore-user-config" in command
     assert "--ephemeral" in command
     assert "--skip-git-repo-check" in command
-    assert "scaffold evolution loop (KIRA track)" in command[-1]
+    assert "scaffold evolution loop (harness track)" in command[-1]
     assert "Start from agents/baseline_kira.py" in command[-1]
-    assert "Prefer concrete KIRA patterns when they fit" in command[-1]
-    assert "compressed or adapted into the counted harness" in command[-1]
+    assert "open_source_harnesses.md" in command[-1]
+    assert "Codex is the most important GPT reference" in command[-1]
+    assert "reference-harness pattern can be compressed or adapted" in command[-1]
     assert "logs/frontier_val.json" in command[-1]
     assert "Keep candidate/harness.py at most 128" in command[-1]
 

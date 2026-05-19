@@ -12,11 +12,14 @@ def test_make_workspace_writes_isolation_instructions(tmp_path: Path) -> None:
     assert "history/" in agents
     assert "logs/failures.md" in agents
     assert "logs/trace_index.json" in agents
-    assert "Prefer concrete patterns from it when they" in agents
+    assert "open_source_harnesses.md" in agents
+    assert "Codex is" in agents
     assert "reference patterns used" in agents
     assert (workspace / "history").is_dir()
     assert (workspace / "agents" / "baseline_kira.py").is_file()
     assert (workspace / "references" / "terminus_kira.py").is_file()
+    assert (workspace / "references" / "open_source_harnesses.md").is_file()
+    assert (workspace / "references" / "codex_turn.rs").is_file()
     assert (
         workspace / ".claude" / "skills" / "meta-harness-terminal-bench-2" / "SKILL.md"
     ).is_file()

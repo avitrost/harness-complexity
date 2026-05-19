@@ -61,9 +61,10 @@ Proposer workspaces edit `agents/baseline_kira.py`, matching the official refere
 parent name. That file starts as this repo's <128-line baseline harness. Before
 validation, the optimizer copies it back to `candidate/harness.py`, which remains
 the counted and evaluated artifact. Workspaces also include
-`references/terminus_kira.py` as a read-only copy of the official Terminus-KIRA
-source. These alias/reference directories are excluded from copied-back candidate
-workspaces and cannot be imported at runtime.
+`references/terminus_kira.py` plus `references/open_source_harnesses.md` and
+small source snapshots for Codex, opencode, gemini-cli, and qwen-code. These
+alias/reference directories are excluded from copied-back candidate workspaces
+and cannot be imported at runtime.
 
 ## Plumbing Boundary
 
