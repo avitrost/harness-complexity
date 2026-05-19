@@ -30,8 +30,9 @@ The barebones starter harness is intentionally small. It imports only allowed pl
 formats recent terminal observations, calls `plumbing.openai_client.call_terminal_model(...)`,
 and returns a JSON action: `run` with the next command or `done` when complete.
 
-The terminal-solving model is not named in `candidate/harness.py`. It is frozen in
-`plumbing/openai_client.py`, outside the line-counted file. Future
+The terminal-solving model and reasoning effort are not named in
+`candidate/harness.py`. They are frozen in `plumbing/openai_client.py`, outside the
+line-counted file. Future
 optimization cycles may change harness behavior only inside `candidate/harness.py`;
 prompt text in that file counts toward the budget.
 
@@ -249,7 +250,7 @@ python scripts/plot_complexity_curve.py
 ## Pre-Registered Design
 
 - Meta-optimizer: Codex GPT-5.5 Medium.
-- Terminal-solving model: GPT-5.4 Nano, fixed in uncounted plumbing.
+- Terminal-solving model: GPT-5.4 Mini with medium reasoning, fixed in uncounted plumbing.
 - Counted file: `candidate/harness.py` only.
 - Independent variable: Black-formatted physical lines, including comments and blank lines.
 - LOC buckets: 1-128, 129-256, 257-512, 513-1024, 1025-2048.

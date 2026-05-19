@@ -17,6 +17,7 @@ from openai import OpenAI
 from plumbing.secrets import require_openai_api_key
 
 TERMINAL_MODEL = "gpt-5.4-mini"
+TERMINAL_REASONING_EFFORT = "medium"
 TIMEOUT_SEC = 120.0
 MAX_RETRIES = 2
 MAX_OUTPUT_TOKENS = 4096
@@ -64,6 +65,10 @@ def terminal_model() -> str:
     return os.getenv("OPENAI_TERMINAL_MODEL", TERMINAL_MODEL)
 
 
+def terminal_reasoning_effort() -> str:
+    return TERMINAL_REASONING_EFFORT
+
+
 def call_terminal_model(messages: list[dict[str, str]]) -> str:
     last_error: Exception | None = None
     for attempt in range(MAX_RETRIES + 1):
@@ -76,6 +81,7 @@ def call_terminal_model(messages: list[dict[str, str]]) -> str:
             response = _make_client().responses.create(
                 model=terminal_model(),
                 input=messages,
+                reasoning={"effort": terminal_reasoning_effort()},
                 max_output_tokens=MAX_OUTPUT_TOKENS,
                 timeout=TIMEOUT_SEC,
             )
@@ -99,6 +105,7 @@ def check_terminal_model_available() -> None:
     response = _make_client().responses.create(
         model=terminal_model(),
         input=[{"role": "user", "content": "Reply OK."}],
+        reasoning={"effort": terminal_reasoning_effort()},
         max_output_tokens=PREFLIGHT_OUTPUT_TOKENS,
         timeout=TIMEOUT_SEC,
     )
@@ -142,6 +149,7 @@ def _write_model_trace(
     _trace_count.set(index)
     payload: dict[str, Any] = {
         "model": terminal_model(),
+        "reasoning_effort": terminal_reasoning_effort(),
         "messages": messages,
         "response": response_text,
     }
@@ -192,6 +200,7 @@ def _codex_body(messages: list[dict[str, str]]) -> dict[str, Any]:
     ]
     return {
         "model": terminal_model(),
+        "reasoning": {"effort": terminal_reasoning_effort()},
         "instructions": instructions or "You are a concise assistant.",
         "input": input_messages or [{"role": "user", "content": ""}],
         "stream": True,
