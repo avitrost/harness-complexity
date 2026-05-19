@@ -86,7 +86,7 @@ class HarborHarnessAgent(HarborBaseAgent):
                 if turn.done or not command:
                     done = turn.done
                     break
-                result = await environment.exec(command=command)
+                result = await environment.exec(command=command, timeout_sec=turn.timeout_sec)
                 record = CommandResult(
                     command=command,
                     return_code=getattr(result, "return_code", None),

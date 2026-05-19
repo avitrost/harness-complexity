@@ -57,6 +57,29 @@ def test_harbor_agent_executes_candidate_command(tmp_path: Path) -> None:
     assert (tmp_path / "logs" / "harness-result.json").exists()
 
 
+def test_harbor_agent_forwards_candidate_timeout(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    candidate = workspace / "candidate"
+    candidate.mkdir(parents=True)
+    (candidate / "harness.py").write_text(
+        "from plumbing.base_agent import BaseHarness\n"
+        "from plumbing.types import HarnessTurn\n"
+        "class H(BaseHarness):\n"
+        "    def next_command(self, task, history):\n"
+        "        if history:\n"
+        "            return HarnessTurn(done=True)\n"
+        "        return HarnessTurn(command='sleep 10', timeout_sec=3)\n"
+        "def create_agent():\n"
+        "    return H()\n",
+        encoding="utf-8",
+    )
+    env = FakeEnvironment()
+    agent = HarborHarnessAgent(logs_dir=tmp_path / "logs", candidate_dir=workspace)
+    asyncio.run(agent.run("instruction", env, SimpleNamespace(metadata=None)))
+    assert env.commands == ["sleep 10"]
+    assert env.timeouts == [3]
+
+
 def test_harbor_agent_logs_model_call_traces(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.delenv("OPENAI_AUTH_MODE", raising=False)
     set_client_factory(lambda: FakeOpenAI("ok"))
@@ -136,14 +159,16 @@ def test_slurm_command_uses_longer_environment_start_multiplier() -> None:
 class FakeEnvironment:
     def __init__(self) -> None:
         self.commands: list[str] = []
+        self.timeouts: list[int | None] = []
 
-    async def exec(self, command: str):
+    async def exec(self, command: str, timeout_sec: int | None = None):
         self.commands.append(command)
+        self.timeouts.append(timeout_sec)
         return SimpleNamespace(stdout="ok\n", stderr="", return_code=0)
 
 
 class FailingEnvironment:
-    async def exec(self, command: str):
+    async def exec(self, command: str, timeout_sec: int | None = None):
         raise RuntimeError("exec failed")
 
 

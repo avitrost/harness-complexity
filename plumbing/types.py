@@ -24,3 +24,4 @@ class CommandResult:
 class HarnessTurn:
     command: str = ""
     done: bool = False
+    timeout_sec: int | None = None
