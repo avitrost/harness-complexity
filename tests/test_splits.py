@@ -14,10 +14,14 @@ def test_split_definitions() -> None:
     ]
     assert len(splits.get_val_tasks()) == 20
     assert splits.get_test_tasks() == []
+    assert len(splits.get_heldout_tasks()) == 69
+    assert set(splits.get_val_tasks()).isdisjoint(splits.get_heldout_tasks())
     assert splits.VAL_TRIALS == 4
     assert splits.VAL_CONCURRENCY == 160
     assert splits.TEST_TRIALS == 4
     assert splits.TEST_CONCURRENCY == 160
+    assert splits.HELDOUT_TRIALS == 2
+    assert splits.HELDOUT_CONCURRENCY == 300
 
 
 def test_score_formulas() -> None:

@@ -9,6 +9,7 @@ from statistics import mean
 from typing import Any
 
 from evaluator.splits import (
+    get_heldout_tasks,
     get_test_tasks,
     get_val_tasks,
     test_estimated_full_score,
@@ -64,6 +65,8 @@ def _expected_tasks(split: str, by_task: dict[str, list[dict[str, Any]]]) -> lis
         return get_val_tasks()
     if split == "test":
         return get_test_tasks()
+    if split == "heldout":
+        return get_heldout_tasks()
     return sorted(by_task)
 
 

@@ -8,6 +8,8 @@ logs/
 
 experience/B*/*
 !experience/B*/.gitkeep
+final_test/*
+!final_test/B*/
 final_test/B*/*
 !final_test/B*/.gitkeep
 results/*
