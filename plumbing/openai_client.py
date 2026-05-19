@@ -17,7 +17,7 @@ from openai import OpenAI
 from plumbing.secrets import require_openai_api_key
 
 TERMINAL_MODEL = "gpt-5.4-mini"
-TERMINAL_REASONING_EFFORT = "medium"
+TERMINAL_REASONING_EFFORT = "none"
 TIMEOUT_SEC = 120.0
 MAX_RETRIES = 2
 MAX_OUTPUT_TOKENS = 4096

@@ -250,7 +250,7 @@ python scripts/plot_complexity_curve.py
 ## Pre-Registered Design
 
 - Meta-optimizer: Codex GPT-5.5 Medium.
-- Terminal-solving model: GPT-5.4 Mini with medium reasoning, fixed in uncounted plumbing.
+- Terminal-solving model: GPT-5.4 Mini with no reasoning, fixed in uncounted plumbing.
 - Counted file: `candidate/harness.py` only.
 - Independent variable: Black-formatted physical lines, including comments and blank lines.
 - LOC buckets: 1-128, 129-256, 257-512, 513-1024, 1025-2048.
