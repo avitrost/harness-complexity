@@ -19,7 +19,7 @@ except Exception:  # pragma: no cover - exercised when Harbor imports this file.
 TERMINAL_BENCH_DATASET = "terminal-bench@2.0"
 HARBOR_AGENT_IMPORT_PATH = "plumbing.harbor_adapter:HarborHarnessAgent"
 SLURM_PYXIS_ENV_IMPORT_PATH = "plumbing.slurm_pyxis_environment:SlurmPyxisEnvironment"
-SLURM_ENVIRONMENT_BUILD_TIMEOUT_MULTIPLIER = "6"
+SLURM_ENVIRONMENT_BUILD_TIMEOUT_MULTIPLIER = "18"
 MAX_OBSERVATION_CHARS = 6000
 
 
@@ -97,13 +97,13 @@ class HarborHarnessAgent(HarborBaseAgent):
                 self._write_turn_log(turn_index, record)
         finally:
             reset_trace_dir(token)
-        self._write_result_logs(history, done)
-        context.metadata = {
-            "candidate_dir": str(self.candidate_dir),
-            "done": done,
-            "turns": len(history),
-            "last_return_code": history[-1].return_code if history else None,
-        }
+            self._write_result_logs(history, done)
+            context.metadata = {
+                "candidate_dir": str(self.candidate_dir),
+                "done": done,
+                "turns": len(history),
+                "last_return_code": history[-1].return_code if history else None,
+            }
 
     def _write_turn_log(self, turn_index: int, record: CommandResult) -> None:
         (self.logs_dir / f"harness-turn-{turn_index:02d}.json").write_text(

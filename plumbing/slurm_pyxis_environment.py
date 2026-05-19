@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from http.client import HTTPException
 import json
 import os
 import random
@@ -8,6 +9,7 @@ import signal
 import shlex
 import shutil
 import subprocess
+import sys
 import tarfile
 import time
 from pathlib import Path
@@ -22,10 +24,13 @@ DEFAULT_SHARED_DIR = Path("/wbl-fast/usrs/trost/harbor-slurm-pyxis")
 DEFAULT_SQSH_CACHE = Path("/wbl-fast/usrs/trost/tbench-sqsh-cache/images")
 DEFAULT_TAR_CACHE = Path("/wbl-fast/usrs/ee/agent-collab/docker-image-cache")
 DEFAULT_ENROOT_SYSCONF = Path("/etc/enroot")
+DEFAULT_HOST_PYTHON_PREFIX = Path(sys.prefix).resolve()
+HOST_PYTHON_MOUNT = "/opt/harbor-python"
 DEFAULT_STARTUP_TIMEOUT_SEC = 12 * 60 * 60
 DEFAULT_HEALTH_TIMEOUT_SEC = 20 * 60
 DEFAULT_STARTUP_RETRIES = 3
 DEFAULT_STARTUP_RETRY_DELAY_SEC = 60
+DEFAULT_EXEC_REQUEST_GRACE_SEC = 120
 _TRANSIENT_STARTUP_ERRORS = (
     "node failure",
     "still not ready",
@@ -35,24 +40,26 @@ SLURM_BOOTSTRAP = """#!/bin/bash
 export WORKDIR="${1:-/app}"; shift
 export HARBOR_STAGING="/staging/env_files"
 export DEBIAN_FRONTEND=noninteractive
+export PYTHONDONTWRITEBYTECODE=1
+export PYTHONNOUSERSITE=1
 mkdir -p "$WORKDIR"
 
-_SYS_PY=/usr/bin/python3
-if [ ! -x "$_SYS_PY" ]; then
-  echo "[harbor] /usr/bin/python3 not found, installing..." >&2
-  if command -v apt-get >/dev/null 2>&1; then
-    apt-get update -qq 2>/dev/null || true
-    apt-get install -y -qq python3 2>/dev/null || true
-  elif command -v apk >/dev/null 2>&1; then
-    apk add --no-cache python3 2>/dev/null || true
-  elif command -v dnf >/dev/null 2>&1; then
-    dnf install -y python3 2>/dev/null || true
-  elif command -v yum >/dev/null 2>&1; then
-    yum install -y python3 2>/dev/null || true
+_unmount_localtime() {
+  if awk '$5 == "/etc/localtime" { found=1 } END { exit found ? 0 : 1 }' /proc/self/mountinfo 2>/dev/null; then
+    umount /etc/localtime 2>/dev/null || true
   fi
-fi
-if [ ! -x "$_SYS_PY" ]; then
-  echo "[harbor] FATAL: cannot install /usr/bin/python3" >&2
+}
+_unmount_localtime
+
+_PY=
+for candidate in /usr/bin/python3 /usr/local/bin/python3 /opt/harbor-python/bin/python /opt/harbor-python/bin/python3; do
+  if [ -x "$candidate" ]; then
+    _PY="$candidate"
+    break
+  fi
+done
+if [ -z "$_PY" ]; then
+  echo "[harbor] FATAL: no Python runtime available for the Slurm/Pyxis exec server" >&2
   exit 1
 fi
 
@@ -61,7 +68,7 @@ if [ -f "$HARBOR_STAGING/setup.sh" ]; then
   source "$HARBOR_STAGING/setup.sh"
 fi
 
-exec "$_SYS_PY" "$@"
+exec "$_PY" "$@"
 """
 STDLIB_EXEC_SERVER = r"""import argparse
 import json
@@ -213,6 +220,7 @@ class SlurmPyxisEnvironment(BaseEnvironment):
         startup_retries: int | str = DEFAULT_STARTUP_RETRIES,
         startup_retry_delay_sec: int | str = DEFAULT_STARTUP_RETRY_DELAY_SEC,
         startup_parallelism: int | str | None = None,
+        host_python_prefix: str | Path | None = DEFAULT_HOST_PYTHON_PREFIX,
         remap_root: bool = True,
         **kwargs,
     ):
@@ -225,8 +233,14 @@ class SlurmPyxisEnvironment(BaseEnvironment):
         self._health_timeout_sec = int(health_timeout_sec)
         self._startup_retries = max(1, int(startup_retries))
         self._startup_retry_delay_sec = max(0, int(startup_retry_delay_sec))
+        self._exec_request_timeout_sec = (
+            _slurm_time_to_seconds(self._slurm_time) + DEFAULT_EXEC_REQUEST_GRACE_SEC
+        )
         # Kept for old Harbor configs; Slurm now owns startup queuing.
         _ = startup_parallelism
+        self._host_python_prefix = (
+            Path(host_python_prefix).resolve() if host_python_prefix else None
+        )
         self._remap_root = remap_root
         self._process: asyncio.subprocess.Process | None = None
         self._stream_task: asyncio.Task | None = None
@@ -388,7 +402,10 @@ class SlurmPyxisEnvironment(BaseEnvironment):
             "env": self._merge_env(env),
             "timeout_sec": timeout_sec,
         }
-        data = await self._post("/exec", payload, timeout=(timeout_sec or 600) + 10)
+        request_timeout = (
+            timeout_sec + 10 if timeout_sec is not None else self._exec_request_timeout_sec
+        )
+        data = await self._post("/exec", payload, timeout=request_timeout)
         return ExecResult(
             stdout=data.get("stdout"),
             stderr=data.get("stderr"),
@@ -479,6 +496,8 @@ class SlurmPyxisEnvironment(BaseEnvironment):
         env_files = self.environment_dir / "files"
         if env_files.exists():
             mounts.append(f"{env_files}:/staging/env_files")
+        if self._host_python_prefix and (self._host_python_prefix / "bin" / "python").exists():
+            mounts.append(f"{self._host_python_prefix}:{HOST_PYTHON_MOUNT}:ro")
         boot = (
             f"exec /staging/bootstrap.sh {shlex.quote(self._workdir)} "
             f"/staging/_hbexec.py --port {self._port} --workdir {shlex.quote(self._workdir)}"
@@ -597,7 +616,7 @@ class SlurmPyxisEnvironment(BaseEnvironment):
         try:
             with urlopen(request, timeout=timeout) as response:
                 return json.loads(response.read().decode("utf-8"))
-        except URLError as exc:
+        except (URLError, TimeoutError, OSError, HTTPException) as exc:
             raise RuntimeError(f"Slurm/Pyxis server request failed: {exc}") from exc
 
     def _resolve_sqsh(self, force_build: bool) -> Path:
@@ -648,6 +667,24 @@ def _is_transient_startup_error(message: str) -> bool:
     return any(pattern in lower for pattern in _TRANSIENT_STARTUP_ERRORS)
 
 
+def _slurm_time_to_seconds(value: str) -> int:
+    if "-" in value:
+        days, value = value.split("-", 1)
+        day_seconds = int(days) * 24 * 60 * 60
+    else:
+        day_seconds = 0
+    parts = [int(part) for part in value.split(":")]
+    if len(parts) == 3:
+        hours, minutes, seconds = parts
+    elif len(parts) == 2:
+        hours, minutes, seconds = 0, parts[0], parts[1]
+    elif len(parts) == 1:
+        hours, minutes, seconds = 0, parts[0], 0
+    else:
+        raise ValueError(f"invalid Slurm time: {value!r}")
+    return day_seconds + hours * 60 * 60 + minutes * 60 + seconds
+
+
 def _image_ref_candidates(image: str) -> list[str]:
     ref = image.removeprefix("docker://")
     ref = ref.split("#", 1)[-1]
@@ -670,7 +707,8 @@ def _prepare_enroot_sysconf(target: Path, source: Path = DEFAULT_ENROOT_SYSCONF)
     if target.exists():
         shutil.rmtree(target)
     shutil.copytree(source, target, symlinks=True)
-    _remove_localtime_mount(target / "mounts.d" / "20-config.fstab")
+    for path in (target / "mounts.d").glob("*.fstab"):
+        _remove_localtime_mount(path)
     return target
 
 

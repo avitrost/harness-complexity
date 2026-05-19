@@ -10,6 +10,7 @@ from plumbing.slurm_pyxis_environment import (
     STDLIB_EXEC_SERVER,
     _is_transient_startup_error,
     _prepare_enroot_sysconf,
+    _slurm_time_to_seconds,
 )
 
 
@@ -17,6 +18,11 @@ def test_slurm_bootstrap_has_no_pip_or_asciinema_dependency() -> None:
     assert "get-pip" not in SLURM_BOOTSTRAP
     assert "uvicorn" not in SLURM_BOOTSTRAP
     assert "asciinema" not in SLURM_BOOTSTRAP
+    assert "apt-get" not in SLURM_BOOTSTRAP
+    assert "apk add" not in SLURM_BOOTSTRAP
+    assert "dnf install" not in SLURM_BOOTSTRAP
+    assert "yum install" not in SLURM_BOOTSTRAP
+    assert "no Python runtime available" in SLURM_BOOTSTRAP
 
 
 def test_stdlib_exec_server_has_required_routes_without_fastapi() -> None:
@@ -38,6 +44,11 @@ def test_prepare_enroot_sysconf_removes_localtime_mount(tmp_path: Path) -> None:
         "/etc/localtime /etc/localtime none bind,ro 0 -1\n",
         encoding="utf-8",
     )
+    (mounts / "30-extra.fstab").write_text(
+        "/etc/localtime /etc/localtime none bind,ro 0 -1\n"
+        "/etc/resolv.conf /etc/resolv.conf none bind,ro 0 -1\n",
+        encoding="utf-8",
+    )
 
     target = _prepare_enroot_sysconf(tmp_path / "target", source)
 
@@ -45,6 +56,9 @@ def test_prepare_enroot_sysconf_removes_localtime_mount(tmp_path: Path) -> None:
     patched = (target / "mounts.d" / "20-config.fstab").read_text(encoding="utf-8")
     assert "/etc/hosts /etc/hosts" in patched
     assert "/etc/localtime" not in patched
+    extra = (target / "mounts.d" / "30-extra.fstab").read_text(encoding="utf-8")
+    assert "/etc/resolv.conf /etc/resolv.conf" in extra
+    assert "/etc/localtime" not in extra
 
 
 def _make_env(tmp_path: Path) -> SlurmPyxisEnvironment:
@@ -59,7 +73,10 @@ def _make_env(tmp_path: Path) -> SlurmPyxisEnvironment:
         trial_paths=TrialPaths(trial_dir),
         task_env_config=EnvironmentConfig(docker_image="ubuntu:latest"),
         shared_dir=tmp_path / "shared",
+        host_python_prefix=tmp_path / "host-python",
     )
+    (tmp_path / "host-python" / "bin").mkdir(parents=True)
+    (tmp_path / "host-python" / "bin" / "python").write_text("", encoding="utf-8")
     env._staging_dir = tmp_path / "staging"
     env._staging_dir.mkdir()
     return env
@@ -75,13 +92,27 @@ def test_srun_command_uses_unique_job_name(tmp_path: Path) -> None:
     assert command[command.index("--partition") + 1] == "m7i-cpu"
     assert env._slurm_job_name.startswith("hb-")
     assert "--port 0" in command[-1]
+    mounts = command[command.index("--container-mounts") + 1].split(",")
+    assert f"{tmp_path / 'host-python'}:/opt/harbor-python:ro" in mounts
+
+
+def test_default_exec_request_timeout_tracks_slurm_time(tmp_path: Path) -> None:
+    env = _make_env(tmp_path)
+
+    assert env._exec_request_timeout_sec == 2 * 60 * 60 + 120
+
+
+def test_slurm_time_to_seconds() -> None:
+    assert _slurm_time_to_seconds("02:00:00") == 7200
+    assert _slurm_time_to_seconds("15:30") == 930
+    assert _slurm_time_to_seconds("2-01:00:00") == 176400
 
 
 def test_transient_startup_error_detects_cloud_node_boot_failures() -> None:
     assert _is_transient_startup_error("srun: error: Node failure on m7i-cpu2-dy-0")
     assert _is_transient_startup_error("Nodes m7i-cpu2-dy-0 are still not ready")
     assert _is_transient_startup_error("Something is wrong with the boot of the nodes.")
-    assert not _is_transient_startup_error("FATAL: cannot install /usr/bin/python3")
+    assert not _is_transient_startup_error("FATAL: no Python runtime available")
 
 
 def test_cancel_slurm_job_is_scoped_to_current_user(tmp_path: Path, monkeypatch) -> None:

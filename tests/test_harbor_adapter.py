@@ -5,7 +5,11 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from plumbing.base_agent import load_harness
-from plumbing.harbor_adapter import HarborHarnessAgent
+from plumbing.harbor_adapter import (
+    HarborHarnessAgent,
+    HarborRunSpec,
+    build_harbor_command,
+)
 from plumbing.openai_client import set_client_factory
 
 
@@ -83,6 +87,52 @@ def test_harbor_agent_logs_model_call_traces(monkeypatch, tmp_path: Path) -> Non
     assert '"response": "ok"' in trace
 
 
+def test_harbor_agent_writes_partial_result_on_exec_error(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    candidate = workspace / "candidate"
+    candidate.mkdir(parents=True)
+    (candidate / "harness.py").write_text(
+        "from plumbing.base_agent import BaseHarness\n"
+        "from plumbing.types import HarnessTurn\n"
+        "class H(BaseHarness):\n"
+        "    def next_command(self, task, history):\n"
+        "        return HarnessTurn(command='sleep forever')\n"
+        "def create_agent():\n"
+        "    return H()\n",
+        encoding="utf-8",
+    )
+    agent = HarborHarnessAgent(logs_dir=tmp_path / "logs", candidate_dir=workspace)
+    context = SimpleNamespace(metadata=None)
+    try:
+        asyncio.run(agent.run("instruction", FailingEnvironment(), context))
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError("expected exec failure")
+
+    assert (tmp_path / "logs" / "harness-result.json").exists()
+    assert context.metadata["done"] is False
+
+
+def test_slurm_command_uses_longer_environment_start_multiplier() -> None:
+    plan = build_harbor_command(
+        HarborRunSpec(
+            Path("candidate"),
+            Path("out"),
+            ["fix-git"],
+            trials=1,
+            concurrency=1,
+            split="val",
+            backend="slurm-pyxis",
+        ),
+        executable="harbor",
+        help_text="--dataset --include-task-name --n-attempts --n-concurrent",
+    )
+
+    index = plan.command.index("--environment-build-timeout-multiplier")
+    assert plan.command[index + 1] == "18"
+
+
 class FakeEnvironment:
     def __init__(self) -> None:
         self.commands: list[str] = []
@@ -90,6 +140,11 @@ class FakeEnvironment:
     async def exec(self, command: str):
         self.commands.append(command)
         return SimpleNamespace(stdout="ok\n", stderr="", return_code=0)
+
+
+class FailingEnvironment:
+    async def exec(self, command: str):
+        raise RuntimeError("exec failed")
 
 
 class FakeOpenAI:
