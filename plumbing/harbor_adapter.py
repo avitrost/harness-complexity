@@ -19,6 +19,7 @@ except Exception:  # pragma: no cover - exercised when Harbor imports this file.
 TERMINAL_BENCH_DATASET = "terminal-bench@2.0"
 HARBOR_AGENT_IMPORT_PATH = "plumbing.harbor_adapter:HarborHarnessAgent"
 SLURM_PYXIS_ENV_IMPORT_PATH = "plumbing.slurm_pyxis_environment:SlurmPyxisEnvironment"
+SLURM_ENVIRONMENT_BUILD_TIMEOUT_MULTIPLIER = "6"
 MAX_OBSERVATION_CHARS = 6000
 
 
@@ -198,6 +199,8 @@ def build_harbor_command(
     if spec.backend == "slurm-pyxis":
         command.extend(
             [
+                "--environment-build-timeout-multiplier",
+                SLURM_ENVIRONMENT_BUILD_TIMEOUT_MULTIPLIER,
                 "--environment-import-path",
                 SLURM_PYXIS_ENV_IMPORT_PATH,
                 "--environment-kwarg",

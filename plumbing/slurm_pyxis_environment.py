@@ -26,8 +26,6 @@ DEFAULT_STARTUP_TIMEOUT_SEC = 12 * 60 * 60
 DEFAULT_HEALTH_TIMEOUT_SEC = 20 * 60
 DEFAULT_STARTUP_RETRIES = 3
 DEFAULT_STARTUP_RETRY_DELAY_SEC = 60
-DEFAULT_STARTUP_PARALLELISM = 8
-_STARTUP_GATE: asyncio.Semaphore | None = None
 _TRANSIENT_STARTUP_ERRORS = (
     "node failure",
     "still not ready",
@@ -214,7 +212,7 @@ class SlurmPyxisEnvironment(BaseEnvironment):
         health_timeout_sec: int | str = DEFAULT_HEALTH_TIMEOUT_SEC,
         startup_retries: int | str = DEFAULT_STARTUP_RETRIES,
         startup_retry_delay_sec: int | str = DEFAULT_STARTUP_RETRY_DELAY_SEC,
-        startup_parallelism: int | str = DEFAULT_STARTUP_PARALLELISM,
+        startup_parallelism: int | str | None = None,
         remap_root: bool = True,
         **kwargs,
     ):
@@ -227,7 +225,8 @@ class SlurmPyxisEnvironment(BaseEnvironment):
         self._health_timeout_sec = int(health_timeout_sec)
         self._startup_retries = max(1, int(startup_retries))
         self._startup_retry_delay_sec = max(0, int(startup_retry_delay_sec))
-        self._startup_parallelism = max(1, int(startup_parallelism))
+        # Kept for old Harbor configs; Slurm now owns startup queuing.
+        _ = startup_parallelism
         self._remap_root = remap_root
         self._process: asyncio.subprocess.Process | None = None
         self._stream_task: asyncio.Task | None = None
@@ -268,8 +267,7 @@ class SlurmPyxisEnvironment(BaseEnvironment):
             self._shared_dir / self.session_id / "enroot-sysconf"
         )
         self._workdir = self.task_env_config.workdir or self._dockerfile_workdir()
-        async with _startup_gate(self._startup_parallelism):
-            await self._start_with_retries(image)
+        await self._start_with_retries(image)
         await self.ensure_dirs(self._mount_targets(writable_only=True))
 
     async def _start_with_retries(self, image: Path) -> None:
@@ -550,7 +548,9 @@ class SlurmPyxisEnvironment(BaseEnvironment):
             if text.startswith("__HARBOR_PYXIS_NODE__"):
                 return text.removeprefix("__HARBOR_PYXIS_NODE__")
             if self._process.returncode is not None:
-                raise RuntimeError(_startup_failure_message(self._process.returncode, startup_lines))
+                raise RuntimeError(
+                    _startup_failure_message(self._process.returncode, startup_lines)
+                )
         raise RuntimeError(f"Timed out waiting {self._startup_timeout_sec}s for Slurm/Pyxis node")
 
     async def _stream_output(self) -> None:
@@ -634,13 +634,6 @@ class SlurmPyxisEnvironment(BaseEnvironment):
                 if line.strip().upper().startswith("WORKDIR "):
                     return line.split(None, 1)[1].strip()
         return "/app"
-
-
-def _startup_gate(parallelism: int) -> asyncio.Semaphore:
-    global _STARTUP_GATE
-    if _STARTUP_GATE is None:
-        _STARTUP_GATE = asyncio.Semaphore(parallelism)
-    return _STARTUP_GATE
 
 
 def _startup_failure_message(returncode: int | None, startup_lines: list[str]) -> str:

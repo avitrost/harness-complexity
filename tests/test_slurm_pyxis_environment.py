@@ -5,7 +5,6 @@ from harbor.models.trial.paths import TrialPaths
 
 import plumbing.slurm_pyxis_environment as slurm_pyxis
 from plumbing.slurm_pyxis_environment import (
-    DEFAULT_STARTUP_PARALLELISM,
     SLURM_BOOTSTRAP,
     SlurmPyxisEnvironment,
     STDLIB_EXEC_SERVER,
@@ -76,7 +75,6 @@ def test_srun_command_uses_unique_job_name(tmp_path: Path) -> None:
     assert command[command.index("--partition") + 1] == "m7i-cpu"
     assert env._slurm_job_name.startswith("hb-")
     assert "--port 0" in command[-1]
-    assert env._startup_parallelism == DEFAULT_STARTUP_PARALLELISM
 
 
 def test_transient_startup_error_detects_cloud_node_boot_failures() -> None:

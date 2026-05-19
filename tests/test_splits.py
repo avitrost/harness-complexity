@@ -51,5 +51,6 @@ def test_harbor_command_can_use_slurm_pyxis_environment() -> None:
         help_text="--dataset --include-task-name --n-attempts --n-concurrent",
     )
     assert "--environment-import-path" in plan.command
+    assert "--environment-build-timeout-multiplier" in plan.command
     assert "plumbing.slurm_pyxis_environment:SlurmPyxisEnvironment" in plan.command
     assert plan.command.count("--environment-kwarg") == 3
