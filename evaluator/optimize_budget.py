@@ -172,8 +172,8 @@ def build_codex_command(
     )
     iteration_label = str(iteration) if iteration is not None else "the next"
     horizon_line = (
-        f"\n\nThis is iteration {iteration_label} of {cycles}. Earlier rounds may test "
-        "isolated mechanisms; late rounds should prefer consolidating the strongest "
+        f"\n\nThis is iteration {iteration_label} of {cycles}. Late rounds should "
+        "prefer consolidating the strongest "
         "frontier-preserving changes over speculative probes."
         if cycles is not None
         else ""
