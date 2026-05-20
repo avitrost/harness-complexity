@@ -96,6 +96,9 @@ def test_srun_command_uses_unique_job_name(tmp_path: Path) -> None:
     assert command[job_name_index] == env._slurm_job_name
     assert command[command.index("--partition") + 1] == "m7i-cpu"
     assert env._slurm_job_name.startswith("hb-")
+    assert "--kill-on-bad-exit=1" in command
+    assert command[command.index("--wait") + 1] == "1"
+    assert "--quit-on-interrupt" in command
     assert "--port 0" in command[-1]
     mounts = command[command.index("--container-mounts") + 1].split(",")
     assert f"{tmp_path / 'host-python'}:/opt/harbor-python:ro" in mounts
@@ -137,6 +140,20 @@ def test_exec_raises_like_harbor_on_command_timeout(tmp_path: Path, monkeypatch)
 
     with pytest.raises(RuntimeError, match="Command timed out after 3 seconds"):
         asyncio.run(env.exec("sleep 10", timeout_sec=3))
+
+
+def test_exec_stops_waiting_when_srun_exits(tmp_path: Path, monkeypatch) -> None:
+    env = _make_env(tmp_path)
+    env._process = _ExitedProcess()
+    env._recent_srun_output = ["srun: error: Node failure on m7i-cpu"]
+
+    async def slow_post(path, payload, timeout):
+        await asyncio.sleep(30)
+
+    monkeypatch.setattr(env, "_post", slow_post)
+
+    with pytest.raises(RuntimeError, match="Node failure"):
+        asyncio.run(env.exec("sleep 10"))
 
 
 def test_http_requests_use_slurm_executor(tmp_path: Path, monkeypatch) -> None:
@@ -202,3 +219,12 @@ def _write_image_tar(path: Path, workdir: str) -> None:
             info = tarfile.TarInfo(name)
             info.size = len(payload)
             tar.addfile(info, io.BytesIO(payload))
+
+
+class _ExitedProcess:
+    pid = 1234
+    returncode = None
+
+    async def wait(self) -> int:
+        self.returncode = 1
+        return self.returncode

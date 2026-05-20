@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import suppress
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 from http.client import HTTPException
@@ -33,6 +34,8 @@ DEFAULT_HEALTH_TIMEOUT_SEC = 20 * 60
 DEFAULT_STARTUP_RETRIES = 3
 DEFAULT_STARTUP_RETRY_DELAY_SEC = 60
 DEFAULT_EXEC_REQUEST_GRACE_SEC = 120
+DEFAULT_SHUTDOWN_TIMEOUT_SEC = 5
+DEFAULT_SCANCEL_TIMEOUT_SEC = 5
 DEFAULT_IO_WORKERS = 512
 _TRANSIENT_STARTUP_ERRORS = (
     "node failure",
@@ -269,6 +272,7 @@ class SlurmPyxisEnvironment(BaseEnvironment):
         self._slurm_job_name = f"hb-{os.getpid()}-{random.randint(100000, 999999)}"
         self._staging_dir: Path | None = None
         self._enroot_sysconf_dir: Path | None = None
+        self._recent_srun_output: list[str] = []
         self._workdir = "/app"
         super().__init__(*args, **kwargs)
 
@@ -356,16 +360,20 @@ class SlurmPyxisEnvironment(BaseEnvironment):
         if self._process and self._process.returncode is None:
             if self._node:
                 try:
-                    await self._post("/shutdown", {})
+                    await self._post("/shutdown", {}, timeout=DEFAULT_SHUTDOWN_TIMEOUT_SEC)
                 except Exception:
                     pass
             await self._stop_srun()
+        elif self._process:
+            with suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(self._process.wait(), timeout=1)
         if self._stream_task:
             self._stream_task.cancel()
-            try:
+            with suppress(asyncio.CancelledError):
                 await self._stream_task
-            except asyncio.CancelledError:
-                pass
+            self._stream_task = None
+        self._process = None
+        self._node = None
         if delete and self._staging_dir:
             shutil.rmtree(self._staging_dir, ignore_errors=True)
         if delete and self._enroot_sysconf_dir:
@@ -374,21 +382,27 @@ class SlurmPyxisEnvironment(BaseEnvironment):
     async def _stop_srun(self) -> None:
         assert self._process
         pid = self._process.pid
-        await _run_blocking(self._cancel_slurm_job)
-        for sig, timeout in ((signal.SIGTERM, 10), (signal.SIGKILL, 5)):
+        for sig, timeout in ((signal.SIGINT, 3), (signal.SIGTERM, 3)):
             if self._process.returncode is not None:
                 break
             try:
                 os.killpg(pid, sig)
             except ProcessLookupError:
                 break
-            try:
+            with suppress(asyncio.TimeoutError):
                 await asyncio.wait_for(self._process.wait(), timeout=timeout)
-            except asyncio.TimeoutError:
-                continue
+        await _run_blocking(self._cancel_slurm_job)
         if self._process.returncode is None:
-            self._process.kill()
-            await self._process.wait()
+            try:
+                os.killpg(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            try:
+                await asyncio.wait_for(self._process.wait(), timeout=3)
+            except asyncio.TimeoutError:
+                self.logger.warning(
+                    f"Timed out waiting for Slurm/Pyxis srun {pid} to exit after SIGKILL"
+                )
 
     def _cancel_slurm_job(self) -> None:
         if shutil.which("scancel") is None:
@@ -402,7 +416,7 @@ class SlurmPyxisEnvironment(BaseEnvironment):
                 check=False,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
-                timeout=10,
+                timeout=DEFAULT_SCANCEL_TIMEOUT_SEC,
             )
         except subprocess.TimeoutExpired:
             pass
@@ -427,7 +441,7 @@ class SlurmPyxisEnvironment(BaseEnvironment):
         request_timeout = (
             timeout_sec + 10 if timeout_sec is not None else self._exec_request_timeout_sec
         )
-        data = await self._post("/exec", payload, timeout=request_timeout)
+        data = await self._post_while_srun_lives("/exec", payload, timeout=request_timeout)
         if data.get("timeout"):
             seconds = data.get("timeout_sec", timeout_sec)
             raise RuntimeError(f"Command timed out after {seconds} seconds")
@@ -543,6 +557,10 @@ class SlurmPyxisEnvironment(BaseEnvironment):
             f"{self.task_env_config.memory_mb}M",
             "--time",
             self._slurm_time,
+            "--kill-on-bad-exit=1",
+            "--wait",
+            "1",
+            "--quit-on-interrupt",
             "--export",
             "ALL",
             "--container-image",
@@ -584,6 +602,7 @@ class SlurmPyxisEnvironment(BaseEnvironment):
                 continue
             if text:
                 self.logger.debug(text)
+                self._record_srun_output(text)
                 startup_lines = [*startup_lines[-19:], text]
             if text.startswith("__HARBOR_PYXIS_READY__"):
                 node, port = text.removeprefix("__HARBOR_PYXIS_READY__").rsplit(":", 1)
@@ -603,11 +622,12 @@ class SlurmPyxisEnvironment(BaseEnvironment):
             text = line.decode(errors="replace").rstrip()
             if text:
                 self.logger.debug(text)
+                self._record_srun_output(text)
 
     async def _wait_for_health(self) -> None:
         for _ in range(self._health_timeout_sec):
             if self._process and self._process.returncode is not None:
-                raise RuntimeError(f"srun exited before health check: {self._process.returncode}")
+                raise RuntimeError(self._srun_exit_message("before health check"))
             try:
                 data = await self._get("/health", timeout=5)
                 if data.get("status") in {"ok", "healthy"}:
@@ -625,6 +645,43 @@ class SlurmPyxisEnvironment(BaseEnvironment):
         self, path: str, payload: dict[str, object], timeout: int = 30
     ) -> dict[str, object]:
         return await _run_blocking(self._request, path, payload, timeout)
+
+    async def _post_while_srun_lives(
+        self, path: str, payload: dict[str, object], timeout: int
+    ) -> dict[str, object]:
+        self._raise_if_srun_exited("before request")
+        request_task = asyncio.create_task(self._post(path, payload, timeout=timeout))
+        wait_task = (
+            asyncio.create_task(self._process.wait())
+            if self._process and self._process.returncode is None
+            else None
+        )
+        tasks = {request_task, *([wait_task] if wait_task else [])}
+        done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+        for task in pending:
+            task.cancel()
+        if request_task in done:
+            return await request_task
+        request_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await request_task
+        self._raise_if_srun_exited("during request")
+        raise RuntimeError("Slurm/Pyxis srun exited during request")
+
+    def _raise_if_srun_exited(self, when: str) -> None:
+        if self._process and self._process.returncode is not None:
+            raise RuntimeError(self._srun_exit_message(when))
+
+    def _srun_exit_message(self, when: str) -> str:
+        message = (
+            f"Slurm/Pyxis srun exited {when}: {self._process.returncode if self._process else None}"
+        )
+        if self._recent_srun_output:
+            message += "; output: " + " | ".join(self._recent_srun_output[-10:])
+        return message
+
+    def _record_srun_output(self, text: str) -> None:
+        self._recent_srun_output = [*self._recent_srun_output[-19:], text]
 
     def _request(
         self, path: str, payload: dict[str, object] | None, timeout: int
