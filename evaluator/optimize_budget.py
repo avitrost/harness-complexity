@@ -106,6 +106,7 @@ def optimize_budget(
                     codex_bin=codex_bin,
                     workspace=codex_workspace,
                     iteration=iteration,
+                    cycles=cycles,
                     candidate_index=candidate_index,
                     candidates_per_iteration=candidates_per_iteration,
                 )
@@ -159,6 +160,7 @@ def build_codex_command(
     codex_bin: str | None = None,
     workspace: Path | None = None,
     iteration: int | None = None,
+    cycles: int | None = None,
     candidate_index: int | None = None,
     candidates_per_iteration: int = DEFAULT_K,
 ) -> list[str]:
@@ -169,6 +171,13 @@ def build_codex_command(
         else f"Keep candidate/harness.py at most {budget}"
     )
     iteration_label = str(iteration) if iteration is not None else "the next"
+    horizon_line = (
+        f"\n\nThis is iteration {iteration_label} of {cycles}. Earlier rounds may test "
+        "isolated mechanisms; late rounds should prefer consolidating the strongest "
+        "frontier-preserving changes over speculative probes."
+        if cycles is not None
+        else ""
+    )
     prompt = (
         f"Run iteration {iteration_label} of the scaffold evolution loop (harness track)."
         f" Model: {terminal_model()}. Start from agents/baseline_kira.py "
@@ -191,6 +200,7 @@ def build_codex_command(
         "- `logs/frontier_val.json` — frontier\n"
         "- `logs/reports/` — post-eval reports\n"
         "- Write proposal.md to: `proposal.md`"
+        f"{horizon_line}"
     )
     if repair:
         prompt = f"Repair validation failures. {prompt}"
