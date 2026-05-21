@@ -35,7 +35,11 @@ this repository:
   policy, timeout policy, completion gating, recovery planning, bounded
   verification, and prompt construction. Do not build signal farms, feature
   farms, or generated token scanners; feature extraction should be small and
-  loop-based.
+  loop-based. Do not create prefix-family method grids such as hundreds of
+  review_* helpers or dispatcher calls. Large PolicyRule/list catalogs count as
+  padding; keep rule catalogs small and derive repeated checks with loops or code.
+  Do not create numbered SignalSpec/metric fields or generated dataclass
+  attributes; a few semantic fields are fine, hundreds are padding.
 - Before finishing, remove unused imports; the final file must pass Ruff,
   py_compile, audit, and the source-line budget.
 - Use `logs/frontier_val.json`, `logs/evolution_summary.jsonl`,

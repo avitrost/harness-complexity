@@ -54,6 +54,36 @@ def test_audit_rejects_mechanical_duplicate_helpers(tmp_path: Path) -> None:
     assert any("near-duplicate function bodies" in error for error in result["errors"])
 
 
+def test_audit_rejects_mechanical_numbered_classes(tmp_path: Path) -> None:
+    path = tmp_path / "harness.py"
+    classes = "\n".join(f"class Policy{index}:\n    pass\n" for index in range(20))
+    path.write_text(classes, encoding="utf-8")
+    result = audit_candidate(path)
+    assert not result["ok"]
+    assert any("mechanical numbered classes" in error for error in result["errors"])
+
+
+def test_audit_rejects_mechanical_function_family(tmp_path: Path) -> None:
+    path = tmp_path / "harness.py"
+    helpers = "\n".join(
+        f"def review_case_{index}(x):\n    return x + {index}\n" for index in range(130)
+    )
+    path.write_text(f"{helpers}\ndef choose(x):\n    return x\n", encoding="utf-8")
+    result = audit_candidate(path)
+    assert not result["ok"]
+    assert any("mechanical function family" in error for error in result["errors"])
+
+
+def test_audit_rejects_mechanical_numbered_assignments(tmp_path: Path) -> None:
+    path = tmp_path / "harness.py"
+    fields = "\n".join(f"metric_{index:04d}: int = 0" for index in range(30))
+    indented_fields = fields.replace("\n", "\n    ")
+    path.write_text(f"class Metrics:\n    {indented_fields}\n", encoding="utf-8")
+    result = audit_candidate(path)
+    assert not result["ok"]
+    assert any("mechanical numbered assignments" in error for error in result["errors"])
+
+
 def test_audit_rejects_large_top_level_data_block(tmp_path: Path) -> None:
     path = tmp_path / "harness.py"
     rows = "\n".join(f"    ({index}, 'x')," for index in range(510))

@@ -67,6 +67,9 @@ def test_build_codex_command_uses_resolved_exec_binary(tmp_path: Path) -> None:
     assert "distinct reachable subsystems" in large_command[-1]
     assert "Prefer compact loops and data structures" in large_command[-1]
     assert "signal farms" in large_command[-1]
+    assert "prefix-family method grids" in large_command[-1]
+    assert "PolicyRule/list catalogs" in large_command[-1]
+    assert "SignalSpec/metric fields" in large_command[-1]
 
 
 def test_resume_run_dir_requires_existing_run_id(tmp_path: Path) -> None:

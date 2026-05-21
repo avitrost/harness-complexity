@@ -99,6 +99,7 @@ def _audit_imports(tree: ast.AST, errors: list[str]) -> None:
 
 def _audit_padding_shapes(tree: ast.AST, errors: list[str]) -> None:
     functions = [node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)]
+    classes = [node for node in ast.walk(tree) if isinstance(node, ast.ClassDef)]
     for node in functions:
         lines = (getattr(node, "end_lineno", None) or node.lineno) - node.lineno + 1
         if lines > 500:
@@ -106,6 +107,22 @@ def _audit_padding_shapes(tree: ast.AST, errors: list[str]) -> None:
     numbered = [node.name for node in functions if re.search(r"_\d{1,4}$", node.name)]
     if len(numbered) > 24:
         errors.append(f"mechanical numbered functions: {len(numbered)}")
+    numbered_classes = [node.name for node in classes if re.search(r"\d{1,4}$", node.name)]
+    if len(numbered_classes) > 12:
+        errors.append(f"mechanical numbered classes: {len(numbered_classes)}")
+    numbered_assignments = [
+        name
+        for node in ast.walk(tree)
+        for name in _assignment_names(node)
+        if re.search(r"_\d{1,4}$", name)
+    ]
+    if len(numbered_assignments) > 24:
+        errors.append(f"mechanical numbered assignments: {len(numbered_assignments)}")
+    prefixes = Counter(_function_prefix(node.name) for node in functions)
+    prefixes.pop("__", None)
+    prefix, count = prefixes.most_common(1)[0] if prefixes else ("", 0)
+    if count > 120 and count > len(functions) // 2:
+        errors.append(f"mechanical function family: {prefix} has {count} functions")
     bodies = Counter(
         ast.dump(ast.Module(body=node.body, type_ignores=[]), include_attributes=False)
         for node in functions
@@ -118,6 +135,20 @@ def _audit_padding_shapes(tree: ast.AST, errors: list[str]) -> None:
             lines = (getattr(node, "end_lineno", None) or node.lineno) - node.lineno + 1
             if lines > 500:
                 errors.append(f"large top-level data block: {lines} lines")
+
+
+def _function_prefix(name: str) -> str:
+    if name.startswith("__"):
+        return "__"
+    return name.split("_", 1)[0]
+
+
+def _assignment_names(node: ast.AST) -> list[str]:
+    if isinstance(node, ast.AnnAssign):
+        return [node.target.id] if isinstance(node.target, ast.Name) else []
+    if isinstance(node, ast.Assign):
+        return [target.id for target in node.targets if isinstance(target, ast.Name)]
+    return []
 
 
 def _check_import(module: str, errors: list[str]) -> None:

@@ -193,7 +193,12 @@ def build_codex_command(
         "planning, bounded verification, and prompt construction. Prefer compact "
         "loops and data structures inside those subsystems over expanded cases. "
         "Do not build signal farms, feature farms, or generated token scanners; "
-        "feature extraction should be small and loop-based.\n"
+        "feature extraction should be small and loop-based. Do not create "
+        "prefix-family method grids such as hundreds of review_* helpers or "
+        "dispatcher calls. Large PolicyRule/list catalogs count as padding; keep "
+        "rule catalogs small and derive repeated checks with loops or code. Do "
+        "not create numbered SignalSpec/metric fields or generated dataclass "
+        "attributes; a few semantic fields are fine, hundreds are padding.\n"
         if budget >= 4096
         else ""
     )
