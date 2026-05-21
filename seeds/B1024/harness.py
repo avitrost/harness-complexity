@@ -547,10 +547,17 @@ def _normalize_action(value: dict[str, object], raw: str) -> Action:
         return Action(kind=ActionKind.DONE, raw=raw)
     command = value.get("command") or value.get("cmd") or value.get("shell")
     timeout = value.get("timeout_sec") or value.get("timeout") or value.get("duration")
+    commands = value.get("commands")
+    if commands is None and isinstance(args, dict):
+        commands = args.get("commands")
     if command is None and isinstance(args, dict):
         command = args.get("command") or args.get("cmd") or args.get("shell")
+    if command is None and isinstance(commands, list) and commands:
+        command = _tool_command(commands[0])
     if timeout is None and isinstance(args, dict):
         timeout = args.get("timeout_sec") or args.get("timeout") or args.get("duration")
+    if timeout is None and isinstance(commands, list) and commands:
+        timeout = _tool_timeout(commands[0])
     notes = []
     if command is None:
         notes.append("JSON action lacked a command field")

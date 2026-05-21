@@ -437,7 +437,11 @@ class ActionParser:
                 return item.strip().lower()
             if isinstance(item, dict) and isinstance(item.get("name"), str):
                 return str(item.get("name")).strip().lower()
-        return "run" if any(key in value for key in ("command", "cmd", "keystrokes")) else ""
+        return (
+            "run"
+            if any(key in value for key in ("command", "cmd", "keystrokes", "commands"))
+            else ""
+        )
 
     def _extract_args(self, value: dict[str, Any]) -> Any:
         args = value.get("args")
@@ -457,6 +461,13 @@ class ActionParser:
             item = value.get(key)
             if item is not None:
                 return item
+        commands = value.get("commands")
+        if isinstance(commands, list) and commands:
+            first = commands[0]
+            if isinstance(first, dict):
+                return first.get("command") or first.get("cmd") or first.get("keystrokes")
+            if isinstance(first, str):
+                return first
         if isinstance(args, dict):
             for key in ("command", "cmd", "shell", "keystrokes", "code"):
                 item = args.get(key)
@@ -476,6 +487,12 @@ class ActionParser:
             parsed = self._to_int(value.get(key))
             if parsed is not None:
                 return parsed
+        commands = value.get("commands")
+        if isinstance(commands, list) and commands and isinstance(commands[0], dict):
+            for key in ("timeout_sec", "timeout", "duration", "seconds"):
+                parsed = self._to_int(commands[0].get(key))
+                if parsed is not None:
+                    return parsed
         if isinstance(args, dict):
             for key in ("timeout_sec", "timeout", "duration", "seconds"):
                 parsed = self._to_int(args.get(key))

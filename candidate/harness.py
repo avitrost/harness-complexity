@@ -5,7 +5,6 @@ from plumbing.openai_client import call_terminal_model_with_tools
 from plumbing.types import CommandResult, HarnessTurn, TaskContext
 
 FIRST_COMMAND = "pwd && ls -la"
-EDIT_MARKERS = ("cat >", "tee ", "sed -i", "perl -pi", "python - <<", "cat <<")
 SYSTEM = (
     "You are a terminal coding agent. Use the provided tools instead of free-form text. "
     "Call execute_commands for shell work or task_complete when done. "
@@ -63,8 +62,6 @@ def _state(history: list[CommandResult]) -> str:
         hints.append("last command failed; do not repeat it unchanged")
     if len(history) > 1 and last.command.strip() == history[-2].command.strip():
         hints.append("last command repeated")
-    if any(any(marker in item.command for marker in EDIT_MARKERS) for item in history[-4:]):
-        hints.append("recent write-like command seen; verify before done")
     return "; ".join(hints)
 
 
@@ -123,25 +120,27 @@ def _normalize(value: dict[str, object]) -> dict[str, object]:
     if action in {"done", "finish", "final"}:
         return {"action": "done", "command": ""}
     command = value.get("command") or value.get("cmd")
+    first = (value.get("commands") or [{}])[0] if isinstance(value.get("commands"), list) else {}
     if command is None and isinstance(args, dict):
         command = args.get("command") or args.get("cmd")
+    if command is None and isinstance(first, dict):
+        command = first.get("keystrokes") or first.get("command") or first.get("cmd")
     timeout = value.get("timeout_sec")
+    if timeout is None and isinstance(first, dict):
+        timeout = first.get("duration") or first.get("timeout_sec")
     if timeout is None and isinstance(args, dict):
         timeout = args.get("timeout_sec")
     return {"action": "run", "command": str(command or ""), "timeout_sec": timeout}
 
 
 def _timeout(value: object) -> int | None:
-    if type(value) in (int, float):
-        return max(1, min(600, int(value)))
-    if isinstance(value, str) and value.strip().isdigit():
+    if type(value) in (int, float) or (isinstance(value, str) and value.strip().isdigit()):
         return max(1, min(600, int(value)))
     return None
 
 
 def _clean_command(text: str) -> str:
-    text = _strip_fence(text).strip()
-    return "" if text.upper().startswith("DONE") else text
+    return _strip_fence(text).strip()
 
 
 def _strip_fence(text: str) -> str:
