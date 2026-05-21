@@ -20,8 +20,18 @@ this repository:
   the outer loop copies it to `candidate/harness.py` before validation.
 - The final `candidate/harness.py` must expose `create_agent()` returning a
   `plumbing.base_agent.BaseHarness`; it does not subclass Terminus2.
-- The task prompt gives the exact Black-formatted physical line budget, and the
-  final `candidate/harness.py` must satisfy it.
+- The task prompt gives the exact Black-formatted nonblank, non-comment source
+  line budget, and the final `candidate/harness.py` must satisfy it. Blank
+  lines and comments do not count toward the lower or upper budget. Do not use
+  near-duplicate numbered functions, mechanically repeated tables, dead code, or
+  unreachable policy variants, or split the same logic into many tiny helpers.
+  Keep repeated command rules compact; do not expand rule tables or pattern lists
+  into thousands of counted lines. No top-level rule catalog, knowledge base, or
+  assignment should span hundreds of lines. No single function or method should
+  contain hundreds of lines of similar branches. Do not use large fixture strings,
+  synthetic examples, or bulk data blocks as padding.
+- Before finishing, remove unused imports; the final file must pass Ruff,
+  py_compile, audit, and the source-line budget.
 - Use `logs/frontier_val.json`, `logs/evolution_summary.jsonl`,
   `logs/trace_index.json`, `logs/failures.md`, `logs/jobs/`, and `history/` as
   the local run-history filesystem.

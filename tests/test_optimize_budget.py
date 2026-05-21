@@ -46,7 +46,15 @@ def test_build_codex_command_uses_resolved_exec_binary(tmp_path: Path) -> None:
     assert "Codex is the most important GPT reference" in command[-1]
     assert "implementation depth scaled to the available line budget" in command[-1]
     assert "logs/frontier_val.json" in command[-1]
-    assert "Keep candidate/harness.py at most 128" in command[-1]
+    assert "Keep candidate/harness.py at most 128 nonblank, non-comment source lines" in command[-1]
+    assert "Blank lines and comments do not count" in command[-1]
+    assert "near-duplicate numbered functions" in command[-1]
+    assert "many tiny helpers" in command[-1]
+    assert "rule tables" in command[-1]
+    assert "top-level rule catalog" in command[-1]
+    assert "single function or method" in command[-1]
+    assert "large fixture strings" in command[-1]
+    assert "pass Ruff" in command[-1]
 
 
 def test_resume_run_dir_requires_existing_run_id(tmp_path: Path) -> None:
@@ -104,8 +112,8 @@ def test_run_val_batch_splits_total_concurrency(monkeypatch, tmp_path: Path) -> 
     assert _split_concurrency(21, 2) == [11, 10]
 
 
-def test_8192_budget_bucket_starts_after_2048() -> None:
-    assert _budget_min_lines(8192) == 2049
+def test_8192_budget_bucket_starts_after_4096() -> None:
+    assert _budget_min_lines(8192) == 4097
 
 
 def test_history_dirs_exclude_current_iteration(tmp_path: Path) -> None:

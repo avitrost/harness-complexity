@@ -64,7 +64,9 @@ def _candidate_row(path: Path) -> dict[str, Any]:
         "num_successes": summary.get("num_successes"),
         "num_crashes": summary.get("num_crashes"),
         "mean_runtime": summary.get("mean_runtime"),
+        "actual_loc": _actual_loc(count),
         "physical_loc": count.get("physical_loc"),
+        "nonblank_noncomment_sloc": count.get("nonblank_noncomment_sloc"),
         "valid": validation.get("ok", False),
         "per_task": per_task,
     }
@@ -130,7 +132,9 @@ def _frontier(rows: list[dict[str, Any]]) -> dict[str, Any]:
                 "split_mean": best.get("split_mean"),
                 "num_successes": best.get("num_successes"),
                 "num_crashes": best.get("num_crashes"),
+                "actual_loc": best.get("actual_loc"),
                 "physical_loc": best.get("physical_loc"),
+                "nonblank_noncomment_sloc": best.get("nonblank_noncomment_sloc"),
             }
         ),
         "per_task": per_task,
@@ -148,7 +152,9 @@ def _write_evolution_summary(path: Path, rows: list[dict[str, Any]]) -> None:
                     "estimated_full_score": row.get("estimated_full_score"),
                     "num_successes": row.get("num_successes"),
                     "num_crashes": row.get("num_crashes"),
+                    "actual_loc": row.get("actual_loc"),
                     "physical_loc": row.get("physical_loc"),
+                    "nonblank_noncomment_sloc": row.get("nonblank_noncomment_sloc"),
                     "per_task": row.get("per_task", {}),
                 },
                 sort_keys=True,
@@ -170,7 +176,7 @@ def _write_failures_md(
                     score=_fmt(row.get("split_mean")),
                     successes=row.get("num_successes"),
                     crashes=row.get("num_crashes"),
-                    loc=row.get("physical_loc"),
+                    loc=row.get("actual_loc"),
                 )
             )
         lines.append("")
@@ -313,6 +319,10 @@ def _extract_count(validation: dict[str, Any]) -> dict[str, Any]:
         if isinstance(data, dict) and "physical_loc" in data:
             return data
     return {}
+
+
+def _actual_loc(count: dict[str, Any]) -> Any:
+    return count.get("nonblank_noncomment_sloc", count.get("physical_loc"))
 
 
 def _write_json(path: Path, payload: Any, sort_keys: bool = False) -> None:

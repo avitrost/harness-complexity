@@ -49,7 +49,12 @@ def test_write_history_artifacts_indexes_scores_frontier_and_traces(tmp_path: Pa
         encoding="utf-8",
     )
     (candidate / "validation.json").write_text(
-        json.dumps({"ok": True, "checks": [{"json": {"physical_loc": 128}}]}),
+        json.dumps(
+            {
+                "ok": True,
+                "checks": [{"json": {"physical_loc": 128, "nonblank_noncomment_sloc": 96}}],
+            }
+        ),
         encoding="utf-8",
     )
 
@@ -61,10 +66,12 @@ def test_write_history_artifacts_indexes_scores_frontier_and_traces(tmp_path: Pa
 
     index = json.loads((history / "index.json").read_text(encoding="utf-8"))
     assert index[0]["num_successes"] == 1
+    assert index[0]["actual_loc"] == 96
     assert index[0]["per_task"]["fix-git"]["mean"] == 0.25
 
     frontier = json.loads((history / "frontier.json").read_text(encoding="utf-8"))
     assert frontier["best_overall"]["candidate"] == "iter_001_cand_01"
+    assert frontier["best_overall"]["actual_loc"] == 96
     assert frontier["per_task"]["fix-git"]["candidate"] == "iter_001_cand_01"
 
     traces = json.loads((history / "trace_index.json").read_text(encoding="utf-8"))

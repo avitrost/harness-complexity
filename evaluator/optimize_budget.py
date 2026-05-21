@@ -22,10 +22,9 @@ from plumbing.openai_client import (
     terminal_model,
     using_codex_auth,
 )
-from scripts.count_loc import count_loc
 from scripts.make_workspace import make_workspace
 
-BUDGETS = (128, 256, 512, 1024, 2048, 8192)
+BUDGETS = (128, 256, 512, 1024, 2048, 4096, 8192)
 CODEX_REASONING_EFFORTS = ("low", "medium", "high", "xhigh")
 DEFAULT_K = 2
 
@@ -42,6 +41,7 @@ def optimize_budget(
     run_id: str | None = None,
     resume: bool = False,
     concurrency: int | None = None,
+    proposal_only: bool = False,
 ) -> list[dict[str, Any]]:
     if budget not in BUDGETS:
         raise ValueError(f"unsupported budget: {budget}")
@@ -58,7 +58,15 @@ def optimize_budget(
     budget_dir.mkdir(parents=True, exist_ok=True)
     run_dir = _new_run_dir(budget_dir, dry_run, run_id, resume)
     reports = []
-    seed_report = _ensure_seed_candidate(run_dir, budget, dry_run, backend, concurrency, resume)
+    seed_report = _ensure_seed_candidate(
+        run_dir,
+        budget,
+        dry_run,
+        backend,
+        concurrency,
+        resume,
+        proposal_only,
+    )
     if seed_report:
         reports.append(seed_report)
     for iteration in range(1, cycles + 1):
@@ -95,7 +103,6 @@ def optimize_budget(
             ) as temp_dir:
                 codex_workspace = Path(temp_dir) / "workspace"
                 make_workspace(codex_workspace, Path("candidate"), history_dirs)
-                _pad_seed_to_bucket(codex_workspace / "candidate" / "harness.py", budget)
                 _sync_agent_alias_from_candidate(codex_workspace)
                 write_history_artifacts(codex_workspace / "history", history_dirs)
                 command = build_codex_command(
@@ -125,11 +132,11 @@ def optimize_budget(
                 _strip_workspace_history(workspace)
                 validation = validate_candidate(
                     workspace / "candidate" / "harness.py",
-                    max_lines=budget,
-                    min_lines=_budget_min_lines(budget),
+                    min_sloc=_budget_min_lines(budget),
+                    max_sloc=budget,
                 )
             _write_json(iter_dir / "validation.json", validation, sort_keys=True)
-            if validation["ok"] and not dry_run:
+            if validation["ok"] and not dry_run and not proposal_only:
                 val_runs.append((workspace, budget, iter_dir, backend))
             else:
                 summary = {
@@ -137,6 +144,7 @@ def optimize_budget(
                     "split_mean": 0.0,
                     "invalid": not validation["ok"],
                     "dry_run": dry_run,
+                    "proposal_only": proposal_only,
                 }
                 _write_json(iter_dir / "summary.json", summary)
             iteration_reports.append(
@@ -166,9 +174,9 @@ def build_codex_command(
 ) -> list[str]:
     min_lines = _budget_min_lines(budget)
     line_rule = (
-        f"Keep candidate/harness.py between {min_lines} and {budget}"
+        f"Keep candidate/harness.py between {min_lines} and {budget} nonblank, non-comment source lines"
         if min_lines > 1
-        else f"Keep candidate/harness.py at most {budget}"
+        else f"Keep candidate/harness.py at most {budget} nonblank, non-comment source lines"
     )
     iteration_label = str(iteration) if iteration is not None else "the next"
     horizon_line = (
@@ -196,8 +204,24 @@ def build_codex_command(
         "counted harness, with implementation depth scaled to the available line budget.\n"
         "Do not optimize for the minimum line count; use the available budget for "
         "concrete harness behavior, but do not pad or add unused abstractions.\n"
+        "Do not satisfy large budgets with near-duplicate numbered functions, "
+        "mechanically repeated tables, dead code, or unreachable policy variants.\n"
+        "Do not split the same logic into many tiny helpers; combine repeated "
+        "rules into one real subsystem.\n"
+        "Keep repeated command rules compact; do not expand rule tables or pattern "
+        "lists into thousands of counted lines.\n"
+        "No top-level rule catalog, knowledge base, or assignment should span "
+        "hundreds of lines.\n"
+        "No single function or method should contain hundreds of lines of similar "
+        "branches.\n"
+        "Do not use large fixture strings, synthetic examples, or bulk data blocks "
+        "to satisfy the lower bound.\n"
+        "Blank lines and comments do not count toward the line budget; use real "
+        "executable harness code.\n"
         "For large budgets, prefer coherent reusable harness subsystems over many "
         "independent heuristics.\n\n"
+        "Before finishing, remove unused imports; the final file must pass Ruff, "
+        "py_compile, audit, and the source-line budget.\n\n"
         "## Run directories\n"
         "All logs and results for this run are under `logs/`.\n"
         "- `logs/evolution_summary.jsonl` — past results\n"
@@ -260,6 +284,7 @@ def _ensure_seed_candidate(
     backend: str,
     concurrency: int | None,
     resume: bool,
+    proposal_only: bool,
 ) -> dict[str, Any] | None:
     iter_dir = run_dir / "iter_000_seed"
     summary = _read_json(iter_dir / "summary.json")
@@ -280,16 +305,14 @@ def _ensure_seed_candidate(
         shutil.rmtree(iter_dir)
     iter_dir.mkdir(parents=True, exist_ok=True)
     make_workspace(workspace, Path("candidate"))
-    _pad_seed_to_bucket(workspace / "candidate" / "harness.py", budget)
     _strip_workspace_history(workspace)
     _write_meta(iter_dir, budget, 0, 0, "seed")
     validation = validate_candidate(
         workspace / "candidate" / "harness.py",
-        max_lines=budget,
-        min_lines=_budget_min_lines(budget),
+        max_sloc=budget,
     )
     _write_json(iter_dir / "validation.json", validation, sort_keys=True)
-    if validation["ok"] and not dry_run:
+    if validation["ok"] and not dry_run and not proposal_only:
         _run_val(workspace, budget, iter_dir, backend, concurrency)
     else:
         summary = {
@@ -297,6 +320,7 @@ def _ensure_seed_candidate(
             "split_mean": 0.0,
             "invalid": not validation["ok"],
             "dry_run": dry_run,
+            "proposal_only": proposal_only,
         }
         _write_json(iter_dir / "summary.json", summary)
     return {"iteration": 0, "candidate": 0, "workspace": str(workspace), "valid": validation["ok"]}
@@ -310,16 +334,6 @@ def _budget_min_lines(budget: int) -> int:
     ordered = sorted(BUDGETS)
     index = ordered.index(budget)
     return 1 if index == 0 else ordered[index - 1] + 1
-
-
-def _pad_seed_to_bucket(path: Path, budget: int) -> None:
-    min_lines = _budget_min_lines(budget)
-    while (needed := min_lines - int(count_loc(path)["physical_loc"])) > 0:
-        text = path.read_text(encoding="utf-8")
-        if text and not text.endswith("\n"):
-            text += "\n"
-        text += "\n".join("# bucket padding" for _ in range(needed)) + "\n"
-        path.write_text(text, encoding="utf-8")
 
 
 def _new_run_dir(
@@ -775,6 +789,7 @@ def main() -> int:
     parser.add_argument("--run-id")
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--concurrency", type=int)
+    parser.add_argument("--proposal-only", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
     try:
@@ -790,6 +805,7 @@ def main() -> int:
             run_id=args.run_id,
             resume=args.resume,
             concurrency=args.concurrency,
+            proposal_only=args.proposal_only,
         )
     except (RuntimeError, ValueError) as exc:
         print(json.dumps({"ok": False, "error": str(exc)}, indent=2), file=sys.stderr)

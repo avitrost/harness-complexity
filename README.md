@@ -252,13 +252,14 @@ python scripts/plot_complexity_curve.py
 - Meta-optimizer: Codex GPT-5.5 Medium.
 - Terminal-solving model: GPT-5.4 Mini with no reasoning, fixed in uncounted plumbing.
 - Counted file: `candidate/harness.py` only.
-- Independent variable: Black-formatted physical lines, including comments and blank lines.
-- LOC buckets: 1-128, 129-256, 257-512, 513-1024, 1025-2048.
+- Independent variable: Black-formatted nonblank, non-comment source lines.
+- LOC buckets: 1-128, 129-256, 257-512, 513-1024, 1025-2048,
+  2049-4096, 4097-8192.
 - Optimization iterations: 10 per budget by default.
 - Default proposal batch size: `k=2` candidates per iteration, matching the explicit
   candidate count reported for Meta-Harness search runs in the paper.
-- The canonical seed is evaluated once as the initial population before proposals; for
-  higher buckets, the seed workspace is padded with comments to satisfy the bucket floor.
+- The canonical seed is evaluated once as the initial population before proposals; only
+  proposed candidates must satisfy the bucket floor.
 - Each budget has independent search history.
 - No cross-budget sharing in the primary experiment.
 - Optimization split: the prior validation and test task lists are combined into

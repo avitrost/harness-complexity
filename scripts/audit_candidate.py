@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+from collections import Counter
 import json
 import re
 import sys
@@ -31,7 +32,7 @@ LOCAL_ROOTS = {
 FORBIDDEN_PATTERNS = {
     "eval(": re.compile(r"\beval\s*\("),
     "exec(": re.compile(r"\bexec\s*\("),
-    "compile(": re.compile(r"\bcompile\s*\("),
+    "compile(": re.compile(r"(?<![\w.])compile\s*\("),
     "importlib": re.compile(r"\bimportlib\b"),
     "__import__": re.compile(r"\b__import__\b"),
     "subprocess": re.compile(r"\bsubprocess\b"),
@@ -62,7 +63,10 @@ def audit_candidate(path: Path) -> dict[str, Any]:
         if slug in text:
             errors.append(f"forbidden task slug: {slug}")
     _audit_forbidden_paths(text, errors)
-    _audit_imports(text, errors)
+    tree = _parse_tree(text, errors)
+    if tree is not None:
+        _audit_imports(tree, errors)
+        _audit_padding_shapes(tree, errors)
     return {"path": str(path), "ok": not errors, "errors": errors}
 
 
@@ -75,12 +79,15 @@ def _audit_forbidden_paths(text: str, errors: list[str]) -> None:
             errors.append(f"forbidden path read: {dirname}")
 
 
-def _audit_imports(text: str, errors: list[str]) -> None:
+def _parse_tree(text: str, errors: list[str]) -> ast.AST | None:
     try:
-        tree = ast.parse(text)
+        return ast.parse(text)
     except SyntaxError as exc:
         errors.append(f"syntax error: {exc}")
         return
+
+
+def _audit_imports(tree: ast.AST, errors: list[str]) -> None:
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
@@ -88,6 +95,29 @@ def _audit_imports(text: str, errors: list[str]) -> None:
         elif isinstance(node, ast.ImportFrom):
             module = node.module or ""
             _check_import(module, errors)
+
+
+def _audit_padding_shapes(tree: ast.AST, errors: list[str]) -> None:
+    functions = [node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)]
+    for node in functions:
+        lines = (getattr(node, "end_lineno", None) or node.lineno) - node.lineno + 1
+        if lines > 500:
+            errors.append(f"oversized function body: {node.name} has {lines} lines")
+    numbered = [node.name for node in functions if re.search(r"_\d{1,4}$", node.name)]
+    if len(numbered) > 24:
+        errors.append(f"mechanical numbered functions: {len(numbered)}")
+    bodies = Counter(
+        ast.dump(ast.Module(body=node.body, type_ignores=[]), include_attributes=False)
+        for node in functions
+    )
+    repeated = max(bodies.values(), default=0)
+    if repeated > 8:
+        errors.append(f"near-duplicate function bodies: {repeated}")
+    for node in getattr(tree, "body", []):
+        if isinstance(node, (ast.Assign, ast.AnnAssign)):
+            lines = (getattr(node, "end_lineno", None) or node.lineno) - node.lineno + 1
+            if lines > 500:
+                errors.append(f"large top-level data block: {lines} lines")
 
 
 def _check_import(module: str, errors: list[str]) -> None:
