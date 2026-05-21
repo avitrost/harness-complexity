@@ -17,8 +17,9 @@ mechanics needed to run it.
   sequencing.
 - `scripts/` contains uncounted command-line helpers for line counting, static audit,
   workspace creation, candidate selection, bootstrap confidence intervals, and plots.
-- `tree/main/candidate` is the canonical seed copied into new optimization
-  workspaces.
+- `tree/main/candidate` is the canonical small-budget seed. Budget-specific seeds
+  live under `seeds/Bxxxx/` when a larger budget should start from a larger
+  validated harness.
 - `experience/`, `final_test/`, and `results/` are artifact directories. Generated
   contents are ignored by git; only `.gitkeep` placeholders are tracked.
 - `tests/` contains local unit tests. They use mocks/fakes and do not run OpenAI calls
@@ -29,6 +30,8 @@ mechanics needed to run it.
 The barebones starter harness is intentionally small. It imports only allowed plumbing,
 formats recent terminal observations, calls `plumbing.openai_client.call_terminal_model(...)`,
 and returns a JSON action: `run` with the next command or `done` when complete.
+Budgets without an explicit seed start from this harness. B1024 starts from
+`seeds/B1024/harness.py`, and B8192 starts from `seeds/B8192/harness.py`.
 
 The terminal-solving model and reasoning effort are not named in
 `candidate/harness.py`. They are frozen in `plumbing/openai_client.py`, outside the
@@ -36,7 +39,7 @@ line-counted file. Future
 optimization cycles may change harness behavior only inside `candidate/harness.py`;
 prompt text in that file counts toward the budget.
 
-Budget optimization follows the Meta-Harness loop: the canonical seed is first
+Budget optimization follows the Meta-Harness loop: the budget seed is first
 validated and evaluated as `iter_000_seed`, then each iteration asks Codex for `k`
 new candidate harnesses. Codex runs in a temporary isolated workspace containing
 `candidate/harness.py`, `proposal.md`, local workspace instructions, and a
@@ -59,7 +62,7 @@ failed/crashed traces worth inspecting first. The raw `trial.log`,
 remain the source of truth.
 
 Proposer workspaces edit `agents/baseline_kira.py`, matching the official reference
-parent name. That file starts as this repo's <128-line baseline harness. Before
+parent name. That file starts as the seed for the active budget. Before
 validation, the optimizer copies it back to `candidate/harness.py`, which remains
 the counted and evaluated artifact. Workspaces also include
 `references/terminus_kira.py` plus `references/open_source_harnesses.md` and
@@ -258,7 +261,7 @@ python scripts/plot_complexity_curve.py
 - Optimization iterations: 10 per budget by default.
 - Default proposal batch size: `k=2` candidates per iteration, matching the explicit
   candidate count reported for Meta-Harness search runs in the paper.
-- The canonical seed is evaluated once as the initial population before proposals; only
+- The budget seed is evaluated once as the initial population before proposals; only
   proposed candidates must satisfy the bucket floor.
 - Each budget has independent search history.
 - No cross-budget sharing in the primary experiment.

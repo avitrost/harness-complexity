@@ -11,6 +11,7 @@ from evaluator.optimize_budget import (
     _new_run_dir,
     _run_val,
     _run_val_batch,
+    _seed_source_for_budget,
     _split_concurrency,
     _sync_agent_alias_from_candidate,
     _sync_candidate_from_agent_alias,
@@ -129,6 +130,12 @@ def test_run_val_batch_splits_total_concurrency(monkeypatch, tmp_path: Path) -> 
 
 def test_8192_budget_bucket_starts_after_4096() -> None:
     assert _budget_min_lines(8192) == 4097
+
+
+def test_budget_specific_seed_sources() -> None:
+    assert _seed_source_for_budget(128) == Path("candidate")
+    assert _seed_source_for_budget(1024) == Path("seeds/B1024")
+    assert _seed_source_for_budget(8192) == Path("seeds/B8192")
 
 
 def test_history_dirs_exclude_current_iteration(tmp_path: Path) -> None:

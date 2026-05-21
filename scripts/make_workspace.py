@@ -16,7 +16,7 @@ These notes override the reference instructions above wherever they conflict wit
 this repository:
 
 - Edit `agents/baseline_kira.py` and `proposal.md` only.
-  `agents/baseline_kira.py` starts as this repo's <128-line baseline harness;
+  `agents/baseline_kira.py` starts as this budget's seed harness;
   the outer loop copies it to `candidate/harness.py` before validation.
 - The final `candidate/harness.py` must expose `create_agent()` returning a
   `plumbing.base_agent.BaseHarness`; it does not subclass Terminus2.

@@ -27,6 +27,7 @@ from scripts.make_workspace import make_workspace
 BUDGETS = (128, 256, 512, 1024, 2048, 4096, 8192)
 CODEX_REASONING_EFFORTS = ("low", "medium", "high", "xhigh")
 DEFAULT_K = 2
+SEED_ROOT = Path("seeds")
 
 
 def optimize_budget(
@@ -102,7 +103,7 @@ def optimize_budget(
                 )
             ) as temp_dir:
                 codex_workspace = Path(temp_dir) / "workspace"
-                make_workspace(codex_workspace, Path("candidate"), history_dirs)
+                make_workspace(codex_workspace, _seed_source_for_budget(budget), history_dirs)
                 _sync_agent_alias_from_candidate(codex_workspace)
                 write_history_artifacts(codex_workspace / "history", history_dirs)
                 command = build_codex_command(
@@ -321,7 +322,7 @@ def _ensure_seed_candidate(
     if iter_dir.exists():
         shutil.rmtree(iter_dir)
     iter_dir.mkdir(parents=True, exist_ok=True)
-    make_workspace(workspace, Path("candidate"))
+    make_workspace(workspace, _seed_source_for_budget(budget))
     _strip_workspace_history(workspace)
     _write_meta(iter_dir, budget, 0, 0, "seed")
     validation = validate_candidate(
@@ -351,6 +352,11 @@ def _budget_min_lines(budget: int) -> int:
     ordered = sorted(BUDGETS)
     index = ordered.index(budget)
     return 1 if index == 0 else ordered[index - 1] + 1
+
+
+def _seed_source_for_budget(budget: int) -> Path:
+    seed = SEED_ROOT / f"B{budget:04d}"
+    return seed if (seed / "harness.py").exists() else Path("candidate")
 
 
 def _new_run_dir(
