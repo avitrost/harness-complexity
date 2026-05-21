@@ -186,6 +186,17 @@ def build_codex_command(
         if cycles is not None
         else ""
     )
+    large_budget_line = (
+        "\nFor budgets at or above 4096, use the space for distinct reachable "
+        "subsystems on the `next_command` path: action parsing, history/state "
+        "summaries, command policy, timeout policy, completion gating, recovery "
+        "planning, bounded verification, and prompt construction. Prefer compact "
+        "loops and data structures inside those subsystems over expanded cases. "
+        "Do not build signal farms, feature farms, or generated token scanners; "
+        "feature extraction should be small and loop-based.\n"
+        if budget >= 4096
+        else ""
+    )
     prompt = (
         f"Run iteration {iteration_label} of the scaffold evolution loop (harness track)."
         f" Model: {terminal_model()}. Start from agents/baseline_kira.py "
@@ -219,7 +230,8 @@ def build_codex_command(
         "Blank lines and comments do not count toward the line budget; use real "
         "executable harness code.\n"
         "For large budgets, prefer coherent reusable harness subsystems over many "
-        "independent heuristics.\n\n"
+        "independent heuristics.\n"
+        f"{large_budget_line}\n"
         "Before finishing, remove unused imports; the final file must pass Ruff, "
         "py_compile, audit, and the source-line budget.\n\n"
         "## Run directories\n"

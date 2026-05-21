@@ -56,6 +56,18 @@ def test_build_codex_command_uses_resolved_exec_binary(tmp_path: Path) -> None:
     assert "large fixture strings" in command[-1]
     assert "pass Ruff" in command[-1]
 
+    large_command = build_codex_command(
+        budget=8192,
+        codex_model="gpt-5.5",
+        codex_reasoning_effort="medium",
+        repair=False,
+        codex_bin=str(codex),
+        workspace=tmp_path,
+    )
+    assert "distinct reachable subsystems" in large_command[-1]
+    assert "Prefer compact loops and data structures" in large_command[-1]
+    assert "signal farms" in large_command[-1]
+
 
 def test_resume_run_dir_requires_existing_run_id(tmp_path: Path) -> None:
     run_dir = tmp_path / "run_existing"

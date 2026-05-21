@@ -30,6 +30,12 @@ this repository:
   assignment should span hundreds of lines. No single function or method should
   contain hundreds of lines of similar branches. Do not use large fixture strings,
   synthetic examples, or bulk data blocks as padding.
+- For very large budgets, use the space for distinct reachable subsystems on the
+  `next_command` path, such as action parsing, history/state summaries, command
+  policy, timeout policy, completion gating, recovery planning, bounded
+  verification, and prompt construction. Do not build signal farms, feature
+  farms, or generated token scanners; feature extraction should be small and
+  loop-based.
 - Before finishing, remove unused imports; the final file must pass Ruff,
   py_compile, audit, and the source-line budget.
 - Use `logs/frontier_val.json`, `logs/evolution_summary.jsonl`,
