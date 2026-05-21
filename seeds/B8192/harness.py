@@ -6,7 +6,7 @@ from enum import Enum
 from typing import Any, Iterable
 
 from plumbing.base_agent import BaseHarness
-from plumbing.openai_client import call_terminal_model
+from plumbing.openai_client import ToolModelResult, call_terminal_model_with_tools
 from plumbing.types import CommandResult, HarnessTurn, TaskContext
 
 FIRST_COMMAND = "pwd && find . -maxdepth 2 -type f | sort | sed -n '1,160p'"
@@ -19,14 +19,65 @@ MIN_TIMEOUT = 3
 RECOVERY_TIMEOUT = 10
 
 SYSTEM_PROMPT = """
-You are a terminal coding agent. You have exactly one interface: return one JSON object.
-Valid actions are {"action":"run","command":"...","timeout_sec":N} and {"action":"done"}.
-Think privately, but output only the JSON object. Do not wrap it in Markdown.
+You are a terminal coding agent. Use the provided tools instead of free-form text.
+Call execute_commands with analysis, plan, and command keystrokes, or call task_complete.
+Think privately, but expose concise analysis and plan in the tool arguments.
 Use a disciplined loop: inspect the workspace, read relevant files, make the smallest useful change, verify the changed behavior, then finish.
 Prefer bounded commands. Use rg, find, sed -n, python snippets, and targeted tests. Avoid interactive programs, background servers, unbounded streams, and destructive cleanup.
 When a command fails, inspect the failure or change approach. Do not repeat the same command without a reason.
 Completion requires evidence from recent successful verification, especially after writes.
 """.strip()
+
+KIRA_TOOLS: list[dict[str, Any]] = [
+    {
+        "type": "function",
+        "name": "execute_commands",
+        "description": "Execute terminal commands with a short analysis and plan.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "analysis": {
+                    "type": "string",
+                    "description": "Briefly describe the current state.",
+                },
+                "plan": {
+                    "type": "string",
+                    "description": "Briefly describe what the next command should accomplish.",
+                },
+                "commands": {
+                    "type": "array",
+                    "description": "One or more shell commands to run. The harness executes one per turn.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "keystrokes": {
+                                "type": "string",
+                                "description": "Exact shell command text.",
+                            },
+                            "duration": {
+                                "type": "number",
+                                "description": "Expected command duration in seconds, capped by the harness.",
+                            },
+                        },
+                        "required": ["keystrokes"],
+                    },
+                },
+            },
+            "required": ["analysis", "plan", "commands"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "type": "function",
+        "name": "task_complete",
+        "description": "Signal that the task is complete.",
+        "parameters": {
+            "type": "object",
+            "properties": {},
+            "additionalProperties": False,
+        },
+    },
+]
 
 
 class ActionKind(str, Enum):
@@ -1132,7 +1183,8 @@ class PromptBuilder:
         if recovery:
             sections.append("Harness recovery note:\n" + recovery)
         sections.append(
-            'Return exactly one JSON object now. Use {"action":"run","command":"...","timeout_sec":N} or {"action":"done"}.'
+            "Use execute_commands for the next shell action, or task_complete only when "
+            "recent terminal evidence supports completion."
         )
         return "\n\n".join(sections)
 
@@ -1188,6 +1240,81 @@ class RecoveryMemory:
         if self.message and history_len <= self.last_history_len + 1:
             return self.message
         return ""
+
+
+class ToolActionAdapter:
+    def parse(self, result: ToolModelResult) -> ParsedAction | None:
+        for call in result.tool_calls:
+            if call.name == "task_complete":
+                return ParsedAction(
+                    ActionKind.DONE,
+                    raw=result.content,
+                    source="tool:task_complete",
+                    confidence=0.95,
+                )
+            if call.name == "execute_commands":
+                action = self._execute_commands_action(call.arguments, result.content)
+                if action is not None:
+                    return action
+        return None
+
+    def _execute_commands_action(self, arguments: dict[str, Any], raw: str) -> ParsedAction | None:
+        commands = arguments.get("commands", [])
+        if isinstance(commands, str):
+            try:
+                commands = json.loads(commands)
+            except json.JSONDecodeError:
+                commands = []
+        if not isinstance(commands, list):
+            return None
+        for command in commands:
+            keystrokes = self._keystrokes(command)
+            if not keystrokes:
+                continue
+            return ParsedAction(
+                ActionKind.RUN,
+                command=keystrokes,
+                timeout_sec=self._duration(command),
+                raw=raw,
+                source="tool:execute_commands",
+                confidence=0.98,
+                notes=self._notes(arguments),
+            )
+        return ParsedAction(
+            ActionKind.RECOVER,
+            raw=raw,
+            source="tool:execute_commands_empty",
+            confidence=0.2,
+            notes=["execute_commands contained no runnable command"],
+        )
+
+    def _keystrokes(self, command: Any) -> str:
+        if isinstance(command, str):
+            return command.strip()
+        if isinstance(command, dict):
+            for key in ("keystrokes", "command", "cmd", "shell"):
+                value = command.get(key)
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
+        return ""
+
+    def _duration(self, command: Any) -> int | None:
+        if not isinstance(command, dict):
+            return None
+        value = command.get("duration")
+        if value is None:
+            value = command.get("timeout_sec")
+        if not isinstance(value, (int, float)) or isinstance(value, bool):
+            return None
+        return max(MIN_TIMEOUT, min(int(value), MAX_TIMEOUT))
+
+    def _notes(self, arguments: dict[str, Any]) -> list[str]:
+        notes: list[str] = []
+        for key in ("analysis", "plan"):
+            value = arguments.get(key)
+            if isinstance(value, str) and value.strip():
+                notes.append(f"{key}: {value.strip()[:240]}")
+        return notes[:2]
 
 
 class CommandMediator:
@@ -1315,6 +1442,7 @@ class CommandMediator:
 class TurnPlanner:
     def __init__(self) -> None:
         self.parser = ActionParser()
+        self.tools = ToolActionAdapter()
         self.analyzer = HistoryAnalyzer()
         self.prompts = PromptBuilder()
         self.mediator = CommandMediator()
@@ -1330,13 +1458,14 @@ class TurnPlanner:
         signal = self.analyzer.analyze(history)
         recovery = self.memory.current(len(history))
         bundle = self.prompts.build(task, history, signal, recovery)
-        response = call_terminal_model(
+        response = call_terminal_model_with_tools(
             [
                 {"role": "system", "content": bundle.system},
                 {"role": "user", "content": bundle.user},
-            ]
+            ],
+            KIRA_TOOLS,
         )
-        parsed = self.parser.parse(response)
+        parsed = self.tools.parse(response) or self.parser.parse(response.content)
         if parsed.action == ActionKind.DONE:
             allowed, reason = self.gate.allow_done(history, signal)
             if allowed:

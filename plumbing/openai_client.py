@@ -6,6 +6,7 @@ import json
 import os
 import time
 from collections.abc import Callable
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError
@@ -34,6 +35,20 @@ _trace_dir: contextvars.ContextVar[Path | None] = contextvars.ContextVar(
 _trace_count: contextvars.ContextVar[int] = contextvars.ContextVar(
     "terminal_model_trace_count", default=0
 )
+
+
+@dataclass(frozen=True)
+class ModelToolCall:
+    name: str
+    arguments: dict[str, Any]
+    arguments_text: str = ""
+    call_id: str = ""
+
+
+@dataclass(frozen=True)
+class ToolModelResult:
+    content: str
+    tool_calls: list[ModelToolCall]
 
 
 def set_client_factory(factory: Callable[[], OpenAI] | None) -> None:
@@ -75,7 +90,7 @@ def call_terminal_model(messages: list[dict[str, str]]) -> str:
         try:
             _throttle_if_requested()
             if using_codex_auth():
-                text = _call_codex_backend(messages)
+                text = _call_codex_backend_result(messages).content
                 _write_model_trace(messages, text)
                 return text
             response = _make_client().responses.create(
@@ -95,6 +110,38 @@ def call_terminal_model(messages: list[dict[str, str]]) -> str:
                 break
             time.sleep(_retry_delay(exc, attempt))
     raise RuntimeError("terminal model call failed") from last_error
+
+
+def call_terminal_model_with_tools(
+    messages: list[dict[str, str]],
+    tools: list[dict[str, Any]],
+) -> ToolModelResult:
+    last_error: Exception | None = None
+    for attempt in range(MAX_RETRIES + 1):
+        try:
+            _throttle_if_requested()
+            if using_codex_auth():
+                result = _call_codex_backend_result(messages, tools)
+                _write_model_trace(messages, result.content, tool_calls=result.tool_calls)
+                return result
+            response = _make_client().responses.create(
+                model=terminal_model(),
+                input=messages,
+                reasoning={"effort": terminal_reasoning_effort()},
+                tools=tools,
+                max_output_tokens=MAX_OUTPUT_TOKENS,
+                timeout=TIMEOUT_SEC,
+            )
+            result = _extract_result(response)
+            _write_model_trace(messages, result.content, tool_calls=result.tool_calls)
+            return result
+        except Exception as exc:  # pragma: no cover - real API path
+            last_error = exc
+            if attempt >= MAX_RETRIES:
+                _write_model_trace(messages, "", error=str(exc))
+                break
+            time.sleep(_retry_delay(exc, attempt))
+    raise RuntimeError("terminal model tool call failed") from last_error
 
 
 def check_terminal_model_available() -> None:
@@ -140,6 +187,7 @@ def _write_model_trace(
     messages: list[dict[str, str]],
     response_text: str,
     error: str | None = None,
+    tool_calls: list[ModelToolCall] | None = None,
 ) -> None:
     trace_dir = _trace_dir.get()
     if trace_dir is None:
@@ -155,6 +203,8 @@ def _write_model_trace(
     }
     if error:
         payload["error"] = error
+    if tool_calls is not None:
+        payload["tool_calls"] = [asdict(call) for call in tool_calls]
     (trace_dir / f"model-call-{index:02d}.json").write_text(
         json.dumps(payload, indent=2),
         encoding="utf-8",
@@ -162,10 +212,17 @@ def _write_model_trace(
 
 
 def _call_codex_backend(messages: list[dict[str, str]]) -> str:
+    return _call_codex_backend_result(messages).content
+
+
+def _call_codex_backend_result(
+    messages: list[dict[str, str]],
+    tools: list[dict[str, Any]] | None = None,
+) -> ToolModelResult:
     auth = _load_codex_auth()
     access_token = _fresh_codex_access_token(auth)
     account_id = _codex_account_id(access_token, auth)
-    body = _codex_body(messages)
+    body = _codex_body(messages, tools)
     request = Request(
         CODEX_BASE_URL,
         data=json.dumps(body).encode("utf-8"),
@@ -181,13 +238,16 @@ def _call_codex_backend(messages: list[dict[str, str]]) -> str:
     )
     try:
         with urlopen(request, timeout=TIMEOUT_SEC) as response:
-            return _extract_sse_text(response.read().decode("utf-8", errors="replace"))
+            return _extract_sse_result(response.read().decode("utf-8", errors="replace"))
     except HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")
         raise RuntimeError(f"codex backend call failed: {exc.code} {detail[:500]}") from exc
 
 
-def _codex_body(messages: list[dict[str, str]]) -> dict[str, Any]:
+def _codex_body(
+    messages: list[dict[str, str]],
+    tools: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     instructions = "\n\n".join(
         item.get("content", "")
         for item in messages
@@ -198,7 +258,7 @@ def _codex_body(messages: list[dict[str, str]]) -> dict[str, Any]:
         for item in messages
         if item.get("role") not in {"system", "developer"}
     ]
-    return {
+    body: dict[str, Any] = {
         "model": terminal_model(),
         "reasoning": {"effort": terminal_reasoning_effort()},
         "instructions": instructions or "You are a concise assistant.",
@@ -206,6 +266,9 @@ def _codex_body(messages: list[dict[str, str]]) -> dict[str, Any]:
         "stream": True,
         "store": False,
     }
+    if tools:
+        body["tools"] = tools
+    return body
 
 
 def _codex_auth_path() -> Path:
@@ -278,6 +341,10 @@ def _jwt_payload(token: str) -> dict[str, Any]:
 
 
 def _extract_sse_text(text: str) -> str:
+    return _extract_sse_result(text).content
+
+
+def _extract_sse_result(text: str) -> ToolModelResult:
     chunks: list[str] = []
     completed: dict[str, Any] | None = None
     for line in text.splitlines():
@@ -293,26 +360,34 @@ def _extract_sse_text(text: str) -> str:
         elif event_type == "response.completed":
             completed = event.get("response")
     if chunks:
-        return "".join(chunks)
+        content = "".join(chunks)
+        calls = _extract_response_dict_tool_calls(completed or {})
+        return ToolModelResult(content, calls)
     if completed:
-        return _extract_response_dict_text(completed)
-    return ""
+        return _extract_response_dict_result(completed)
+    return ToolModelResult("", [])
 
 
 def _extract_response_dict_text(response: dict[str, Any]) -> str:
+    return _extract_response_dict_result(response).content
+
+
+def _extract_response_dict_result(response: dict[str, Any]) -> ToolModelResult:
     chunks: list[str] = []
     for item in response.get("output") or []:
         for content in item.get("content") or []:
             text = content.get("text")
             if isinstance(text, str):
                 chunks.append(text)
-    return "\n".join(chunks)
+    return ToolModelResult("\n".join(chunks), _extract_response_dict_tool_calls(response))
 
 
 def _extract_text(response: Any) -> str:
+    return _extract_result(response).content
+
+
+def _extract_result(response: Any) -> ToolModelResult:
     text = getattr(response, "output_text", None)
-    if isinstance(text, str):
-        return text
     output = getattr(response, "output", None) or []
     chunks: list[str] = []
     for item in output:
@@ -321,5 +396,65 @@ def _extract_text(response: Any) -> str:
             if isinstance(value, str):
                 chunks.append(value)
     if chunks:
-        return "\n".join(chunks)
-    return str(response)
+        text = "\n".join(chunks)
+    return ToolModelResult(
+        text if isinstance(text, str) else str(response), _extract_tool_calls(response)
+    )
+
+
+def _extract_tool_calls(response: Any) -> list[ModelToolCall]:
+    calls: list[ModelToolCall] = []
+    for item in getattr(response, "output", None) or []:
+        call = _tool_call_from_obj(item)
+        if call is not None:
+            calls.append(call)
+    return calls
+
+
+def _extract_response_dict_tool_calls(response: dict[str, Any]) -> list[ModelToolCall]:
+    calls: list[ModelToolCall] = []
+    for item in response.get("output") or []:
+        call = _tool_call_from_mapping(item)
+        if call is not None:
+            calls.append(call)
+    return calls
+
+
+def _tool_call_from_obj(item: Any) -> ModelToolCall | None:
+    item_type = getattr(item, "type", "")
+    if item_type not in {"function_call", "tool_call"} and not hasattr(item, "arguments"):
+        return None
+    name = getattr(item, "name", "")
+    arguments_text = getattr(item, "arguments", "") or ""
+    call_id = getattr(item, "call_id", None) or getattr(item, "id", "") or ""
+    return _make_tool_call(name, arguments_text, call_id)
+
+
+def _tool_call_from_mapping(item: dict[str, Any]) -> ModelToolCall | None:
+    item_type = item.get("type", "")
+    function = item.get("function") if isinstance(item.get("function"), dict) else {}
+    if item_type not in {"function_call", "tool_call"} and not function:
+        return None
+    name = item.get("name") or function.get("name") or ""
+    arguments = item.get("arguments")
+    if arguments is None:
+        arguments = function.get("arguments", "")
+    call_id = item.get("call_id") or item.get("id") or ""
+    return _make_tool_call(str(name), arguments, str(call_id))
+
+
+def _make_tool_call(name: str, arguments: Any, call_id: str) -> ModelToolCall | None:
+    if not name:
+        return None
+    if isinstance(arguments, str):
+        arguments_text = arguments
+        try:
+            parsed = json.loads(arguments) if arguments else {}
+        except json.JSONDecodeError:
+            parsed = {}
+    else:
+        parsed = arguments if isinstance(arguments, dict) else {}
+        arguments_text = json.dumps(parsed, sort_keys=True)
+    return ModelToolCall(
+        name=name, arguments=parsed, arguments_text=arguments_text, call_id=call_id
+    )

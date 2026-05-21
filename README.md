@@ -38,6 +38,10 @@ The terminal-solving model and reasoning effort are not named in
 line-counted file. Future
 optimization cycles may change harness behavior only inside `candidate/harness.py`;
 prompt text in that file counts toward the budget.
+Counted harnesses may either call the text-only terminal model wrapper or define
+tool schemas and call the mechanical tool-call wrapper. In the latter case, the
+schema, action selection, completion policy, and command mediation remain counted
+harness code; plumbing only transports messages, schemas, and returned tool calls.
 
 Budget optimization follows the Meta-Harness loop: the budget seed is first
 validated and evaluated as `iter_000_seed`, then each iteration asks Codex for `k`
@@ -73,9 +77,10 @@ and cannot be imported at runtime.
 ## Plumbing Boundary
 
 Uncounted plumbing must stay mechanical. It may load `OPENAI_API_KEY`, call the fixed
-terminal model, adapt the harness to Harbor, validate line count and static constraints,
-parse Harbor outputs, aggregate scores, and plot results. It must not contain
-task-solving strategy that would change benchmark behavior.
+terminal model, pass through tool schemas supplied by the counted harness, return
+tool-call records, adapt the harness to Harbor, validate line count and static
+constraints, parse Harbor outputs, aggregate scores, and plot results. It must not
+contain task-solving strategy that would change benchmark behavior.
 
 The Harbor adapter exposes `plumbing.harbor_adapter:HarborHarnessAgent`. Harbor calls
 that class, the adapter loads the candidate harness from the selected workspace, passes
