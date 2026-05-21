@@ -21,6 +21,7 @@ def main() -> int:
     parser.add_argument("--codex-reasoning-effort", default="medium")
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--concurrency", type=int)
+    parser.add_argument("--parallel-budgets", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--run-final-test", action="store_true")
     args = parser.parse_args()
@@ -47,6 +48,7 @@ def main() -> int:
         args.codex_reasoning_effort,
         *(("--resume",) if args.resume else ()),
         *(("--concurrency", str(args.concurrency)) if args.concurrency is not None else ()),
+        *(("--parallel-budgets",) if args.parallel_budgets else ()),
         *(("--dry-run",) if args.dry_run else ()),
         *(("--run-final-test",) if args.run_final_test else ()),
     ]

@@ -4,6 +4,7 @@ import pytest
 
 from evaluator.optimize_budget import (
     _bwrap_codex_command,
+    _budget_min_lines,
     _candidate_complete,
     _copy_workspace,
     _history_dirs,
@@ -43,7 +44,7 @@ def test_build_codex_command_uses_resolved_exec_binary(tmp_path: Path) -> None:
     assert "Start from agents/baseline_kira.py" in command[-1]
     assert "open_source_harnesses.md" in command[-1]
     assert "Codex is the most important GPT reference" in command[-1]
-    assert "reference-harness pattern can be compressed or adapted" in command[-1]
+    assert "implementation depth scaled to the available line budget" in command[-1]
     assert "logs/frontier_val.json" in command[-1]
     assert "Keep candidate/harness.py at most 128" in command[-1]
 
@@ -101,6 +102,10 @@ def test_run_val_batch_splits_total_concurrency(monkeypatch, tmp_path: Path) -> 
 
     assert sorted(calls) == [10, 10]
     assert _split_concurrency(21, 2) == [11, 10]
+
+
+def test_8192_budget_bucket_starts_after_2048() -> None:
+    assert _budget_min_lines(8192) == 2049
 
 
 def test_history_dirs_exclude_current_iteration(tmp_path: Path) -> None:

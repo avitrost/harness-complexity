@@ -25,7 +25,7 @@ from plumbing.openai_client import (
 from scripts.count_loc import count_loc
 from scripts.make_workspace import make_workspace
 
-BUDGETS = (128, 256, 512, 1024, 2048)
+BUDGETS = (128, 256, 512, 1024, 2048, 8192)
 CODEX_REASONING_EFFORTS = ("low", "medium", "high", "xhigh")
 DEFAULT_K = 2
 
@@ -192,10 +192,12 @@ def build_codex_command(
         "scaffold changes that help the agent solve complex, long-horizon tasks.\n\n"
         "## Line budget\n"
         f"{line_rule} after Black formatting.\n\n"
-        "Consider whether a useful reference-harness pattern can be compressed or adapted "
-        "into the counted harness.\n"
+        "Consider whether useful reference-harness patterns can be adapted into the "
+        "counted harness, with implementation depth scaled to the available line budget.\n"
         "Do not optimize for the minimum line count; use the available budget for "
-        "concrete harness behavior, but do not pad or add unused abstractions.\n\n"
+        "concrete harness behavior, but do not pad or add unused abstractions.\n"
+        "For large budgets, prefer coherent reusable harness subsystems over many "
+        "independent heuristics.\n\n"
         "## Run directories\n"
         "All logs and results for this run are under `logs/`.\n"
         "- `logs/evolution_summary.jsonl` — past results\n"

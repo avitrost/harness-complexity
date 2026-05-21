@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 import json
 import os
 import subprocess
@@ -15,10 +16,7 @@ DEFAULT_BUDGETS = (128, 256, 512, 1024, 2048)
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description=(
-            "Run budgets sequentially. To parallelize manually, run optimize_budget for each "
-            "budget in a separate shell, then rerun this command with --skip-optimization."
-        )
+        description=("Run budget optimizations, then select winners and plot results.")
     )
     parser.add_argument("--cycles", type=int, default=10)
     parser.add_argument("--codex-model", default="gpt-5.5")
@@ -36,6 +34,11 @@ def main() -> int:
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--concurrency", type=int)
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument(
+        "--parallel-budgets",
+        action="store_true",
+        help="Run budget optimizations concurrently; --concurrency applies to each budget.",
+    )
     parser.add_argument("--skip-optimization", action="store_true")
     parser.add_argument("--run-final-test", action="store_true")
     args = parser.parse_args()
@@ -53,40 +56,14 @@ def main() -> int:
         raise RuntimeError(f"no matching run directories found for --run-id {run_id}")
     os.environ["OPENAI_TERMINAL_MODEL"] = args.terminal_model
     if not args.skip_optimization:
-        for budget in budgets:
-            _run(
-                [
-                    sys.executable,
-                    "-m",
-                    "evaluator.optimize_budget",
-                    "--budget",
-                    str(budget),
-                    "--cycles",
-                    str(args.cycles),
-                    "--codex-model",
-                    args.codex_model,
-                    "--codex-reasoning-effort",
-                    args.codex_reasoning_effort,
-                    "--backend",
-                    args.backend,
-                    "--k",
-                    str(args.candidates_per_iteration),
-                    "--run-id",
-                    run_id,
-                    *(
-                        ("--resume",)
-                        if args.resume and _run_dir(budget, args.dry_run, run_id).exists()
-                        else ()
-                    ),
-                    *(
-                        ("--concurrency", str(args.concurrency))
-                        if args.concurrency is not None
-                        else ()
-                    ),
-                    *(("--codex-bin", args.codex_bin) if args.codex_bin else ()),
-                    *(("--dry-run",) if args.dry_run else ()),
-                ]
-            )
+        commands = [_optimize_command(args, budget, run_id, args.concurrency) for budget in budgets]
+        if args.parallel_budgets:
+            with ThreadPoolExecutor(max_workers=len(commands)) as pool:
+                for future in [pool.submit(_run, command) for command in commands]:
+                    future.result()
+        else:
+            for command in commands:
+                _run(command)
     if args.dry_run:
         return 0
     _clear_selection_outputs(Path("results"))
@@ -144,6 +121,37 @@ def _parse_budgets(value: str) -> list[int]:
 def _run_dir(budget: int, dry_run: bool, run_id: str) -> Path:
     prefix = "dry_run" if dry_run else "run"
     return Path(f"experience/B{budget:04d}/{prefix}_{run_id}")
+
+
+def _optimize_command(
+    args: argparse.Namespace,
+    budget: int,
+    run_id: str,
+    concurrency: int | None,
+) -> list[str]:
+    return [
+        sys.executable,
+        "-m",
+        "evaluator.optimize_budget",
+        "--budget",
+        str(budget),
+        "--cycles",
+        str(args.cycles),
+        "--codex-model",
+        args.codex_model,
+        "--codex-reasoning-effort",
+        args.codex_reasoning_effort,
+        "--backend",
+        args.backend,
+        "--k",
+        str(args.candidates_per_iteration),
+        "--run-id",
+        run_id,
+        *(("--resume",) if args.resume and _run_dir(budget, args.dry_run, run_id).exists() else ()),
+        *(("--concurrency", str(concurrency)) if concurrency is not None else ()),
+        *(("--codex-bin", args.codex_bin) if args.codex_bin else ()),
+        *(("--dry-run",) if args.dry_run else ()),
+    ]
 
 
 def _run(command: list[str]) -> None:
