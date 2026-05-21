@@ -6,7 +6,7 @@ from enum import Enum
 from typing import Iterable
 
 from plumbing.base_agent import BaseHarness
-from plumbing.openai_client import call_terminal_model
+from plumbing.openai_client import ToolModelResult, call_terminal_model_with_tools
 from plumbing.types import CommandResult, HarnessTurn, TaskContext
 
 FIRST_COMMAND = "pwd && ls -la && find . -maxdepth 2 -type f | sort | sed -n '1,160p'"
@@ -67,16 +67,48 @@ SHELL_ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 JSON_ACTION_HINT = re.compile(r'"\s*(action|command|timeout_sec|cmd|tool|arguments)\s*"\s*:')
 
 SYSTEM = (
-    "You are a terminal coding agent with one shell command tool. "
-    "Return exactly one JSON object and no prose. "
-    'Use {"action":"run","command":"...","timeout_sec":N} or {"action":"done"}. '
-    "Never return multiple JSON objects, markdown fences, arrays of actions, or explanatory text. "
+    "You are a terminal coding agent. Use the provided tools instead of free-form text. "
+    "Call execute_commands with analysis, plan, and command keystrokes, or call task_complete. "
     "Work in a loop: inspect/list/read, edit narrowly, verify with the smallest relevant check, then done. "
     "Prefer fast noninteractive commands. Bound output with sed/head/tail when reading large files. "
     "If a command fails, inspect the error or change approach; do not repeat it unchanged. "
     "If a tool is unavailable, fall back to POSIX shell, find, grep, sed, awk, or the available Python. "
     "Only mark done when recent terminal output gives evidence that the requested behavior now works."
 )
+
+TOOLS: list[dict[str, object]] = [
+    {
+        "type": "function",
+        "name": "execute_commands",
+        "description": "Execute terminal commands with a short analysis and plan.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "analysis": {"type": "string"},
+                "plan": {"type": "string"},
+                "commands": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "keystrokes": {"type": "string"},
+                            "duration": {"type": "number"},
+                        },
+                        "required": ["keystrokes"],
+                    },
+                },
+            },
+            "required": ["analysis", "plan", "commands"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "type": "function",
+        "name": "task_complete",
+        "description": "Signal that the task is complete.",
+        "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
+    },
+]
 
 
 class ActionKind(str, Enum):
@@ -170,9 +202,9 @@ class CandidateHarness(BaseHarness):
         prompt = _build_prompt(task, history, stats, self._parser_notes, self._guard_notes)
         self._parser_notes = []
         self._guard_notes = []
-        text = call_terminal_model(prompt.messages())
-        self._last_model_text = text
-        action = _parse_action(text)
+        result = call_terminal_model_with_tools(prompt.messages(), TOOLS)
+        self._last_model_text = result.content
+        action = _parse_tool_result(result) or _parse_action(result.content)
         self._parser_notes.extend(action.notes)
         action = self._repair_action(action)
         if action.kind == ActionKind.DONE:
@@ -230,10 +262,10 @@ def _build_prompt(
     if notes:
         sections.append(f"Harness feedback:\n{notes}")
     sections.append(
-        "Choose exactly one next shell command as one JSON object. "
+        "Use execute_commands for exactly one next shell command. "
         "If the last command failed, fix the cause or inspect a different angle. "
         "If edits were made, run a relevant check before done. "
-        "Do not include a second JSON object after the first one."
+        "Use task_complete only after recent verification evidence."
     )
     return PromptBundle(system=SYSTEM, user="\n\n".join(sections))
 
@@ -336,6 +368,76 @@ def _history_notes(history: list[CommandResult]) -> list[str]:
         notes.append("previous model response was malformed and ran as shell text")
     if len(history) >= 2 and history[-1].command.strip() == history[-2].command.strip():
         notes.append("previous command was repeated unchanged")
+    return notes
+
+
+def _parse_tool_result(result: ToolModelResult) -> Action | None:
+    for call in result.tool_calls:
+        if call.name == "task_complete":
+            return Action(kind=ActionKind.DONE, raw=result.content)
+        if call.name != "execute_commands":
+            continue
+        args = call.arguments
+        commands = args.get("commands", [])
+        if isinstance(commands, str):
+            try:
+                commands = json.loads(commands)
+            except json.JSONDecodeError:
+                commands = []
+        if isinstance(commands, dict):
+            commands = [commands]
+        if not isinstance(commands, list):
+            commands = []
+        for item in commands:
+            command = _tool_command(item)
+            if command:
+                return Action(
+                    kind=ActionKind.RUN,
+                    command=command,
+                    timeout_sec=_tool_timeout(item),
+                    raw=result.content,
+                    notes=_tool_notes(args),
+                )
+        return Action(
+            command="",
+            raw=result.content,
+            notes=["execute_commands contained no runnable command"],
+        )
+    return None
+
+
+def _tool_command(item: object) -> str:
+    if isinstance(item, str):
+        return item.strip()
+    if isinstance(item, dict):
+        for key in ("keystrokes", "command", "cmd", "shell"):
+            value = item.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    return ""
+
+
+def _tool_timeout(item: object) -> int | None:
+    if not isinstance(item, dict):
+        return None
+    value = item.get("duration")
+    if value is None:
+        value = item.get("timeout_sec")
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return max(MIN_TIMEOUT, min(MAX_TIMEOUT, int(value)))
+    if isinstance(value, str) and value.strip().isdigit():
+        return max(MIN_TIMEOUT, min(MAX_TIMEOUT, int(value.strip())))
+    return None
+
+
+def _tool_notes(args: dict[str, object]) -> list[str]:
+    notes = []
+    for key in ("analysis", "plan"):
+        value = args.get(key)
+        if isinstance(value, str) and value.strip():
+            notes.append(f"{key}: {value.strip()[:220]}")
     return notes
 
 
