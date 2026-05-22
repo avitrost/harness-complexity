@@ -112,6 +112,32 @@ def test_harbor_agent_executes_candidate_tool_calls(tmp_path: Path) -> None:
     assert payload["tool_call_id"] == "call_2"
 
 
+def test_harbor_agent_executes_codex_exec_command_tool(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    candidate = workspace / "candidate"
+    candidate.mkdir(parents=True)
+    (candidate / "harness.py").write_text(
+        "from plumbing.base_agent import BaseHarness\n"
+        "from plumbing.types import HarnessToolCall, HarnessTurn\n"
+        "class H(BaseHarness):\n"
+        "    def next_command(self, task, history):\n"
+        "        if history:\n"
+        "            return HarnessTurn(done=True)\n"
+        "        return HarnessTurn(tool_calls=(\n"
+        "            HarnessToolCall('exec_command', {'cmd': 'pwd', 'workdir': 'src', 'timeout_ms': 1500}, 'call_1'),\n"
+        "        ))\n"
+        "def create_agent():\n"
+        "    return H()\n",
+        encoding="utf-8",
+    )
+    env = FakeEnvironment()
+    agent = HarborHarnessAgent(logs_dir=tmp_path / "logs", candidate_dir=workspace)
+    asyncio.run(agent.run("instruction", env, SimpleNamespace(metadata=None)))
+
+    assert env.commands == ["cd src && pwd"]
+    assert env.timeouts == [2]
+
+
 def test_harbor_agent_executes_candidate_apply_patch_tool(tmp_path: Path) -> None:
     workdir = tmp_path / "task"
     workdir.mkdir()
@@ -147,6 +173,7 @@ def test_harbor_agent_executes_candidate_apply_patch_tool(tmp_path: Path) -> Non
     assert (workdir / "hello.txt").read_text(encoding="utf-8") == "new\n"
     payload = json.loads((tmp_path / "logs" / "harness-turn-01.json").read_text())
     assert payload["tool_name"] == "apply_patch"
+    assert payload["metadata"]["input"] == patch
     assert payload["return_code"] == 0
 
 

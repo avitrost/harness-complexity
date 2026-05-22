@@ -66,6 +66,16 @@ def test_codex_backend_body_can_enable_parallel_tool_calls() -> None:
     assert body["parallel_tool_calls"] is True
 
 
+def test_codex_backend_body_preserves_response_items() -> None:
+    item = {"type": "function_call_output", "call_id": "call_1", "output": "ok"}
+    body = _codex_body(
+        [{"role": "system", "content": "sys"}, {"role": "user", "content": "task"}, item]
+    )
+
+    assert body["instructions"] == "sys"
+    assert body["input"] == [{"role": "user", "content": "task"}, item]
+
+
 def test_terminal_model_tool_calls_are_extracted(monkeypatch) -> None:
     monkeypatch.delenv("OPENAI_AUTH_MODE", raising=False)
     fake = RecordingToolOpenAI()

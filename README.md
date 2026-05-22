@@ -20,6 +20,9 @@ mechanics needed to run it.
 - `tree/main/candidate` is the canonical small-budget seed. Budget-specific seeds
   live under `seeds/Bxxxx/` when a larger budget should start from a larger
   validated harness.
+- `seeds/codex_full/harness.py` is the uncompressed Codex-port baseline for the
+  compression track. It embeds pinned Codex base instructions and tool grammar
+  from `references/codex_port/` and is tested for exact prompt/grammar fidelity.
 - `experience/`, `final_test/`, and `results/` are artifact directories. Generated
   contents are ignored by git; only `.gitkeep` placeholders are tracked.
 - `tests/` contains local unit tests. They use mocks/fakes and do not run OpenAI calls
@@ -73,6 +76,18 @@ the counted and evaluated artifact. Workspaces also include
 small source snapshots for Codex, opencode, gemini-cli, and qwen-code. These
 alias/reference directories are excluded from copied-back candidate workspaces
 and cannot be imported at runtime.
+
+The Codex compression track starts from `seeds/codex_full/harness.py`, then
+removes or compresses components while preserving behavior where possible. This
+seed mirrors Codex's base-instruction prompt, `exec_command` function tool,
+freeform `apply_patch` grammar tool, prompt-building shape, parallel tool-call
+flag, and response-item replay for prior tool calls/outputs. The remaining
+known gap is process-session fidelity: Harbor exposes one-shot command execution,
+so this port does not yet expose Codex's `write_stdin` continuation tool.
+
+For a real-Codex comparison point, run `python -m evaluator.run_codex_cli`.
+This routes Harbor tasks to `codex exec` inside the same Slurm/Pyxis task
+container using the mounted host Codex CLI and workspace-local auth.
 
 ## Plumbing Boundary
 

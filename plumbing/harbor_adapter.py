@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+import shlex
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -29,6 +30,8 @@ SHELL_TOOL_NAMES = {
     "execute",
     "execute_command",
     "execute_commands",
+    "exec_command",
+    "shell_command",
     "terminal",
     "bash",
 }
@@ -44,6 +47,8 @@ class HarborRunSpec:
     concurrency: int
     split: str
     backend: str = "docker"
+    agent_import_path: str = HARBOR_AGENT_IMPORT_PATH
+    agent_kwargs: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -173,7 +178,7 @@ async def _execute_tool_call(
             tool_name=name,
             tool_call_id=tool_call.call_id,
             display_command=_patch_display(patch),
-            metadata={"patch_bytes": len(patch.encode("utf-8"))},
+            metadata={"input": patch, "patch_bytes": len(patch.encode("utf-8"))},
         )
     return CommandResult(
         command=f"<unsupported tool {name}>",
@@ -285,6 +290,9 @@ def _shell_command(
         or args.get("input")
         or ""
     )
+    workdir = str(args.get("workdir") or "").strip()
+    if workdir:
+        command = f"cd {shlex.quote(workdir)} && {command}"
     return str(command), _tool_timeout(args, default_timeout_sec)
 
 
@@ -558,12 +566,14 @@ def build_harbor_command(
         "--n-concurrent",
         str(spec.concurrency),
         "--agent-import-path",
-        HARBOR_AGENT_IMPORT_PATH,
+        spec.agent_import_path,
         "--agent-kwarg",
         f"candidate_dir={spec.candidate_dir}",
         "--quiet",
         "--yes",
     ]
+    for item in spec.agent_kwargs:
+        command.extend(["--agent-kwarg", item])
     if spec.backend == "slurm-pyxis":
         command.extend(
             [

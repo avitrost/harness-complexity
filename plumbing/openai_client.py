@@ -84,7 +84,7 @@ def terminal_reasoning_effort() -> str:
     return TERMINAL_REASONING_EFFORT
 
 
-def call_terminal_model(messages: list[dict[str, str]]) -> str:
+def call_terminal_model(messages: list[dict[str, Any]]) -> str:
     last_error: Exception | None = None
     for attempt in range(MAX_RETRIES + 1):
         try:
@@ -113,7 +113,7 @@ def call_terminal_model(messages: list[dict[str, str]]) -> str:
 
 
 def call_terminal_model_with_tools(
-    messages: list[dict[str, str]],
+    messages: list[dict[str, Any]],
     tools: list[dict[str, Any]],
     *,
     tool_choice: Any | None = None,
@@ -197,7 +197,7 @@ def _retry_delay(exc: Exception, attempt: int) -> float:
 
 
 def _write_model_trace(
-    messages: list[dict[str, str]],
+    messages: list[dict[str, Any]],
     response_text: str,
     error: str | None = None,
     tool_calls: list[ModelToolCall] | None = None,
@@ -224,12 +224,12 @@ def _write_model_trace(
     )
 
 
-def _call_codex_backend(messages: list[dict[str, str]]) -> str:
+def _call_codex_backend(messages: list[dict[str, Any]]) -> str:
     return _call_codex_backend_result(messages).content
 
 
 def _call_codex_backend_result(
-    messages: list[dict[str, str]],
+    messages: list[dict[str, Any]],
     tools: list[dict[str, Any]] | None = None,
     *,
     tool_choice: Any | None = None,
@@ -266,7 +266,7 @@ def _call_codex_backend_result(
 
 
 def _codex_body(
-    messages: list[dict[str, str]],
+    messages: list[dict[str, Any]],
     tools: list[dict[str, Any]] | None = None,
     *,
     tool_choice: Any | None = None,
@@ -277,11 +277,7 @@ def _codex_body(
         for item in messages
         if item.get("role") in {"system", "developer"} and item.get("content")
     )
-    input_messages = [
-        {"role": item.get("role", "user"), "content": item.get("content", "")}
-        for item in messages
-        if item.get("role") not in {"system", "developer"}
-    ]
+    input_messages = [_codex_input_item(item) for item in messages if not _is_instruction(item)]
     body: dict[str, Any] = {
         "model": terminal_model(),
         "reasoning": {"effort": terminal_reasoning_effort()},
@@ -297,6 +293,16 @@ def _codex_body(
     if parallel_tool_calls is not None:
         body["parallel_tool_calls"] = parallel_tool_calls
     return body
+
+
+def _is_instruction(item: dict[str, Any]) -> bool:
+    return item.get("role") in {"system", "developer"} and bool(item.get("content"))
+
+
+def _codex_input_item(item: dict[str, Any]) -> dict[str, Any]:
+    if "type" in item:
+        return dict(item)
+    return {"role": item.get("role", "user"), "content": item.get("content", "")}
 
 
 def _codex_auth_path() -> Path:
