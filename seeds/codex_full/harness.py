@@ -305,6 +305,7 @@ eof_line: "*** End of File" LF
 %import common.LF"""
 
 MAX_OBSERVATION_CHARS = 20000
+FUNCTION_HISTORY_TOOLS = {"exec_command", "write_stdin", "update_plan"}
 
 
 @dataclass(frozen=True)
@@ -362,6 +363,10 @@ class ToolRouter:
         if name == "apply_patch":
             patch = arguments.get("input") or arguments.get("patch") or arguments_text
             return ToolPayload("apply_patch", {"patch": str(patch)})
+        if name == "write_stdin":
+            return ToolPayload("write_stdin", arguments)
+        if name in {"update_plan", "plan"}:
+            return ToolPayload("update_plan", arguments)
         if name in {"exec_command", "shell_command", "local_shell", "local_shell_call"}:
             return ToolPayload("exec_command", self._exec_arguments(arguments))
         return ToolPayload(name, arguments)
@@ -382,58 +387,118 @@ class ConversationBuilder:
 
     def _initial_user_message(self, task: TaskContext) -> str:
         cwd = task.working_dir or "."
-        return (
+        message = (
             "<environment_context>\n"
             f"  <cwd>{cwd}</cwd>\n"
             "  <approval_policy>never</approval_policy>\n"
             "  <sandbox_mode>danger-full-access</sandbox_mode>\n"
             "  <network_access>enabled</network_access>\n"
             "</environment_context>\n\n"
-            f"{task.instruction}"
         )
+        agents = self._agents_context(task)
+        if agents:
+            message += f"{agents}\n\n"
+        return message + f"{task.instruction}"
 
     def _history_items(self, index: int, record: CommandResult) -> list[dict[str, Any]]:
         call_id = record.tool_call_id or f"call_{index}"
+        items = self._assistant_history(record)
         if record.tool_name == "apply_patch":
             patch = str(record.metadata.get("input") or self._patch_from_display(record.command))
-            return [
-                {
-                    "type": "custom_tool_call",
-                    "call_id": call_id,
-                    "name": "apply_patch",
-                    "input": patch,
-                },
-                {
-                    "type": "custom_tool_call_output",
-                    "call_id": call_id,
-                    "output": self._tool_output_text(record),
-                },
-            ]
+            items.extend(
+                [
+                    {
+                        "type": "custom_tool_call",
+                        "call_id": call_id,
+                        "name": "apply_patch",
+                        "input": patch,
+                    },
+                    {
+                        "type": "custom_tool_call_output",
+                        "call_id": call_id,
+                        "output": self._tool_output_text(record),
+                    },
+                ]
+            )
+            return items
         args = record.metadata.get("arguments") if isinstance(record.metadata, dict) else None
         if not isinstance(args, dict):
             args = {"cmd": record.command}
         if "command" in args and "cmd" not in args:
             args = dict(args)
             args["cmd"] = args.pop("command")
-        return [
-            {
-                "type": "function_call",
-                "call_id": call_id,
-                "name": "exec_command",
-                "arguments": json.dumps(args, sort_keys=True),
-            },
-            {
-                "type": "function_call_output",
-                "call_id": call_id,
-                "output": self._tool_output_text(record),
-            },
-        ]
+        tool_name = (
+            record.tool_name if record.tool_name in FUNCTION_HISTORY_TOOLS else "exec_command"
+        )
+        items.extend(
+            [
+                {
+                    "type": "function_call",
+                    "call_id": call_id,
+                    "name": tool_name,
+                    "arguments": json.dumps(args, sort_keys=True),
+                },
+                {
+                    "type": "function_call_output",
+                    "call_id": call_id,
+                    "output": self._tool_output_text(record),
+                },
+            ]
+        )
+        return items
+
+    def _agents_context(self, task: TaskContext) -> str:
+        agents = task.metadata.get("agents_md") if isinstance(task.metadata, dict) else None
+        if not isinstance(agents, list):
+            return ""
+        sections = []
+        for item in agents:
+            if not isinstance(item, dict):
+                continue
+            path = str(item.get("path") or "AGENTS.md")
+            content = str(item.get("content") or "").strip()
+            if content:
+                sections.append(f"<agents_md path={json.dumps(path)}>\n{content}\n</agents_md>")
+        return "\n".join(sections)
+
+    def _assistant_history(self, record: CommandResult) -> list[dict[str, Any]]:
+        if not isinstance(record.metadata, dict):
+            return []
+        content = str(record.metadata.get("assistant_content") or "").strip()
+        if not content:
+            return []
+        return [{"role": "assistant", "content": content}]
 
     def _tool_output_text(self, record: CommandResult) -> str:
+        if isinstance(record.metadata, dict) and isinstance(
+            record.metadata.get("unified_exec"), dict
+        ):
+            return self._unified_exec_output_text(record)
         output = self._combined_output(record)
         sections = ["Wall time: 0.0000 seconds"]
         if record.return_code is not None:
             sections.append(f"Process exited with code {record.return_code}")
+        sections.append("Output:")
+        sections.append(self._tail(output, MAX_OBSERVATION_CHARS))
+        return "\n".join(sections)
+
+    def _unified_exec_output_text(self, record: CommandResult) -> str:
+        metadata = record.metadata["unified_exec"]
+        output = self._combined_output(record)
+        sections = []
+        chunk_id = metadata.get("chunk_id")
+        if chunk_id:
+            sections.append(f"Chunk ID: {chunk_id}")
+        sections.append(f"Wall time: {float(metadata.get('wall_time_seconds') or 0.0):.4f} seconds")
+        exit_code = metadata.get("exit_code")
+        if exit_code is not None:
+            sections.append(f"Process exited with code {exit_code}")
+        session_id = metadata.get("session_id")
+        if session_id is not None:
+            sections.append(f"Process running with session ID {session_id}")
+        original_token_count = metadata.get("original_token_count")
+        if original_token_count is not None:
+            sections.append(f"Original token count: {original_token_count}")
         sections.append("Output:")
         sections.append(self._tail(output, MAX_OBSERVATION_CHARS))
         return "\n".join(sections)
@@ -458,16 +523,13 @@ class ConversationBuilder:
 
 class CompletionPolicy:
     def is_complete(self, result: ToolModelResult, history: list[CommandResult]) -> bool:
-        if result.tool_calls:
-            return False
-        text = result.content.strip().lower()
-        if not text:
-            return bool(history)
-        final_markers = ("done", "complete", "completed", "fixed", "resolved")
-        return bool(history) or any(marker in text for marker in final_markers)
+        return not result.tool_calls and bool(result.content.strip())
 
 
 class CandidateHarness(BaseHarness):
+    wants_environment_context = True
+    wants_agents_context = True
+
     def __init__(self) -> None:
         self.router = ToolRouter(_built_tools())
         self.context = TurnContext()
@@ -489,8 +551,11 @@ class CandidateHarness(BaseHarness):
         )
         tool_calls = self.router.tool_calls_from_result(result)
         if tool_calls:
-            return HarnessTurn(tool_calls=tuple(tool_calls))
-        return HarnessTurn(done=self.completion.is_complete(result, history))
+            return HarnessTurn(tool_calls=tuple(tool_calls), assistant_content=result.content)
+        return HarnessTurn(
+            done=self.completion.is_complete(result, history),
+            assistant_content=result.content,
+        )
 
 
 def build_prompt(
@@ -510,7 +575,7 @@ def build_prompt(
 
 
 def _built_tools() -> list[dict[str, Any]]:
-    return [_exec_command_tool(), _apply_patch_tool()]
+    return [_exec_command_tool(), _write_stdin_tool(), _update_plan_tool(), _apply_patch_tool()]
 
 
 def _exec_command_tool() -> dict[str, Any]:
@@ -523,6 +588,10 @@ def _exec_command_tool() -> dict[str, Any]:
         "shell": {
             "type": "string",
             "description": "Shell binary to launch. Defaults to the user's default shell.",
+        },
+        "login": {
+            "type": "boolean",
+            "description": "Whether to run the shell as a login shell.",
         },
         "tty": {
             "type": "boolean",
@@ -581,6 +650,72 @@ def _apply_patch_tool() -> dict[str, Any]:
         "name": "apply_patch",
         "description": "Use the `apply_patch` tool to edit files. This is a FREEFORM tool, so do not wrap the patch in JSON.",
         "format": {"type": "grammar", "syntax": "lark", "definition": APPLY_PATCH_GRAMMAR},
+    }
+
+
+def _update_plan_tool() -> dict[str, Any]:
+    return {
+        "type": "function",
+        "name": "update_plan",
+        "description": "Updates the task plan.",
+        "strict": False,
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "explanation": {
+                    "type": "string",
+                    "description": "Optional explanation for the plan update.",
+                },
+                "plan": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "step": {"type": "string"},
+                            "status": {"type": "string"},
+                        },
+                        "required": ["step", "status"],
+                        "additionalProperties": False,
+                    },
+                    "description": "Plan items with a short step and status.",
+                },
+            },
+            "required": ["plan"],
+            "additionalProperties": False,
+        },
+    }
+
+
+def _write_stdin_tool() -> dict[str, Any]:
+    return {
+        "type": "function",
+        "name": "write_stdin",
+        "description": "Writes characters to an existing unified exec session and returns recent output.",
+        "strict": False,
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "session_id": {
+                    "type": "number",
+                    "description": "Identifier of the running unified exec session.",
+                },
+                "chars": {
+                    "type": "string",
+                    "description": "Bytes to write to stdin (may be empty to poll).",
+                },
+                "yield_time_ms": {
+                    "type": "number",
+                    "description": "How long to wait (in milliseconds) for output before yielding.",
+                },
+                "max_output_tokens": {
+                    "type": "number",
+                    "description": "Maximum number of tokens to return. Excess output will be truncated.",
+                },
+            },
+            "required": ["session_id"],
+            "additionalProperties": False,
+        },
+        "output_schema": _unified_exec_output_schema(),
     }
 
 

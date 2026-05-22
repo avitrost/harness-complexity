@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from contextlib import suppress
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from functools import partial
 from http.client import HTTPException
 import json
@@ -48,6 +49,17 @@ _IO_EXECUTOR = ThreadPoolExecutor(
 )
 
 
+@dataclass(frozen=True)
+class UnifiedExecResult:
+    stdout: str | None
+    stderr: str | None
+    return_code: int | None
+    chunk_id: str
+    wall_time_seconds: float
+    session_id: int | None = None
+    original_token_count: int | None = None
+
+
 async def _run_blocking(func, *args):
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(_IO_EXECUTOR, partial(func, *args))
@@ -88,8 +100,12 @@ fi
 exec "$_PY" "$@"
 """
 STDLIB_EXEC_SERVER = r"""import argparse
+import fcntl
 import json
 import os
+import pty
+import re
+import select
 import shutil
 import signal
 import socket
@@ -97,6 +113,15 @@ import subprocess
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+
+_SESSION_LOCK = threading.Lock()
+_SESSIONS = {}
+_NEXT_SESSION_ID = 1
+_DEFAULT_YIELD_TIME_MS = 10000
+_DEFAULT_WRITE_STDIN_YIELD_TIME_MS = 250
+_MIN_EMPTY_WRITE_STDIN_YIELD_TIME_MS = 5000
+_DEFAULT_MAX_OUTPUT_TOKENS = 10000
 
 
 def _setup(workdir):
@@ -169,6 +194,10 @@ class Handler(BaseHTTPRequestHandler):
             threading.Thread(target=_exit_later, daemon=True).start()
         elif self.path == "/exec":
             self._send(200, _exec(data))
+        elif self.path == "/exec_command":
+            self._send(200, _exec_command(data))
+        elif self.path == "/write_stdin":
+            self._send(200, _write_stdin(data))
         else:
             self._send(404, {"error": "not found"})
 
@@ -206,7 +235,283 @@ def _exec(data):
         }
 
 
+def _exec_command(data):
+    env = _exec_env(data)
+    cwd = data.get("cwd") or os.environ.get("SINGULARITY_WORKDIR", "/app")
+    command = data["command"]
+    shell = data.get("shell") or "/bin/bash"
+    login = bool(data.get("login"))
+    yield_time_ms = int(data.get("yield_time_ms") or _DEFAULT_YIELD_TIME_MS)
+    max_output_tokens = _optional_int(data.get("max_output_tokens"))
+    timeout_sec = _optional_float(data.get("timeout_sec"))
+    tty = bool(data.get("tty"))
+    start = time.monotonic()
+    try:
+        session = _spawn_session(command, cwd, env, shell, login, tty, timeout_sec)
+    except Exception as exc:
+        return _response(
+            output=f"exec_command failed: {exc}",
+            wall_time=time.monotonic() - start,
+            exit_code=1,
+            max_output_tokens=max_output_tokens,
+        )
+    output = _collect_until(session, time.monotonic() + yield_time_ms / 1000.0)
+    exit_code = _session_exit_code(session)
+    session_id = None
+    if exit_code is None:
+        session_id = _store_session(session)
+    else:
+        _close_session(session)
+    return _response(
+        output=output,
+        wall_time=time.monotonic() - start,
+        exit_code=exit_code,
+        session_id=session_id,
+        max_output_tokens=max_output_tokens,
+    )
+
+
+def _write_stdin(data):
+    session_id = int(data["session_id"])
+    chars = data.get("chars") or ""
+    yield_time_ms = int(data.get("yield_time_ms") or _DEFAULT_WRITE_STDIN_YIELD_TIME_MS)
+    if not chars:
+        yield_time_ms = max(yield_time_ms, _MIN_EMPTY_WRITE_STDIN_YIELD_TIME_MS)
+    max_output_tokens = _optional_int(data.get("max_output_tokens"))
+    start = time.monotonic()
+    with _SESSION_LOCK:
+        session = _SESSIONS.get(session_id)
+    if session is None:
+        return _response(
+            output=f"write_stdin failed: unknown session_id {session_id}",
+            wall_time=time.monotonic() - start,
+            exit_code=1,
+            max_output_tokens=max_output_tokens,
+        )
+    if chars:
+        try:
+            os.write(session.stdin_fd, chars.encode("utf-8"))
+        except OSError as exc:
+            return _response(
+                output=f"write_stdin failed: {exc}",
+                wall_time=time.monotonic() - start,
+                exit_code=1,
+                max_output_tokens=max_output_tokens,
+            )
+    output = _collect_until(session, time.monotonic() + yield_time_ms / 1000.0)
+    exit_code = _session_exit_code(session)
+    response_session_id = session_id if exit_code is None else None
+    if exit_code is not None:
+        with _SESSION_LOCK:
+            _SESSIONS.pop(session_id, None)
+        _close_session(session)
+    return _response(
+        output=output,
+        wall_time=time.monotonic() - start,
+        exit_code=exit_code,
+        session_id=response_session_id,
+        max_output_tokens=max_output_tokens,
+    )
+
+
+def _exec_env(data):
+    env = os.environ.copy()
+    env["PATH"] = "/usr/bin:/usr/local/bin:" + env.get("PATH", "/bin")
+    env.update(data.get("env") or {})
+    return env
+
+
+class _Session:
+    def __init__(self, process, output_fd, stdin_fd, timeout_at=None):
+        self.process = process
+        self.output_fd = output_fd
+        self.stdin_fd = stdin_fd
+        self.timeout_at = timeout_at
+
+
+def _spawn_session(command, cwd, env, shell, login, tty, timeout_sec):
+    timeout_at = time.monotonic() + timeout_sec if timeout_sec else None
+    argv = [shell, "-lc" if login else "-c", command]
+    if tty:
+        master_fd, slave_fd = pty.openpty()
+        try:
+            process = subprocess.Popen(
+                argv,
+                cwd=cwd,
+                env=env,
+                stdin=slave_fd,
+                stdout=slave_fd,
+                stderr=slave_fd,
+                start_new_session=True,
+            )
+        finally:
+            os.close(slave_fd)
+        _set_nonblocking(master_fd)
+        return _Session(process, master_fd, master_fd, timeout_at)
+    process = subprocess.Popen(
+        argv,
+        cwd=cwd,
+        env=env,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        start_new_session=True,
+    )
+    assert process.stdout is not None
+    assert process.stdin is not None
+    output_fd = process.stdout.fileno()
+    stdin_fd = process.stdin.fileno()
+    _set_nonblocking(output_fd)
+    return _Session(process, output_fd, stdin_fd, timeout_at)
+
+
+def _set_nonblocking(fd):
+    flags = fcntl.fcntl(fd, fcntl.F_GETFL)
+    fcntl.fcntl(fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
+
+
+def _store_session(session):
+    global _NEXT_SESSION_ID
+    with _SESSION_LOCK:
+        session_id = _NEXT_SESSION_ID
+        _NEXT_SESSION_ID += 1
+        _SESSIONS[session_id] = session
+        return session_id
+
+
+def _collect_until(session, deadline):
+    if session.timeout_at is not None:
+        deadline = min(deadline, session.timeout_at)
+    chunks = []
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        readable, _, _ = select.select([session.output_fd], [], [], min(remaining, 0.1))
+        if readable:
+            chunks.extend(_drain_fd(session.output_fd))
+            continue
+        if session.process.poll() is not None:
+            chunks.extend(_drain_fd(session.output_fd))
+            break
+    return b"".join(chunks).decode("utf-8", "replace")
+
+
+def _session_exit_code(session):
+    exit_code = session.process.poll()
+    if exit_code is not None:
+        return exit_code
+    if session.timeout_at is None or time.monotonic() < session.timeout_at:
+        return None
+    try:
+        os.killpg(session.process.pid, signal.SIGTERM)
+    except OSError:
+        pass
+    try:
+        session.process.wait(timeout=1)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(session.process.pid, signal.SIGKILL)
+        except OSError:
+            pass
+        try:
+            session.process.wait(timeout=1)
+        except subprocess.TimeoutExpired:
+            pass
+    return 124
+
+
+def _drain_fd(fd):
+    chunks = []
+    while True:
+        try:
+            chunk = os.read(fd, 65536)
+        except BlockingIOError:
+            break
+        except OSError:
+            break
+        if not chunk:
+            break
+        chunks.append(chunk)
+    return chunks
+
+
+def _close_session(session):
+    for fd in {session.output_fd, session.stdin_fd}:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+
+
+def _terminate_sessions():
+    with _SESSION_LOCK:
+        sessions = list(_SESSIONS.values())
+        _SESSIONS.clear()
+    for session in sessions:
+        if session.process.poll() is None:
+            try:
+                os.killpg(session.process.pid, signal.SIGTERM)
+            except OSError:
+                pass
+        _close_session(session)
+
+
+def _optional_int(value):
+    if value is None or value == "":
+        return None
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def _optional_float(value):
+    if value is None or value == "":
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _response(output, wall_time, exit_code=None, session_id=None, max_output_tokens=None):
+    original_token_count = _approx_token_count(output)
+    truncated = _truncate_output(output, max_output_tokens)
+    payload = {
+        "chunk_id": _chunk_id(),
+        "wall_time_seconds": wall_time,
+        "output": truncated,
+        "original_token_count": original_token_count,
+        "stdout": truncated,
+        "stderr": None,
+        "return_code": exit_code if exit_code is not None else 0,
+        "exit_code": exit_code,
+    }
+    if session_id is not None:
+        payload["session_id"] = session_id
+    return payload
+
+
+def _truncate_output(output, max_output_tokens):
+    token_limit = max_output_tokens or _DEFAULT_MAX_OUTPUT_TOKENS
+    char_limit = max(1, int(token_limit) * 4)
+    if len(output) <= char_limit:
+        return output
+    omitted = len(output) - char_limit
+    return f"<omitted {omitted} chars>\n" + output[-char_limit:]
+
+
+def _approx_token_count(text):
+    return len(re.findall(r"\w+|[^\w\s]", text or "", flags=re.UNICODE))
+
+
+def _chunk_id():
+    return f"{int(time.time() * 1000000) & 0xffffff:06x}"
+
+
 def _exit_later():
+    _terminate_sessions()
     time.sleep(0.1)
     os.kill(os.getpid(), signal.SIGTERM)
 
@@ -450,6 +755,52 @@ class SlurmPyxisEnvironment(BaseEnvironment):
             stderr=data.get("stderr"),
             return_code=int(data.get("return_code", 1)),
         )
+
+    async def exec_command(
+        self,
+        command: str,
+        cwd: str | None = None,
+        env: dict[str, str] | None = None,
+        timeout_sec: int | None = None,
+        shell: str | None = None,
+        login: bool = False,
+        tty: bool = False,
+        yield_time_ms: int | None = None,
+        max_output_tokens: int | None = None,
+    ) -> UnifiedExecResult:
+        payload = {
+            "command": command,
+            "cwd": cwd,
+            "env": self._merge_env(env),
+            "timeout_sec": timeout_sec,
+            "shell": shell,
+            "login": login,
+            "tty": tty,
+            "yield_time_ms": yield_time_ms,
+            "max_output_tokens": max_output_tokens,
+        }
+        wait_ms = yield_time_ms if yield_time_ms is not None else 10000
+        request_timeout = max(30, int(wait_ms / 1000) + 30)
+        data = await self._post_while_srun_lives("/exec_command", payload, timeout=request_timeout)
+        return _unified_exec_result(data)
+
+    async def write_stdin(
+        self,
+        session_id: int,
+        chars: str = "",
+        yield_time_ms: int | None = None,
+        max_output_tokens: int | None = None,
+    ) -> UnifiedExecResult:
+        payload = {
+            "session_id": session_id,
+            "chars": chars,
+            "yield_time_ms": yield_time_ms,
+            "max_output_tokens": max_output_tokens,
+        }
+        wait_ms = yield_time_ms if yield_time_ms is not None else 250
+        request_timeout = max(30, int(wait_ms / 1000) + 30)
+        data = await self._post_while_srun_lives("/write_stdin", payload, timeout=request_timeout)
+        return _unified_exec_result(data)
 
     async def upload_file(self, source_path: Path | str, target_path: str) -> None:
         source = Path(source_path)
@@ -771,6 +1122,21 @@ def _startup_failure_message(returncode: int | None, startup_lines: list[str]) -
 def _is_transient_startup_error(message: str) -> bool:
     lower = message.lower()
     return any(pattern in lower for pattern in _TRANSIENT_STARTUP_ERRORS)
+
+
+def _unified_exec_result(data: dict[str, object]) -> UnifiedExecResult:
+    exit_code = data.get("exit_code") if "exit_code" in data else data.get("return_code")
+    session_id = data.get("session_id")
+    original_token_count = data.get("original_token_count")
+    return UnifiedExecResult(
+        stdout=str(data.get("stdout") or data.get("output") or ""),
+        stderr=data.get("stderr") if isinstance(data.get("stderr"), str) else None,
+        return_code=None if exit_code is None else int(exit_code),
+        chunk_id=str(data.get("chunk_id") or ""),
+        wall_time_seconds=float(data.get("wall_time_seconds") or 0.0),
+        session_id=None if session_id is None else int(session_id),
+        original_token_count=None if original_token_count is None else int(original_token_count),
+    )
 
 
 def _slurm_time_to_seconds(value: str) -> int:

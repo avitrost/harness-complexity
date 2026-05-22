@@ -36,3 +36,4 @@ class HarnessTurn:
     done: bool = False
     timeout_sec: int | None = None
     tool_calls: tuple[HarnessToolCall, ...] = ()
+    assistant_content: str = ""

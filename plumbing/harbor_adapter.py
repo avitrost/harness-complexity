@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
+import os
 import shlex
 import shutil
 import subprocess
@@ -35,7 +37,10 @@ SHELL_TOOL_NAMES = {
     "terminal",
     "bash",
 }
+WRITE_STDIN_TOOL_NAMES = {"write_stdin"}
 PATCH_TOOL_NAMES = {"apply_patch", "patch"}
+PLAN_TOOL_NAMES = {"update_plan", "plan"}
+FUNCTION_HISTORY_TOOL_NAMES = {"exec_command", "write_stdin", "update_plan"}
 
 
 @dataclass(frozen=True)
@@ -89,7 +94,7 @@ class HarborHarnessAgent(HarborBaseAgent):
 
     async def run(self, instruction: str, environment: Any, context: Any) -> None:
         agent = load_harness(candidate_dir=self.candidate_dir)
-        task = TaskContext(instruction=instruction)
+        task = await _task_context(instruction, environment, agent)
         history: list[CommandResult] = []
         self.logs_dir.mkdir(parents=True, exist_ok=True)
         done = False
@@ -103,8 +108,18 @@ class HarborHarnessAgent(HarborBaseAgent):
                 if turn.done or not tool_calls:
                     done = turn.done
                     break
-                for tool_call in tool_calls:
-                    record = await _execute_tool_call(environment, tool_call, turn.timeout_sec)
+                records = await asyncio.gather(
+                    *(
+                        _execute_tool_call(environment, tool_call, turn.timeout_sec)
+                        for tool_call in tool_calls
+                    )
+                )
+                for record_index, record in enumerate(records):
+                    if record_index == 0 and turn.assistant_content.strip():
+                        record = _with_metadata(
+                            record,
+                            {"assistant_content": turn.assistant_content},
+                        )
                     history.append(record)
                     self._write_turn_log(turn_index, record)
                     turn_index += 1
@@ -151,6 +166,17 @@ def run_candidate(
     return turn.command
 
 
+async def _task_context(instruction: str, environment: Any, agent: Any) -> TaskContext:
+    if not getattr(agent, "wants_environment_context", False):
+        return TaskContext(instruction=instruction)
+    config = getattr(environment, "task_env_config", None)
+    workdir = getattr(environment, "_workdir", None) or getattr(config, "workdir", None)
+    metadata: dict[str, Any] = {}
+    if getattr(agent, "wants_agents_context", False):
+        metadata["agents_md"] = await _agents_context(environment, workdir)
+    return TaskContext(instruction=instruction, working_dir=workdir, metadata=metadata)
+
+
 async def _execute_tool_call(
     environment: Any,
     tool_call: HarnessToolCall,
@@ -158,7 +184,22 @@ async def _execute_tool_call(
 ) -> CommandResult:
     name = tool_call.name.strip() or "local_shell"
     lowered = name.lower()
+    if lowered in WRITE_STDIN_TOOL_NAMES:
+        return await _write_stdin_observed(
+            environment,
+            tool_call=tool_call,
+            tool_name=name,
+        )
+    if lowered in PLAN_TOOL_NAMES:
+        return _plan_observed(tool_call, name)
     if lowered in SHELL_TOOL_NAMES:
+        if lowered == "exec_command" and hasattr(environment, "exec_command"):
+            return await _exec_command_observed(
+                environment,
+                tool_call=tool_call,
+                default_timeout_sec=default_timeout_sec,
+                tool_name=name,
+            )
         command, timeout_sec = _shell_command(tool_call, default_timeout_sec)
         return await _exec_observed(
             environment,
@@ -185,6 +226,124 @@ async def _execute_tool_call(
         return_code=2,
         stderr=f"Unsupported harness tool call: {name}",
         tool_name=name,
+        tool_call_id=tool_call.call_id,
+        metadata={"arguments": tool_call.arguments},
+    )
+
+
+async def _exec_command_observed(
+    environment: Any,
+    tool_call: HarnessToolCall,
+    default_timeout_sec: int | None,
+    tool_name: str,
+) -> CommandResult:
+    args = _shell_args(tool_call.arguments)
+    command = _shell_command_text(args)
+    if not command.strip():
+        return CommandResult(
+            command="<invalid exec_command>",
+            return_code=2,
+            stderr="exec_command requires cmd",
+            tool_name=tool_name,
+            tool_call_id=tool_call.call_id,
+            metadata={"arguments": tool_call.arguments},
+        )
+    cwd = _resolve_workdir(_tool_string(args.get("workdir")), environment)
+    if patch := _extract_apply_patch(command):
+        patch_command = _apply_patch_command(patch)
+        if cwd:
+            patch_command = f"cd {shlex.quote(cwd)} && {patch_command}"
+        return await _exec_observed(
+            environment,
+            command=patch_command,
+            timeout_sec=_tool_timeout(args, default_timeout_sec) or 30,
+            tool_name=tool_name,
+            tool_call_id=tool_call.call_id,
+            display_command=_patch_display(patch),
+            metadata={
+                "arguments": tool_call.arguments,
+                "input": patch,
+                "intercepted_apply_patch": True,
+            },
+        )
+    result = await environment.exec_command(
+        command=command,
+        cwd=cwd,
+        timeout_sec=_tool_timeout(args, default_timeout_sec),
+        shell=_tool_string(args.get("shell")),
+        login=bool(args.get("login")) if isinstance(args.get("login"), bool) else False,
+        tty=bool(args.get("tty")) if isinstance(args.get("tty"), bool) else False,
+        yield_time_ms=_tool_int(args.get("yield_time_ms")),
+        max_output_tokens=_tool_int(args.get("max_output_tokens")),
+    )
+    metadata = {
+        "arguments": tool_call.arguments,
+        "unified_exec": _unified_exec_metadata(result),
+    }
+    return CommandResult(
+        command=command,
+        return_code=getattr(result, "return_code", None),
+        stdout=_tail(getattr(result, "stdout", "") or ""),
+        stderr=_tail(getattr(result, "stderr", "") or ""),
+        tool_name=tool_name,
+        tool_call_id=tool_call.call_id,
+        metadata=metadata,
+    )
+
+
+async def _write_stdin_observed(
+    environment: Any,
+    tool_call: HarnessToolCall,
+    tool_name: str,
+) -> CommandResult:
+    if not hasattr(environment, "write_stdin"):
+        return CommandResult(
+            command="<unsupported tool write_stdin>",
+            return_code=2,
+            stderr="Environment does not support write_stdin",
+            tool_name=tool_name,
+            tool_call_id=tool_call.call_id,
+            metadata={"arguments": tool_call.arguments},
+        )
+    args = tool_call.arguments
+    session_id = _tool_int(args.get("session_id"))
+    if session_id is None:
+        return CommandResult(
+            command="<invalid write_stdin session_id>",
+            return_code=2,
+            stderr="write_stdin requires session_id",
+            tool_name=tool_name,
+            tool_call_id=tool_call.call_id,
+            metadata={"arguments": args},
+        )
+    chars = str(args.get("chars") or "")
+    result = await environment.write_stdin(
+        session_id=session_id,
+        chars=chars,
+        yield_time_ms=_tool_int(args.get("yield_time_ms")),
+        max_output_tokens=_tool_int(args.get("max_output_tokens")),
+    )
+    metadata = {
+        "arguments": args,
+        "unified_exec": _unified_exec_metadata(result),
+    }
+    return CommandResult(
+        command=f"write_stdin(session_id={session_id}, chars={len(chars)} chars)",
+        return_code=getattr(result, "return_code", None),
+        stdout=_tail(getattr(result, "stdout", "") or ""),
+        stderr=_tail(getattr(result, "stderr", "") or ""),
+        tool_name=tool_name,
+        tool_call_id=tool_call.call_id,
+        metadata=metadata,
+    )
+
+
+def _plan_observed(tool_call: HarnessToolCall, tool_name: str) -> CommandResult:
+    return CommandResult(
+        command="update_plan",
+        return_code=0,
+        stdout="Plan updated.",
+        tool_name="update_plan",
         tool_call_id=tool_call.call_id,
         metadata={"arguments": tool_call.arguments},
     )
@@ -220,6 +379,20 @@ async def _exec_observed(
         tool_name=tool_name,
         tool_call_id=tool_call_id,
         metadata=metadata or {},
+    )
+
+
+def _with_metadata(record: CommandResult, extra: dict[str, Any]) -> CommandResult:
+    metadata = dict(record.metadata)
+    metadata.update(extra)
+    return CommandResult(
+        command=record.command,
+        return_code=record.return_code,
+        stdout=record.stdout,
+        stderr=record.stderr,
+        tool_name=record.tool_name,
+        tool_call_id=record.tool_call_id,
+        metadata=metadata,
     )
 
 
@@ -282,7 +455,15 @@ def _shell_command(
     default_timeout_sec: int | None,
 ) -> tuple[str, int | None]:
     args = _shell_args(tool_call.arguments)
-    command = (
+    command = _shell_command_text(args)
+    workdir = str(args.get("workdir") or "").strip()
+    if workdir:
+        command = f"cd {shlex.quote(workdir)} && {command}"
+    return str(command), _tool_timeout(args, default_timeout_sec)
+
+
+def _shell_command_text(args: dict[str, Any]) -> str:
+    return str(
         args.get("command")
         or args.get("cmd")
         or args.get("shell")
@@ -290,10 +471,6 @@ def _shell_command(
         or args.get("input")
         or ""
     )
-    workdir = str(args.get("workdir") or "").strip()
-    if workdir:
-        command = f"cd {shlex.quote(workdir)} && {command}"
-    return str(command), _tool_timeout(args, default_timeout_sec)
 
 
 def _shell_args(args: dict[str, Any]) -> dict[str, Any]:
@@ -352,16 +529,74 @@ def _tool_timeout(args: dict[str, Any], default: int | None = None) -> int | Non
     return default
 
 
+def _tool_int(value: Any) -> int | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return int(value)
+    if isinstance(value, str):
+        try:
+            return int(float(value.strip()))
+        except ValueError:
+            return None
+    return None
+
+
+def _tool_string(value: Any) -> str | None:
+    text = str(value or "").strip()
+    return text or None
+
+
+def _resolve_workdir(workdir: str | None, environment: Any) -> str | None:
+    if not workdir:
+        return None
+    if workdir.startswith("/"):
+        return workdir
+    config = getattr(environment, "task_env_config", None)
+    base = getattr(environment, "_workdir", None) or getattr(config, "workdir", None)
+    if not base:
+        return workdir
+    return os.path.normpath(f"{base.rstrip('/')}/{workdir}")
+
+
+def _unified_exec_metadata(result: Any) -> dict[str, Any]:
+    return {
+        "chunk_id": getattr(result, "chunk_id", ""),
+        "wall_time_seconds": getattr(result, "wall_time_seconds", 0.0),
+        "exit_code": getattr(result, "return_code", None),
+        "session_id": getattr(result, "session_id", None),
+        "original_token_count": getattr(result, "original_token_count", None),
+    }
+
+
 def _patch_text(args: dict[str, Any]) -> str:
     patch = args.get("patch") or args.get("input") or args.get("diff") or ""
     return str(patch)
+
+
+def _extract_apply_patch(command: str) -> str | None:
+    stripped = command.lstrip()
+    if not stripped.startswith("apply_patch"):
+        return None
+    if "*** Begin Patch" not in command:
+        return None
+    lines = command.splitlines()
+    for index, line in enumerate(lines):
+        if line.strip().startswith("*** Begin Patch"):
+            body = lines[index:]
+            while body and body[-1].strip() in {"PATCH", "EOF", "'PATCH'", '"PATCH"'}:
+                body.pop()
+            return "\n".join(body)
+    return None
 
 
 def _patch_display(patch: str) -> str:
     if len(patch) <= MAX_OBSERVATION_CHARS:
         return f"apply_patch <<'PATCH'\n{patch}\nPATCH"
     omitted = len(patch) - MAX_OBSERVATION_CHARS
-    return f"apply_patch <<'PATCH'\n<omitted {omitted} chars>\n{patch[-MAX_OBSERVATION_CHARS:]}\nPATCH"
+    return (
+        f"apply_patch <<'PATCH'\n<omitted {omitted} chars>\n{patch[-MAX_OBSERVATION_CHARS:]}\nPATCH"
+    )
 
 
 def _apply_patch_command(patch: str) -> str:
@@ -507,6 +742,71 @@ if PATCH.lstrip().startswith("*** Begin Patch"):
 else:
     apply_unified(PATCH)
 print("Patch applied.")
+PY"""
+
+
+async def _agents_context(environment: Any, workdir: str | None) -> list[dict[str, str]]:
+    if not hasattr(environment, "exec"):
+        return []
+    command = _agents_context_command(workdir or ".")
+    try:
+        result = await environment.exec(command=command, timeout_sec=10)
+    except Exception:
+        return []
+    if getattr(result, "return_code", 1):
+        return []
+    try:
+        payload = json.loads(getattr(result, "stdout", "") or "[]")
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(payload, list):
+        return []
+    kept = []
+    for item in payload:
+        if isinstance(item, dict) and isinstance(item.get("path"), str):
+            kept.append({"path": item["path"], "content": str(item.get("content") or "")})
+    return kept
+
+
+def _agents_context_command(workdir: str) -> str:
+    root = json.dumps(workdir)
+    return f"""PY=$(command -v python3 || command -v python); "$PY" - <<'PY'
+import json
+from pathlib import Path
+
+root = Path({root})
+try:
+    root = root.resolve()
+except OSError:
+    pass
+paths = []
+for parent in (root, *root.parents):
+    candidate = parent / "AGENTS.md"
+    if candidate.is_file():
+        paths.append(candidate)
+try:
+    paths.extend(sorted(root.rglob("AGENTS.md")))
+except OSError:
+    pass
+seen, out, total = set(), [], 0
+for path in paths:
+    try:
+        resolved = path.resolve()
+    except OSError:
+        continue
+    if resolved in seen or not path.is_file():
+        continue
+    seen.add(resolved)
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        continue
+    text = text[:12000]
+    total += len(text)
+    out.append({{"path": str(path), "content": text}})
+    if total >= 40000 or len(out) >= 20:
+        break
+print(json.dumps(out))
 PY"""
 
 

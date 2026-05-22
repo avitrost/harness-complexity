@@ -1,8 +1,12 @@
 import asyncio
 import io
 import json
+import subprocess
+import sys
 import tarfile
+import time
 from pathlib import Path
+from urllib.request import Request, urlopen
 
 import pytest
 from harbor.models.task.config import EnvironmentConfig
@@ -16,6 +20,7 @@ from plumbing.slurm_pyxis_environment import (
     _is_transient_startup_error,
     _prepare_enroot_sysconf,
     _slurm_time_to_seconds,
+    _unified_exec_result,
 )
 
 
@@ -34,6 +39,8 @@ def test_stdlib_exec_server_has_required_routes_without_fastapi() -> None:
     assert "ThreadingHTTPServer" in STDLIB_EXEC_SERVER
     assert 'self.path == "/health"' in STDLIB_EXEC_SERVER
     assert 'self.path == "/exec"' in STDLIB_EXEC_SERVER
+    assert 'self.path == "/exec_command"' in STDLIB_EXEC_SERVER
+    assert 'self.path == "/write_stdin"' in STDLIB_EXEC_SERVER
     assert "__HARBOR_PYXIS_READY__" in STDLIB_EXEC_SERVER
     assert "server.server_address[1]" in STDLIB_EXEC_SERVER
     assert "fastapi" not in STDLIB_EXEC_SERVER.lower()
@@ -156,6 +163,145 @@ def test_exec_stops_waiting_when_srun_exits(tmp_path: Path, monkeypatch) -> None
         asyncio.run(env.exec("sleep 10"))
 
 
+def test_exec_command_uses_unified_session_route(tmp_path: Path, monkeypatch) -> None:
+    env = _make_env(tmp_path)
+    call = {}
+
+    async def fake_post(path, payload, timeout):
+        call.update({"path": path, "payload": payload, "timeout": timeout})
+        return {
+            "stdout": "ready\n",
+            "stderr": None,
+            "exit_code": None,
+            "chunk_id": "abc123",
+            "wall_time_seconds": 0.25,
+            "session_id": 7,
+            "original_token_count": 3,
+        }
+
+    monkeypatch.setattr(env, "_post_while_srun_lives", fake_post)
+
+    result = asyncio.run(
+        env.exec_command(
+            "python -i",
+            cwd="/app/src",
+            shell="/bin/sh",
+            login=True,
+            tty=True,
+            yield_time_ms=250,
+            max_output_tokens=100,
+        )
+    )
+
+    assert call["path"] == "/exec_command"
+    assert call["timeout"] == 30
+    assert call["payload"]["command"] == "python -i"
+    assert call["payload"]["cwd"] == "/app/src"
+    assert call["payload"]["shell"] == "/bin/sh"
+    assert call["payload"]["login"] is True
+    assert call["payload"]["tty"] is True
+    assert result.return_code is None
+    assert result.session_id == 7
+    assert result.chunk_id == "abc123"
+
+
+def test_write_stdin_uses_unified_session_route(tmp_path: Path, monkeypatch) -> None:
+    env = _make_env(tmp_path)
+    call = {}
+
+    async def fake_post(path, payload, timeout):
+        call.update({"path": path, "payload": payload, "timeout": timeout})
+        return {
+            "stdout": "done\n",
+            "stderr": None,
+            "exit_code": 0,
+            "chunk_id": "def456",
+            "wall_time_seconds": 0.1,
+            "original_token_count": 2,
+        }
+
+    monkeypatch.setattr(env, "_post_while_srun_lives", fake_post)
+
+    result = asyncio.run(env.write_stdin(7, "exit()\n", yield_time_ms=100))
+
+    assert call["path"] == "/write_stdin"
+    assert call["payload"]["session_id"] == 7
+    assert call["payload"]["chars"] == "exit()\n"
+    assert call["timeout"] == 30
+    assert result.return_code == 0
+    assert result.session_id is None
+    assert result.stdout == "done\n"
+
+
+def test_unified_exec_result_prefers_exit_code_over_return_code() -> None:
+    result = _unified_exec_result(
+        {
+            "stdout": "partial",
+            "return_code": 0,
+            "exit_code": None,
+            "chunk_id": "abc",
+            "wall_time_seconds": 1.0,
+            "session_id": 3,
+        }
+    )
+
+    assert result.return_code is None
+    assert result.session_id == 3
+
+
+def test_stdlib_exec_server_runs_unified_session_smoke(tmp_path: Path) -> None:
+    server = tmp_path / "server.py"
+    server.write_text(STDLIB_EXEC_SERVER, encoding="utf-8")
+    process = subprocess.Popen(
+        [sys.executable, str(server), "--port", "0", "--workdir", str(tmp_path / "work")],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    endpoint = None
+    try:
+        assert process.stdout is not None
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            line = process.stdout.readline()
+            if line.startswith("__HARBOR_PYXIS_READY__"):
+                endpoint = line.strip().removeprefix("__HARBOR_PYXIS_READY__")
+                break
+        assert endpoint is not None
+
+        first = _post_json(
+            endpoint,
+            "/exec_command",
+            {"command": "read line; echo got:$line", "yield_time_ms": 100},
+        )
+        second = _post_json(
+            endpoint,
+            "/write_stdin",
+            {
+                "session_id": first["session_id"],
+                "chars": "hello\n",
+                "yield_time_ms": 500,
+                "max_output_tokens": 1,
+            },
+        )
+
+        assert second["exit_code"] == 0
+        assert "got:hello" not in second["output"]
+        assert second["output"].startswith("<omitted ")
+        assert second["output"].endswith("llo\n")
+    finally:
+        if endpoint is not None:
+            try:
+                _post_json(endpoint, "/shutdown", {})
+            except Exception:
+                pass
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=5)
+
+
 def test_http_requests_use_slurm_executor(tmp_path: Path, monkeypatch) -> None:
     env = _make_env(tmp_path)
 
@@ -228,3 +374,14 @@ class _ExitedProcess:
     async def wait(self) -> int:
         self.returncode = 1
         return self.returncode
+
+
+def _post_json(endpoint: str, path: str, payload: dict[str, object]) -> dict[str, object]:
+    request = Request(
+        f"http://{endpoint}{path}",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"content-type": "application/json"},
+        method="POST",
+    )
+    with urlopen(request, timeout=10) as response:
+        return json.loads(response.read().decode("utf-8"))

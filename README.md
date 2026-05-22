@@ -80,10 +80,10 @@ and cannot be imported at runtime.
 The Codex compression track starts from `seeds/codex_full/harness.py`, then
 removes or compresses components while preserving behavior where possible. This
 seed mirrors Codex's base-instruction prompt, `exec_command` function tool,
-freeform `apply_patch` grammar tool, prompt-building shape, parallel tool-call
-flag, and response-item replay for prior tool calls/outputs. The remaining
-known gap is process-session fidelity: Harbor exposes one-shot command execution,
-so this port does not yet expose Codex's `write_stdin` continuation tool.
+`write_stdin` continuation tool, plan updates, freeform `apply_patch` grammar
+tool, prompt-building shape, AGENTS.md context injection, parallel tool-call
+execution, shell-style patch interception, relative workdir resolution, and
+response-item replay for prior assistant/tool calls/outputs.
 
 For a real-Codex comparison point, run `python -m evaluator.run_codex_cli`.
 This routes Harbor tasks to `codex exec` inside the same Slurm/Pyxis task
