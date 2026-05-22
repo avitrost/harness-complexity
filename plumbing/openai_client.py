@@ -6,8 +6,9 @@ import hashlib
 import json
 import os
 import time
+import uuid
 from collections.abc import Callable
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError
@@ -36,8 +37,6 @@ _trace_dir: contextvars.ContextVar[Path | None] = contextvars.ContextVar(
 _trace_count: contextvars.ContextVar[int] = contextvars.ContextVar(
     "terminal_model_trace_count", default=0
 )
-
-
 @dataclass(frozen=True)
 class ModelToolCall:
     name: str
@@ -51,6 +50,21 @@ class ToolModelResult:
     content: str
     tool_calls: list[ModelToolCall]
     request_metadata: dict[str, Any] | None = None
+    response_items: list[dict[str, Any]] = field(default_factory=list)
+    response_id: str = ""
+
+
+@dataclass(frozen=True)
+class CodexBackendSession:
+    session_id: str
+    thread_id: str
+    window_id: str
+    installation_id: str
+
+
+_codex_session: contextvars.ContextVar[CodexBackendSession | None] = contextvars.ContextVar(
+    "codex_backend_session", default=None
+)
 
 
 def set_client_factory(factory: Callable[[], OpenAI] | None) -> None:
@@ -60,11 +74,18 @@ def set_client_factory(factory: Callable[[], OpenAI] | None) -> None:
 
 def set_trace_dir(path: Path | str | None) -> object:
     _trace_count.set(0)
-    return _trace_dir.set(Path(path) if path is not None else None)
+    trace_path = Path(path) if path is not None else None
+    trace_token = _trace_dir.set(trace_path)
+    session_token = _codex_session.set(_new_codex_session(trace_path))
+    return trace_token, session_token
 
 
 def reset_trace_dir(token: object) -> None:
-    _trace_dir.reset(token)  # type: ignore[arg-type]
+    if isinstance(token, tuple) and len(token) == 2:
+        _trace_dir.reset(token[0])  # type: ignore[arg-type]
+        _codex_session.reset(token[1])  # type: ignore[arg-type]
+    else:
+        _trace_dir.reset(token)  # type: ignore[arg-type]
     _trace_count.set(0)
 
 
@@ -270,17 +291,11 @@ def _call_codex_backend_result(
         tool_choice=tool_choice,
         parallel_tool_calls=parallel_tool_calls,
     )
+    headers = _codex_headers(access_token, account_id)
     request = Request(
         CODEX_BASE_URL,
         data=json.dumps(body).encode("utf-8"),
-        headers={
-            "Authorization": f"Bearer {access_token}",
-            "chatgpt-account-id": account_id,
-            "OpenAI-Beta": "responses=experimental",
-            "originator": "codex_cli_rs",
-            "accept": "text/event-stream",
-            "content-type": "application/json",
-        },
+        headers=headers,
         method="POST",
     )
     try:
@@ -289,7 +304,9 @@ def _call_codex_backend_result(
             return ToolModelResult(
                 result.content,
                 result.tool_calls,
-                _codex_request_metadata(body),
+                _codex_request_metadata(body, headers, result),
+                result.response_items,
+                result.response_id,
             )
     except HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")
@@ -321,7 +338,7 @@ def _codex_body(
         "include": [],
         "prompt_cache_key": _codex_prompt_cache_key(),
         "client_metadata": {
-            "x-codex-installation-id": _codex_installation_id(),
+            "x-codex-installation-id": _codex_current_installation_id(),
         },
     }
     if tool_choice is not None:
@@ -331,10 +348,36 @@ def _codex_body(
     return body
 
 
-def _codex_request_metadata(body: dict[str, Any]) -> dict[str, Any]:
+def _codex_headers(access_token: str, account_id: str) -> dict[str, str]:
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "chatgpt-account-id": account_id,
+        "OpenAI-Beta": "responses=experimental",
+        "originator": "codex_cli_rs",
+        "accept": "text/event-stream",
+        "content-type": "application/json",
+    }
+    session = _codex_session.get()
+    if isinstance(session, CodexBackendSession):
+        headers.update(
+            {
+                "session-id": session.session_id,
+                "thread-id": session.thread_id,
+                "x-client-request-id": session.thread_id,
+                "x-codex-window-id": session.window_id,
+            }
+        )
+    return headers
+
+
+def _codex_request_metadata(
+    body: dict[str, Any],
+    headers: dict[str, str] | None = None,
+    result: ToolModelResult | None = None,
+) -> dict[str, Any]:
     tools = body.get("tools") if isinstance(body.get("tools"), list) else []
     input_items = body.get("input") if isinstance(body.get("input"), list) else []
-    return {
+    metadata = {
         "prompt_cache_key": body.get("prompt_cache_key"),
         "tool_choice": body.get("tool_choice"),
         "parallel_tool_calls": body.get("parallel_tool_calls"),
@@ -345,6 +388,29 @@ def _codex_request_metadata(body: dict[str, Any]) -> dict[str, Any]:
         ),
         "input_count": len(input_items),
     }
+    session = _codex_session.get()
+    if isinstance(session, CodexBackendSession):
+        metadata.update(
+            {
+                "session_id": session.session_id,
+                "thread_id": session.thread_id,
+                "window_id": session.window_id,
+            }
+        )
+    if headers is not None:
+        metadata["codex_header_names"] = sorted(
+            name
+            for name in headers
+            if name
+            not in {
+                "Authorization",
+                "chatgpt-account-id",
+            }
+        )
+    if result is not None:
+        metadata["response_id"] = result.response_id
+        metadata["response_item_count"] = len(result.response_items)
+    return metadata
 
 
 def _is_instruction(item: dict[str, Any]) -> bool:
@@ -375,11 +441,21 @@ def _codex_prompt_cache_key() -> str:
     override = os.getenv("CODEX_PROMPT_CACHE_KEY")
     if override:
         return override
+    session = _codex_session.get()
+    if isinstance(session, CodexBackendSession):
+        return session.thread_id
     trace_dir = _trace_dir.get()
     if trace_dir is not None:
         digest = hashlib.sha256(str(trace_dir).encode("utf-8")).hexdigest()[:32]
         return f"harness-{digest}"
     return "harness-complexity"
+
+
+def _codex_current_installation_id() -> str:
+    session = _codex_session.get()
+    if isinstance(session, CodexBackendSession):
+        return session.installation_id
+    return _codex_installation_id()
 
 
 def _codex_installation_id() -> str:
@@ -389,6 +465,20 @@ def _codex_installation_id() -> str:
     auth_path = str(_codex_auth_path())
     digest = hashlib.sha256(auth_path.encode("utf-8")).hexdigest()[:32]
     return f"harness-{digest}"
+
+
+def _new_codex_session(trace_path: Path | None) -> CodexBackendSession | None:
+    if trace_path is None:
+        return None
+    base = str(trace_path.resolve())
+    session_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"harness-session:{base}"))
+    thread_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"harness-thread:{base}"))
+    return CodexBackendSession(
+        session_id=session_id,
+        thread_id=thread_id,
+        window_id=f"{thread_id}:0",
+        installation_id=_codex_installation_id(),
+    )
 
 
 def _codex_auth_path() -> Path:
@@ -467,6 +557,7 @@ def _extract_sse_text(text: str) -> str:
 def _extract_sse_result(text: str) -> ToolModelResult:
     chunks: list[str] = []
     streamed_calls: list[ModelToolCall] = []
+    streamed_items: list[dict[str, Any]] = []
     completed: dict[str, Any] | None = None
     for line in text.splitlines():
         if not line.startswith("data: "):
@@ -481,6 +572,8 @@ def _extract_sse_result(text: str) -> ToolModelResult:
         elif event_type in {"response.output_item.done", "response.output_item.added"}:
             item = event.get("item")
             if isinstance(item, dict):
+                if event_type == "response.output_item.done":
+                    streamed_items.append(_sanitize_response_item(item))
                 call = _tool_call_from_mapping(item)
                 if call is not None:
                     streamed_calls.append(call)
@@ -491,11 +584,22 @@ def _extract_sse_result(text: str) -> ToolModelResult:
         calls = _merge_tool_calls(
             streamed_calls, _extract_response_dict_tool_calls(completed or {})
         )
-        return ToolModelResult(content, calls)
+        response_items = _response_items_from_response(completed) or streamed_items
+        return ToolModelResult(
+            content,
+            calls,
+            response_items=response_items,
+            response_id=_response_id_from_response(completed),
+        )
     if completed:
         result = _extract_response_dict_result(completed)
-        return ToolModelResult(result.content, _merge_tool_calls(streamed_calls, result.tool_calls))
-    return ToolModelResult("", _merge_tool_calls(streamed_calls))
+        return ToolModelResult(
+            result.content,
+            _merge_tool_calls(streamed_calls, result.tool_calls),
+            response_items=result.response_items,
+            response_id=result.response_id,
+        )
+    return ToolModelResult("", _merge_tool_calls(streamed_calls), response_items=streamed_items)
 
 
 def _extract_response_dict_text(response: dict[str, Any]) -> str:
@@ -509,7 +613,12 @@ def _extract_response_dict_result(response: dict[str, Any]) -> ToolModelResult:
             text = content.get("text")
             if isinstance(text, str):
                 chunks.append(text)
-    return ToolModelResult("\n".join(chunks), _extract_response_dict_tool_calls(response))
+    return ToolModelResult(
+        "\n".join(chunks),
+        _extract_response_dict_tool_calls(response),
+        response_items=_response_items_from_response(response),
+        response_id=_response_id_from_response(response),
+    )
 
 
 def _extract_text(response: Any) -> str:
@@ -528,8 +637,50 @@ def _extract_result(response: Any) -> ToolModelResult:
     if chunks:
         text = "\n".join(chunks)
     return ToolModelResult(
-        text if isinstance(text, str) else str(response), _extract_tool_calls(response)
+        text if isinstance(text, str) else str(response),
+        _extract_tool_calls(response),
+        response_items=_response_items_from_obj(response),
+        response_id=str(getattr(response, "id", "") or ""),
     )
+
+
+def _response_id_from_response(response: dict[str, Any] | None) -> str:
+    if not isinstance(response, dict):
+        return ""
+    response_id = response.get("id") or response.get("response_id")
+    return str(response_id) if response_id else ""
+
+
+def _response_items_from_response(response: dict[str, Any] | None) -> list[dict[str, Any]]:
+    if not isinstance(response, dict):
+        return []
+    return _sanitize_response_items(response.get("output"))
+
+
+def _response_items_from_obj(response: Any) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    for item in getattr(response, "output", None) or []:
+        if hasattr(item, "model_dump"):
+            dumped = item.model_dump(exclude_none=True)
+        elif hasattr(item, "dict"):
+            dumped = item.dict(exclude_none=True)
+        else:
+            dumped = {}
+        if isinstance(dumped, dict):
+            items.append(_sanitize_response_item(dumped))
+    return items
+
+
+def _sanitize_response_items(items: Any) -> list[dict[str, Any]]:
+    if not isinstance(items, list):
+        return []
+    return [_sanitize_response_item(item) for item in items if isinstance(item, dict)]
+
+
+def _sanitize_response_item(item: dict[str, Any]) -> dict[str, Any]:
+    cleaned = dict(item)
+    cleaned.pop("id", None)
+    return cleaned
 
 
 def _extract_tool_calls(response: Any) -> list[ModelToolCall]:

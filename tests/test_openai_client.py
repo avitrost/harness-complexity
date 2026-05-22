@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 from plumbing.openai_client import (
     _codex_body,
+    _codex_headers,
     _extract_response_dict_result,
     _extract_sse_result,
     call_terminal_model_with_tools,
@@ -91,10 +92,16 @@ def test_codex_backend_body_uses_trace_scoped_prompt_cache_key(tmp_path) -> None
     token = set_trace_dir(tmp_path / "trial")
     try:
         body = _codex_body([{"role": "user", "content": "next?"}])
+        headers = _codex_headers("token", "account")
     finally:
         reset_trace_dir(token)
 
-    assert body["prompt_cache_key"].startswith("harness-")
+    assert body["prompt_cache_key"] == headers["thread-id"]
+    assert headers["session-id"]
+    assert headers["thread-id"]
+    assert headers["x-client-request-id"] == headers["thread-id"]
+    assert headers["x-codex-window-id"] == f"{headers['thread-id']}:0"
+    assert "x-codex-installation-id" not in headers
     assert body["client_metadata"]["x-codex-installation-id"].startswith("harness-")
 
 
@@ -146,12 +153,15 @@ def test_codex_response_items_extract_custom_and_local_shell_calls() -> None:
 def test_codex_sse_extracts_streamed_tool_call_items() -> None:
     result = _extract_sse_result(
         'data: {"type":"response.output_item.done","item":{"type":"local_shell_call",'
-        '"action":{"command":"ls"},"call_id":"c1"}}\n\n'
+        '"id":"item_1","action":{"command":"ls"},"call_id":"c1"}}\n\n'
     )
 
     assert len(result.tool_calls) == 1
     assert result.tool_calls[0].name == "local_shell"
     assert result.tool_calls[0].arguments == {"command": "ls"}
+    assert result.response_items == [
+        {"type": "local_shell_call", "action": {"command": "ls"}, "call_id": "c1"}
+    ]
 
 
 def test_codex_sse_prefers_completed_tool_call_arguments() -> None:

@@ -131,6 +131,39 @@ def test_harbor_agent_executes_candidate_tool_calls(tmp_path: Path) -> None:
     assert payload["tool_call_id"] == "call_2"
 
 
+def test_harbor_agent_marks_codex_parallel_outputs(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    candidate = workspace / "candidate"
+    candidate.mkdir(parents=True)
+    (candidate / "harness.py").write_text(
+        "from plumbing.base_agent import BaseHarness\n"
+        "from plumbing.types import HarnessToolCall, HarnessTurn\n"
+        "ITEMS = [\n"
+        "    {'type': 'function_call', 'call_id': 'call_1', 'name': 'exec_command', 'arguments': '{\"cmd\":\"echo one\"}'},\n"
+        "    {'type': 'function_call', 'call_id': 'call_2', 'name': 'exec_command', 'arguments': '{\"cmd\":\"echo two\"}'},\n"
+        "]\n"
+        "class H(BaseHarness):\n"
+        "    def next_command(self, task, history):\n"
+        "        if history:\n"
+        "            return HarnessTurn(done=True)\n"
+        "        return HarnessTurn(tool_calls=(\n"
+        "            HarnessToolCall('exec_command', {'cmd': 'echo one'}, 'call_1'),\n"
+        "            HarnessToolCall('exec_command', {'cmd': 'echo two'}, 'call_2'),\n"
+        "        ), metadata={'codex_response_items': ITEMS})\n"
+        "def create_agent():\n"
+        "    return H()\n",
+        encoding="utf-8",
+    )
+    env = UnifiedEnvironment()
+    agent = HarborHarnessAgent(logs_dir=tmp_path / "logs", candidate_dir=workspace)
+    asyncio.run(agent.run("instruction", env, SimpleNamespace(metadata=None)))
+
+    first = json.loads((tmp_path / "logs" / "harness-turn-01.json").read_text())
+    second = json.loads((tmp_path / "logs" / "harness-turn-02.json").read_text())
+    assert "codex_response_items" in first["metadata"]
+    assert second["metadata"]["codex_output_only"] is True
+
+
 def test_harbor_agent_executes_codex_exec_command_tool(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     candidate = workspace / "candidate"

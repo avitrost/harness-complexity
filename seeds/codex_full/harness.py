@@ -402,6 +402,11 @@ class ConversationBuilder:
 
     def _history_items(self, index: int, record: CommandResult) -> list[dict[str, Any]]:
         call_id = record.tool_call_id or f"call_{index}"
+        raw_items = self._codex_response_items(record)
+        if raw_items is not None:
+            return [*raw_items, self._tool_output_item(record, call_id)]
+        if isinstance(record.metadata, dict) and record.metadata.get("codex_output_only"):
+            return [self._tool_output_item(record, call_id)]
         items = self._assistant_history(record)
         if record.tool_name == "apply_patch":
             patch = str(record.metadata.get("input") or self._patch_from_display(record.command))
@@ -413,11 +418,7 @@ class ConversationBuilder:
                         "name": "apply_patch",
                         "input": patch,
                     },
-                    {
-                        "type": "custom_tool_call_output",
-                        "call_id": call_id,
-                        "output": self._tool_output_text(record),
-                    },
+                    self._tool_output_item(record, call_id),
                 ]
             )
             return items
@@ -438,14 +439,30 @@ class ConversationBuilder:
                     "name": tool_name,
                     "arguments": json.dumps(args, sort_keys=True),
                 },
-                {
-                    "type": "function_call_output",
-                    "call_id": call_id,
-                    "output": self._tool_output_text(record),
-                },
+                self._tool_output_item(record, call_id),
             ]
         )
         return items
+
+    def _codex_response_items(self, record: CommandResult) -> list[dict[str, Any]] | None:
+        if not isinstance(record.metadata, dict):
+            return None
+        items = record.metadata.get("codex_response_items")
+        if not isinstance(items, list) or not items:
+            return None
+        return [dict(item) for item in items if isinstance(item, dict)]
+
+    def _tool_output_item(self, record: CommandResult, call_id: str) -> dict[str, Any]:
+        item_type = (
+            "custom_tool_call_output"
+            if record.tool_name == "apply_patch"
+            else "function_call_output"
+        )
+        return {
+            "type": item_type,
+            "call_id": call_id,
+            "output": self._tool_output_text(record),
+        }
 
     def _agents_context(self, task: TaskContext) -> str:
         agents = task.metadata.get("agents_md") if isinstance(task.metadata, dict) else None
@@ -550,12 +567,26 @@ class CandidateHarness(BaseHarness):
             parallel_tool_calls=prompt.parallel_tool_calls,
         )
         tool_calls = self.router.tool_calls_from_result(result)
+        metadata = self._turn_metadata(result)
         if tool_calls:
-            return HarnessTurn(tool_calls=tuple(tool_calls), assistant_content=result.content)
+            return HarnessTurn(
+                tool_calls=tuple(tool_calls),
+                assistant_content=result.content,
+                metadata=metadata,
+            )
         return HarnessTurn(
             done=self.completion.is_complete(result, history),
             assistant_content=result.content,
+            metadata=metadata,
         )
+
+    def _turn_metadata(self, result: ToolModelResult) -> dict[str, Any]:
+        metadata: dict[str, Any] = {}
+        if result.response_items:
+            metadata["codex_response_items"] = result.response_items
+        if result.response_id:
+            metadata["codex_response_id"] = result.response_id
+        return metadata
 
 
 def build_prompt(

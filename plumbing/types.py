@@ -37,3 +37,4 @@ class HarnessTurn:
     timeout_sec: int | None = None
     tool_calls: tuple[HarnessToolCall, ...] = ()
     assistant_content: str = ""
+    metadata: dict[str, Any] = field(default_factory=dict)

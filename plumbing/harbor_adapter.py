@@ -114,12 +114,23 @@ class HarborHarnessAgent(HarborBaseAgent):
                         for tool_call in tool_calls
                     )
                 )
+                turn_metadata = (
+                    dict(turn.metadata) if isinstance(getattr(turn, "metadata", None), dict) else {}
+                )
+                has_codex_items = bool(turn_metadata.get("codex_response_items"))
                 for record_index, record in enumerate(records):
+                    extra: dict[str, Any] = {}
+                    if has_codex_items:
+                        if record_index == 0:
+                            extra.update(turn_metadata)
+                        else:
+                            extra["codex_output_only"] = True
+                    elif record_index == 0 and turn_metadata:
+                        extra.update(turn_metadata)
                     if record_index == 0 and turn.assistant_content.strip():
-                        record = _with_metadata(
-                            record,
-                            {"assistant_content": turn.assistant_content},
-                        )
+                        extra["assistant_content"] = turn.assistant_content
+                    if extra:
+                        record = _with_metadata(record, extra)
                     history.append(record)
                     self._write_turn_log(turn_index, record)
                     turn_index += 1

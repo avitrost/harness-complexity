@@ -353,6 +353,89 @@ def test_codex_full_seed_replays_assistant_text_before_tool(monkeypatch) -> None
     assert input_items[3]["name"] == "exec_command"
 
 
+def test_codex_full_seed_replays_raw_codex_items_without_duplication(monkeypatch) -> None:
+    monkeypatch.delenv("OPENAI_AUTH_MODE", raising=False)
+    module = _load_seed()
+    fake = RecordingToolOpenAI([SimpleNamespace(output_text="done", output=[])])
+    set_client_factory(lambda: fake)
+    raw_call = {
+        "type": "function_call",
+        "call_id": "call_1",
+        "name": "exec_command",
+        "arguments": '{"cmd":"pwd"}',
+    }
+    history = [
+        CommandResult(
+            command="pwd",
+            return_code=0,
+            stdout="/workspace\n",
+            tool_name="exec_command",
+            tool_call_id="call_1",
+            metadata={"codex_response_items": [raw_call], "arguments": {"cmd": "other"}},
+        )
+    ]
+    try:
+        module.create_agent().next_command(TaskContext("List files."), history)
+    finally:
+        set_client_factory(None)
+
+    input_items = fake.calls[0]["input"]
+    assert input_items[2] == raw_call
+    assert input_items[3]["type"] == "function_call_output"
+    assert len(input_items) == 4
+
+
+def test_codex_full_seed_replays_parallel_raw_items_once(monkeypatch) -> None:
+    monkeypatch.delenv("OPENAI_AUTH_MODE", raising=False)
+    module = _load_seed()
+    fake = RecordingToolOpenAI([SimpleNamespace(output_text="done", output=[])])
+    set_client_factory(lambda: fake)
+    raw_calls = [
+        {
+            "type": "function_call",
+            "call_id": "call_1",
+            "name": "exec_command",
+            "arguments": '{"cmd":"pwd"}',
+        },
+        {
+            "type": "function_call",
+            "call_id": "call_2",
+            "name": "exec_command",
+            "arguments": '{"cmd":"ls"}',
+        },
+    ]
+    history = [
+        CommandResult(
+            command="pwd",
+            return_code=0,
+            stdout="/workspace\n",
+            tool_name="exec_command",
+            tool_call_id="call_1",
+            metadata={"codex_response_items": raw_calls},
+        ),
+        CommandResult(
+            command="ls",
+            return_code=0,
+            stdout="README.md\n",
+            tool_name="exec_command",
+            tool_call_id="call_2",
+            metadata={"codex_output_only": True},
+        ),
+    ]
+    try:
+        module.create_agent().next_command(TaskContext("List files."), history)
+    finally:
+        set_client_factory(None)
+
+    input_items = fake.calls[0]["input"]
+    assert input_items[2:4] == raw_calls
+    assert input_items[4]["type"] == "function_call_output"
+    assert input_items[4]["call_id"] == "call_1"
+    assert input_items[5]["type"] == "function_call_output"
+    assert input_items[5]["call_id"] == "call_2"
+    assert len([item for item in input_items if item.get("type") == "function_call"]) == 2
+
+
 def _load_seed():
     name = "codex_full_seed_under_test"
     spec = importlib.util.spec_from_file_location(name, SEED_PATH)
