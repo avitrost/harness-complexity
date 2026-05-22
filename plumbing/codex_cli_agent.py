@@ -144,7 +144,7 @@ class CodexCliAgent(HarborBaseAgent):
         script = "\n".join(
             [
                 "set -euo pipefail",
-                f"setsid bash -lc {shlex.quote(inner)} &",
+                f"setsid bash -c {shlex.quote(inner)} &",
                 "pid=$!",
                 "set +e",
                 'wait "$pid"',
@@ -155,7 +155,7 @@ class CodexCliAgent(HarborBaseAgent):
                 'exit "$rc"',
             ]
         )
-        return "bash -lc " + shlex.quote(script)
+        return "bash -c " + shlex.quote(script)
 
     def _codex_env(self) -> dict[str, str]:
         env = {

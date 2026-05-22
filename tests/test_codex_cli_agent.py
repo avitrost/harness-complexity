@@ -39,7 +39,8 @@ def test_codex_cli_agent_uploads_auth_and_runs_codex(tmp_path: Path) -> None:
     assert "--model gpt-test" in codex_exec.command
     assert "--dangerously-bypass-approvals-and-sandbox" in codex_exec.command
     assert 'model_reasoning_effort="none"' in codex_exec.command
-    assert "setsid bash -lc" in codex_exec.command
+    assert "setsid bash -c" in codex_exec.command
+    assert "bash -lc" not in codex_exec.command
     assert "kill -TERM" in codex_exec.command
     assert codex_exec.env["CODEX_HOME"] == "/root/.codex"
     assert codex_exec.timeout_sec == 123
