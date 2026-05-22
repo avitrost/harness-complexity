@@ -33,6 +33,25 @@ def test_load_harness_from_candidate_workspace(tmp_path: Path) -> None:
     assert turn.command == "echo workspace"
 
 
+def test_load_harness_from_direct_harness_directory(tmp_path: Path) -> None:
+    direct = tmp_path / "seed"
+    direct.mkdir()
+    (direct / "harness.py").write_text(
+        "from plumbing.base_agent import BaseHarness\n"
+        "from plumbing.types import HarnessTurn\n"
+        "class H(BaseHarness):\n"
+        "    def next_command(self, task, history):\n"
+        "        return HarnessTurn(command='echo direct')\n"
+        "def create_agent():\n"
+        "    return H()\n",
+        encoding="utf-8",
+    )
+
+    turn = load_harness(candidate_dir=direct).next_command(SimpleNamespace(), [])
+
+    assert turn.command == "echo direct"
+
+
 def test_harbor_agent_executes_candidate_command(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     candidate = workspace / "candidate"
@@ -215,6 +234,7 @@ def test_harbor_agent_resolves_relative_codex_workdir(tmp_path: Path) -> None:
     asyncio.run(agent.run("instruction", env, SimpleNamespace(metadata=None)))
 
     assert env.exec_calls[0]["cwd"] == "/app/src"
+    assert env.exec_calls[0]["login"] is True
 
 
 def test_harbor_agent_intercepts_shell_apply_patch_from_exec_command(tmp_path: Path) -> None:

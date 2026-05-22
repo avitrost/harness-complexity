@@ -271,7 +271,7 @@ async def _exec_command_observed(
         cwd=cwd,
         timeout_sec=_tool_timeout(args, default_timeout_sec),
         shell=_tool_string(args.get("shell")),
-        login=bool(args.get("login")) if isinstance(args.get("login"), bool) else False,
+        login=bool(args.get("login")) if isinstance(args.get("login"), bool) else True,
         tty=bool(args.get("tty")) if isinstance(args.get("tty"), bool) else False,
         yield_time_ms=_tool_int(args.get("yield_time_ms")),
         max_output_tokens=_tool_int(args.get("max_output_tokens")),

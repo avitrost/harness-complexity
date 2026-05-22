@@ -591,7 +591,7 @@ def _exec_command_tool() -> dict[str, Any]:
         },
         "login": {
             "type": "boolean",
-            "description": "Whether to run the shell as a login shell.",
+            "description": "Whether to run the shell with -l/-i semantics. Defaults to true.",
         },
         "tty": {
             "type": "boolean",
@@ -657,14 +657,17 @@ def _update_plan_tool() -> dict[str, Any]:
     return {
         "type": "function",
         "name": "update_plan",
-        "description": "Updates the task plan.",
+        "description": (
+            "Updates the task plan.\n"
+            "Provide an optional explanation and a list of plan items, each with a step and status.\n"
+            "At most one step can be in_progress at a time.\n"
+        ),
         "strict": False,
         "parameters": {
             "type": "object",
             "properties": {
                 "explanation": {
                     "type": "string",
-                    "description": "Optional explanation for the plan update.",
                 },
                 "plan": {
                     "type": "array",
@@ -672,12 +675,15 @@ def _update_plan_tool() -> dict[str, Any]:
                         "type": "object",
                         "properties": {
                             "step": {"type": "string"},
-                            "status": {"type": "string"},
+                            "status": {
+                                "type": "string",
+                                "description": "One of: pending, in_progress, completed",
+                            },
                         },
                         "required": ["step", "status"],
                         "additionalProperties": False,
                     },
-                    "description": "Plan items with a short step and status.",
+                    "description": "The list of steps",
                 },
             },
             "required": ["plan"],

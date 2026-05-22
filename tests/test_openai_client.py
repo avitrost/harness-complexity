@@ -47,10 +47,18 @@ def test_codex_backend_body_uses_no_reasoning() -> None:
 
 
 def test_codex_backend_body_can_include_tools() -> None:
-    tools = [{"type": "function", "name": "execute_commands", "parameters": {}}]
+    tools = [
+        {
+            "type": "function",
+            "name": "exec_command",
+            "parameters": {},
+            "output_schema": {"type": "object"},
+        }
+    ]
     body = _codex_body([{"role": "user", "content": "next?"}], tools)
 
-    assert body["tools"] == tools
+    assert body["tools"] == [{"type": "function", "name": "exec_command", "parameters": {}}]
+    assert body["tool_choice"] == "auto"
 
 
 def test_codex_backend_body_can_enable_parallel_tool_calls() -> None:
@@ -73,7 +81,21 @@ def test_codex_backend_body_preserves_response_items() -> None:
     )
 
     assert body["instructions"] == "sys"
-    assert body["input"] == [{"role": "user", "content": "task"}, item]
+    assert body["input"] == [
+        {"role": "user", "content": [{"type": "input_text", "text": "task"}]},
+        item,
+    ]
+
+
+def test_codex_backend_body_uses_trace_scoped_prompt_cache_key(tmp_path) -> None:
+    token = set_trace_dir(tmp_path / "trial")
+    try:
+        body = _codex_body([{"role": "user", "content": "next?"}])
+    finally:
+        reset_trace_dir(token)
+
+    assert body["prompt_cache_key"].startswith("harness-")
+    assert body["client_metadata"]["x-codex-installation-id"].startswith("harness-")
 
 
 def test_terminal_model_tool_calls_are_extracted(monkeypatch) -> None:
@@ -97,7 +119,12 @@ def test_codex_response_items_extract_custom_and_local_shell_calls() -> None:
     result = _extract_response_dict_result(
         {
             "output": [
-                {"type": "custom_tool_call", "name": "apply_patch", "input": "diff", "call_id": "c1"},
+                {
+                    "type": "custom_tool_call",
+                    "name": "apply_patch",
+                    "input": "diff",
+                    "call_id": "c1",
+                },
                 {
                     "type": "local_shell_call",
                     "action": {"command": "pytest -q", "timeout_ms": 1500},
@@ -125,6 +152,25 @@ def test_codex_sse_extracts_streamed_tool_call_items() -> None:
     assert len(result.tool_calls) == 1
     assert result.tool_calls[0].name == "local_shell"
     assert result.tool_calls[0].arguments == {"command": "ls"}
+
+
+def test_codex_sse_prefers_completed_tool_call_arguments() -> None:
+    result = _extract_sse_result(
+        'data: {"type":"response.output_item.added","item":{"type":"local_shell_call",'
+        '"call_id":"c1"}}\n\n'
+        'data: {"type":"response.output_item.done","item":{"type":"local_shell_call",'
+        '"action":{"command":"ls"},"call_id":"c1"}}\n\n'
+        'data: {"type":"response.output_item.added","item":{"type":"custom_tool_call",'
+        '"name":"apply_patch","call_id":"c2","input":""}}\n\n'
+        'data: {"type":"response.output_item.done","item":{"type":"custom_tool_call",'
+        '"name":"apply_patch","call_id":"c2","input":"diff"}}\n\n'
+    )
+
+    assert len(result.tool_calls) == 2
+    assert result.tool_calls[0].name == "local_shell"
+    assert result.tool_calls[0].arguments == {"command": "ls"}
+    assert result.tool_calls[1].name == "apply_patch"
+    assert result.tool_calls[1].arguments == {"input": "diff"}
 
 
 def test_model_trace_records_reasoning_effort(monkeypatch, tmp_path) -> None:

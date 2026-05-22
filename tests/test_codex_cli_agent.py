@@ -38,7 +38,9 @@ def test_codex_cli_agent_uploads_auth_and_runs_codex(tmp_path: Path) -> None:
     codex_exec = [call for call in env.execs if "codex exec" in call.command][0]
     assert "--model gpt-test" in codex_exec.command
     assert "--dangerously-bypass-approvals-and-sandbox" in codex_exec.command
-    assert "model_reasoning_effort=\"none\"" in codex_exec.command
+    assert 'model_reasoning_effort="none"' in codex_exec.command
+    assert "setsid bash -lc" in codex_exec.command
+    assert "kill -TERM" in codex_exec.command
     assert codex_exec.env["CODEX_HOME"] == "/root/.codex"
     assert codex_exec.timeout_sec == 123
     assert context.metadata["return_code"] == 0
@@ -62,7 +64,7 @@ def test_codex_cli_agent_passes_task_prompt_verbatim(
 
     assert env.uploaded_text["/tmp/codex-task-prompt.txt"] == instruction
     codex_exec = [call for call in env.execs if "codex exec" in call.command][0]
-    assert codex_exec.command.endswith(" < /tmp/codex-task-prompt.txt")
+    assert "< /tmp/codex-task-prompt.txt" in codex_exec.command
     assert codex_exec.env["HOME"] == "/root/.codex"
 
 

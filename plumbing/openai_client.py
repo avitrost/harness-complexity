@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import contextvars
+import hashlib
 import json
 import os
 import time
@@ -49,6 +50,7 @@ class ModelToolCall:
 class ToolModelResult:
     content: str
     tool_calls: list[ModelToolCall]
+    request_metadata: dict[str, Any] | None = None
 
 
 def set_client_factory(factory: Callable[[], OpenAI] | None) -> None:
@@ -89,10 +91,16 @@ def call_terminal_model(messages: list[dict[str, Any]]) -> str:
     for attempt in range(MAX_RETRIES + 1):
         try:
             _throttle_if_requested()
+            started_at = time.monotonic()
             if using_codex_auth():
-                text = _call_codex_backend_result(messages).content
-                _write_model_trace(messages, text)
-                return text
+                result = _call_codex_backend_result(messages)
+                _write_model_trace(
+                    messages,
+                    result.content,
+                    duration_sec=time.monotonic() - started_at,
+                    request_metadata=result.request_metadata,
+                )
+                return result.content
             response = _make_client().responses.create(
                 model=terminal_model(),
                 input=messages,
@@ -101,7 +109,7 @@ def call_terminal_model(messages: list[dict[str, Any]]) -> str:
                 timeout=TIMEOUT_SEC,
             )
             text = _extract_text(response)
-            _write_model_trace(messages, text)
+            _write_model_trace(messages, text, duration_sec=time.monotonic() - started_at)
             return text
         except Exception as exc:  # pragma: no cover - real API path
             last_error = exc
@@ -123,6 +131,7 @@ def call_terminal_model_with_tools(
     for attempt in range(MAX_RETRIES + 1):
         try:
             _throttle_if_requested()
+            started_at = time.monotonic()
             if using_codex_auth():
                 result = _call_codex_backend_result(
                     messages,
@@ -130,7 +139,13 @@ def call_terminal_model_with_tools(
                     tool_choice=tool_choice,
                     parallel_tool_calls=parallel_tool_calls,
                 )
-                _write_model_trace(messages, result.content, tool_calls=result.tool_calls)
+                _write_model_trace(
+                    messages,
+                    result.content,
+                    tool_calls=result.tool_calls,
+                    duration_sec=time.monotonic() - started_at,
+                    request_metadata=result.request_metadata,
+                )
                 return result
             kwargs: dict[str, Any] = dict(
                 model=terminal_model(),
@@ -146,7 +161,12 @@ def call_terminal_model_with_tools(
                 kwargs["parallel_tool_calls"] = parallel_tool_calls
             response = _make_client().responses.create(**kwargs)
             result = _extract_result(response)
-            _write_model_trace(messages, result.content, tool_calls=result.tool_calls)
+            _write_model_trace(
+                messages,
+                result.content,
+                tool_calls=result.tool_calls,
+                duration_sec=time.monotonic() - started_at,
+            )
             return result
         except Exception as exc:  # pragma: no cover - real API path
             last_error = exc
@@ -201,6 +221,8 @@ def _write_model_trace(
     response_text: str,
     error: str | None = None,
     tool_calls: list[ModelToolCall] | None = None,
+    duration_sec: float | None = None,
+    request_metadata: dict[str, Any] | None = None,
 ) -> None:
     trace_dir = _trace_dir.get()
     if trace_dir is None:
@@ -214,6 +236,10 @@ def _write_model_trace(
         "messages": messages,
         "response": response_text,
     }
+    if duration_sec is not None:
+        payload["duration_sec"] = duration_sec
+    if request_metadata is not None:
+        payload["request_metadata"] = request_metadata
     if error:
         payload["error"] = error
     if tool_calls is not None:
@@ -259,7 +285,12 @@ def _call_codex_backend_result(
     )
     try:
         with urlopen(request, timeout=TIMEOUT_SEC) as response:
-            return _extract_sse_result(response.read().decode("utf-8", errors="replace"))
+            result = _extract_sse_result(response.read().decode("utf-8", errors="replace"))
+            return ToolModelResult(
+                result.content,
+                result.tool_calls,
+                _codex_request_metadata(body),
+            )
     except HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")
         raise RuntimeError(f"codex backend call failed: {exc.code} {detail[:500]}") from exc
@@ -282,17 +313,38 @@ def _codex_body(
         "model": terminal_model(),
         "reasoning": {"effort": terminal_reasoning_effort()},
         "instructions": instructions or "You are a concise assistant.",
-        "input": input_messages or [{"role": "user", "content": ""}],
+        "input": input_messages or [_codex_input_item({"role": "user", "content": ""})],
+        "tools": _codex_tools(tools),
+        "tool_choice": "auto",
         "stream": True,
         "store": False,
+        "include": [],
+        "prompt_cache_key": _codex_prompt_cache_key(),
+        "client_metadata": {
+            "x-codex-installation-id": _codex_installation_id(),
+        },
     }
-    if tools:
-        body["tools"] = tools
     if tool_choice is not None:
         body["tool_choice"] = tool_choice
     if parallel_tool_calls is not None:
         body["parallel_tool_calls"] = parallel_tool_calls
     return body
+
+
+def _codex_request_metadata(body: dict[str, Any]) -> dict[str, Any]:
+    tools = body.get("tools") if isinstance(body.get("tools"), list) else []
+    input_items = body.get("input") if isinstance(body.get("input"), list) else []
+    return {
+        "prompt_cache_key": body.get("prompt_cache_key"),
+        "tool_choice": body.get("tool_choice"),
+        "parallel_tool_calls": body.get("parallel_tool_calls"),
+        "tool_names": [tool.get("name") for tool in tools if isinstance(tool, dict)],
+        "tool_count": len(tools),
+        "tools_have_output_schema": any(
+            isinstance(tool, dict) and "output_schema" in tool for tool in tools
+        ),
+        "input_count": len(input_items),
+    }
 
 
 def _is_instruction(item: dict[str, Any]) -> bool:
@@ -302,7 +354,41 @@ def _is_instruction(item: dict[str, Any]) -> bool:
 def _codex_input_item(item: dict[str, Any]) -> dict[str, Any]:
     if "type" in item:
         return dict(item)
-    return {"role": item.get("role", "user"), "content": item.get("content", "")}
+    role = item.get("role", "user")
+    content = item.get("content", "")
+    if isinstance(content, str):
+        item_type = "output_text" if role == "assistant" else "input_text"
+        content = [{"type": item_type, "text": content}]
+    return {"role": role, "content": content}
+
+
+def _codex_tools(tools: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    cleaned: list[dict[str, Any]] = []
+    for tool in tools or []:
+        item = dict(tool)
+        item.pop("output_schema", None)
+        cleaned.append(item)
+    return cleaned
+
+
+def _codex_prompt_cache_key() -> str:
+    override = os.getenv("CODEX_PROMPT_CACHE_KEY")
+    if override:
+        return override
+    trace_dir = _trace_dir.get()
+    if trace_dir is not None:
+        digest = hashlib.sha256(str(trace_dir).encode("utf-8")).hexdigest()[:32]
+        return f"harness-{digest}"
+    return "harness-complexity"
+
+
+def _codex_installation_id() -> str:
+    override = os.getenv("CODEX_INSTALLATION_ID")
+    if override:
+        return override
+    auth_path = str(_codex_auth_path())
+    digest = hashlib.sha256(auth_path.encode("utf-8")).hexdigest()[:32]
+    return f"harness-{digest}"
 
 
 def _codex_auth_path() -> Path:
@@ -402,12 +488,14 @@ def _extract_sse_result(text: str) -> ToolModelResult:
             completed = event.get("response")
     if chunks:
         content = "".join(chunks)
-        calls = _merge_tool_calls(streamed_calls, _extract_response_dict_tool_calls(completed or {}))
+        calls = _merge_tool_calls(
+            streamed_calls, _extract_response_dict_tool_calls(completed or {})
+        )
         return ToolModelResult(content, calls)
     if completed:
         result = _extract_response_dict_result(completed)
         return ToolModelResult(result.content, _merge_tool_calls(streamed_calls, result.tool_calls))
-    return ToolModelResult("", streamed_calls)
+    return ToolModelResult("", _merge_tool_calls(streamed_calls))
 
 
 def _extract_response_dict_text(response: dict[str, Any]) -> str:
@@ -464,15 +552,31 @@ def _extract_response_dict_tool_calls(response: dict[str, Any]) -> list[ModelToo
 
 def _merge_tool_calls(*groups: list[ModelToolCall]) -> list[ModelToolCall]:
     merged: list[ModelToolCall] = []
-    seen: set[tuple[str, str, str]] = set()
+    seen_with_ids: dict[tuple[str, str], int] = {}
+    seen_without_ids: set[tuple[str, str, str]] = set()
     for group in groups:
         for call in group:
-            key = (call.call_id, call.name, call.arguments_text)
-            if key in seen:
+            if not call.call_id:
+                key = (call.call_id, call.name, call.arguments_text)
+                if key in seen_without_ids:
+                    continue
+                seen_without_ids.add(key)
+                merged.append(call)
                 continue
-            seen.add(key)
+            key = (call.call_id, call.name)
+            existing_index = seen_with_ids.get(key)
+            if existing_index is not None:
+                existing = merged[existing_index]
+                if _tool_call_detail_score(call) > _tool_call_detail_score(existing):
+                    merged[existing_index] = call
+                continue
+            seen_with_ids[key] = len(merged)
             merged.append(call)
     return merged
+
+
+def _tool_call_detail_score(call: ModelToolCall) -> tuple[int, int]:
+    return (int(bool(call.arguments)), len(call.arguments_text or ""))
 
 
 def _tool_call_from_obj(item: Any) -> ModelToolCall | None:

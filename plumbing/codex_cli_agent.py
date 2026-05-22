@@ -39,7 +39,9 @@ class CodexCliAgent(HarborBaseAgent):
             self.logger = None
         else:
             super().__init__(logs_dir=Path(logs_dir), model_name=model_name, **kwargs)
-        self.codex_model = codex_model or model_name or os.getenv("OPENAI_TERMINAL_MODEL", "gpt-5.4-mini")
+        self.codex_model = (
+            codex_model or model_name or os.getenv("OPENAI_TERMINAL_MODEL", "gpt-5.4-mini")
+        )
         self.codex_reasoning_effort = codex_reasoning_effort
         self.codex_bin = codex_bin
         self.codex_home = codex_home
@@ -68,7 +70,9 @@ class CodexCliAgent(HarborBaseAgent):
             timeout_sec=30,
         )
         if probe.return_code:
-            raise RuntimeError(f"Codex CLI is not available in the task environment: {self.codex_bin}")
+            raise RuntimeError(
+                f"Codex CLI is not available in the task environment: {self.codex_bin}"
+            )
         if self.host_codex_auth_path.exists():
             await environment.upload_file(
                 self.host_codex_auth_path,
@@ -135,7 +139,23 @@ class CodexCliAgent(HarborBaseAgent):
             DEFAULT_LAST_MESSAGE_PATH,
             "-",
         ]
-        return " ".join(shlex.quote(str(item)) for item in args) + f" < {shlex.quote(DEFAULT_PROMPT_PATH)}"
+        inner = " ".join(shlex.quote(str(item)) for item in args)
+        inner += f" < {shlex.quote(DEFAULT_PROMPT_PATH)}"
+        script = "\n".join(
+            [
+                "set -euo pipefail",
+                f"setsid bash -lc {shlex.quote(inner)} &",
+                "pid=$!",
+                "set +e",
+                'wait "$pid"',
+                "rc=$?",
+                'kill -TERM -- -"$pid" 2>/dev/null || true',
+                "sleep 0.2",
+                'kill -KILL -- -"$pid" 2>/dev/null || true',
+                'exit "$rc"',
+            ]
+        )
+        return "bash -lc " + shlex.quote(script)
 
     def _codex_env(self) -> dict[str, str]:
         env = {

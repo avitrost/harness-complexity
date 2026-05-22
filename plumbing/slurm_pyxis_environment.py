@@ -322,11 +322,13 @@ def _exec_env(data):
 
 
 class _Session:
-    def __init__(self, process, output_fd, stdin_fd, timeout_at=None):
+    def __init__(self, process, output_fd, stdin_fd, timeout_at=None, stdout=None, stdin=None):
         self.process = process
         self.output_fd = output_fd
         self.stdin_fd = stdin_fd
         self.timeout_at = timeout_at
+        self.stdout = stdout
+        self.stdin = stdin
 
 
 def _spawn_session(command, cwd, env, shell, login, tty, timeout_sec):
@@ -362,7 +364,7 @@ def _spawn_session(command, cwd, env, shell, login, tty, timeout_sec):
     output_fd = process.stdout.fileno()
     stdin_fd = process.stdin.fileno()
     _set_nonblocking(output_fd)
-    return _Session(process, output_fd, stdin_fd, timeout_at)
+    return _Session(process, output_fd, stdin_fd, timeout_at, process.stdout, process.stdin)
 
 
 def _set_nonblocking(fd):
@@ -437,6 +439,15 @@ def _drain_fd(fd):
 
 
 def _close_session(session):
+    if session.stdout is not None or session.stdin is not None:
+        for stream in {session.stdout, session.stdin}:
+            if stream is None:
+                continue
+            try:
+                stream.close()
+            except OSError:
+                pass
+        return
     for fd in {session.output_fd, session.stdin_fd}:
         try:
             os.close(fd)
