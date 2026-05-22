@@ -326,16 +326,17 @@ def _codex_body(
         if item.get("role") in {"system", "developer"} and item.get("content")
     )
     input_messages = [_codex_input_item(item) for item in messages if not _is_instruction(item)]
+    reasoning = {"effort": terminal_reasoning_effort()}
     body: dict[str, Any] = {
         "model": terminal_model(),
-        "reasoning": {"effort": terminal_reasoning_effort()},
+        "reasoning": reasoning,
         "instructions": instructions or "You are a concise assistant.",
         "input": input_messages or [_codex_input_item({"role": "user", "content": ""})],
         "tools": _codex_tools(tools),
         "tool_choice": "auto",
         "stream": True,
         "store": False,
-        "include": [],
+        "include": _codex_include(reasoning),
         "prompt_cache_key": _codex_prompt_cache_key(),
         "client_metadata": {
             "x-codex-installation-id": _codex_current_installation_id(),
@@ -417,15 +418,36 @@ def _is_instruction(item: dict[str, Any]) -> bool:
     return item.get("role") in {"system", "developer"} and bool(item.get("content"))
 
 
+def _codex_include(reasoning: dict[str, Any] | None) -> list[str]:
+    if reasoning is None:
+        return []
+    return ["reasoning.encrypted_content"]
+
+
 def _codex_input_item(item: dict[str, Any]) -> dict[str, Any]:
     if "type" in item:
-        return dict(item)
-    role = item.get("role", "user")
-    content = item.get("content", "")
+        return _sanitize_response_item(item)
+    role = str(item.get("role", "user"))
+    return {
+        "type": "message",
+        "role": role,
+        "content": _message_content_items(item.get("content", ""), role),
+    }
+
+
+def _message_content_items(content: Any, role: str) -> list[dict[str, Any]]:
+    item_type = "output_text" if role == "assistant" else "input_text"
     if isinstance(content, str):
-        item_type = "output_text" if role == "assistant" else "input_text"
-        content = [{"type": item_type, "text": content}]
-    return {"role": role, "content": content}
+        return [{"type": item_type, "text": content}]
+    if isinstance(content, list):
+        items: list[dict[str, Any]] = []
+        for item in content:
+            if isinstance(item, dict):
+                items.append(_sanitize_content_item(item, default_type=item_type))
+            else:
+                items.append({"type": item_type, "text": str(item)})
+        return items
+    return [{"type": item_type, "text": str(content)}]
 
 
 def _codex_tools(tools: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
@@ -678,9 +700,71 @@ def _sanitize_response_items(items: Any) -> list[dict[str, Any]]:
 
 
 def _sanitize_response_item(item: dict[str, Any]) -> dict[str, Any]:
+    item_type = item.get("type")
+    if item_type == "message":
+        role = str(item.get("role", "assistant"))
+        cleaned = {
+            "type": "message",
+            "role": role,
+            "content": _message_content_items(item.get("content", []), role),
+        }
+        if item.get("phase") is not None:
+            cleaned["phase"] = item["phase"]
+        return cleaned
+    if item_type == "function_call":
+        cleaned = {
+            "type": "function_call",
+            "name": item.get("name", ""),
+            "arguments": item.get("arguments", ""),
+            "call_id": item.get("call_id", ""),
+        }
+        if item.get("namespace") is not None:
+            cleaned["namespace"] = item["namespace"]
+        return cleaned
+    if item_type == "local_shell_call":
+        cleaned = {"type": "local_shell_call"}
+        _copy_present(cleaned, item, ("call_id", "status", "action"))
+        return cleaned
+    if item_type == "custom_tool_call":
+        cleaned = {"type": "custom_tool_call"}
+        _copy_present(cleaned, item, ("status", "call_id", "name", "input"))
+        return cleaned
+    if item_type == "reasoning":
+        cleaned = {"type": "reasoning"}
+        _copy_present(cleaned, item, ("summary", "content", "encrypted_content"))
+        return cleaned
+    if item_type == "function_call_output":
+        cleaned = {"type": "function_call_output"}
+        _copy_present(cleaned, item, ("call_id", "output"))
+        return cleaned
+    if item_type == "custom_tool_call_output":
+        cleaned = {"type": item_type}
+        _copy_present(cleaned, item, ("call_id", "name", "output"))
+        return cleaned
     cleaned = dict(item)
     cleaned.pop("id", None)
     return cleaned
+
+
+def _sanitize_content_item(item: dict[str, Any], default_type: str = "input_text") -> dict[str, Any]:
+    item_type = item.get("type") or default_type
+    if item_type in {"input_text", "output_text"}:
+        return {"type": item_type, "text": item.get("text", "")}
+    if item_type == "input_image":
+        cleaned = {"type": "input_image", "image_url": item.get("image_url", "")}
+        if item.get("detail") is not None:
+            cleaned["detail"] = item["detail"]
+        return cleaned
+    cleaned = dict(item)
+    for key in ("id", "status", "annotations", "logprobs"):
+        cleaned.pop(key, None)
+    return cleaned
+
+
+def _copy_present(target: dict[str, Any], source: dict[str, Any], keys: tuple[str, ...]) -> None:
+    for key in keys:
+        if key in source and source[key] is not None:
+            target[key] = source[key]
 
 
 def _extract_tool_calls(response: Any) -> list[ModelToolCall]:

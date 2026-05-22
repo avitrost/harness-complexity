@@ -45,6 +45,7 @@ def test_codex_backend_body_uses_no_reasoning() -> None:
     body = _codex_body([{"role": "user", "content": "next?"}])
 
     assert body["reasoning"] == {"effort": "none"}
+    assert body["include"] == ["reasoning.encrypted_content"]
 
 
 def test_codex_backend_body_can_include_tools() -> None:
@@ -83,8 +84,72 @@ def test_codex_backend_body_preserves_response_items() -> None:
 
     assert body["instructions"] == "sys"
     assert body["input"] == [
-        {"role": "user", "content": [{"type": "input_text", "text": "task"}]},
+        {
+            "type": "message",
+            "role": "user",
+            "content": [{"type": "input_text", "text": "task"}],
+        },
         item,
+    ]
+
+
+def test_codex_backend_body_sanitizes_response_items_like_codex() -> None:
+    body = _codex_body(
+        [
+            {
+                "type": "message",
+                "id": "msg_1",
+                "status": "completed",
+                "role": "assistant",
+                "phase": "commentary",
+                "content": [
+                    {
+                        "type": "output_text",
+                        "text": "hi",
+                        "annotations": [],
+                        "logprobs": [],
+                    }
+                ],
+            },
+            {
+                "type": "function_call",
+                "id": "fc_1",
+                "status": "completed",
+                "name": "exec_command",
+                "arguments": "{}",
+                "call_id": "call_1",
+            },
+            {
+                "type": "custom_tool_call",
+                "id": "ct_1",
+                "status": "completed",
+                "name": "apply_patch",
+                "input": "patch",
+                "call_id": "call_2",
+            },
+        ]
+    )
+
+    assert body["input"] == [
+        {
+            "type": "message",
+            "role": "assistant",
+            "phase": "commentary",
+            "content": [{"type": "output_text", "text": "hi"}],
+        },
+        {
+            "type": "function_call",
+            "name": "exec_command",
+            "arguments": "{}",
+            "call_id": "call_1",
+        },
+        {
+            "type": "custom_tool_call",
+            "status": "completed",
+            "call_id": "call_2",
+            "name": "apply_patch",
+            "input": "patch",
+        },
     ]
 
 
@@ -160,7 +225,7 @@ def test_codex_sse_extracts_streamed_tool_call_items() -> None:
     assert result.tool_calls[0].name == "local_shell"
     assert result.tool_calls[0].arguments == {"command": "ls"}
     assert result.response_items == [
-        {"type": "local_shell_call", "action": {"command": "ls"}, "call_id": "c1"}
+        {"type": "local_shell_call", "call_id": "c1", "action": {"command": "ls"}}
     ]
 
 
