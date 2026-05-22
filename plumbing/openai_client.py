@@ -115,16 +115,24 @@ def call_terminal_model(messages: list[dict[str, str]]) -> str:
 def call_terminal_model_with_tools(
     messages: list[dict[str, str]],
     tools: list[dict[str, Any]],
+    *,
+    tool_choice: Any | None = None,
+    parallel_tool_calls: bool | None = None,
 ) -> ToolModelResult:
     last_error: Exception | None = None
     for attempt in range(MAX_RETRIES + 1):
         try:
             _throttle_if_requested()
             if using_codex_auth():
-                result = _call_codex_backend_result(messages, tools)
+                result = _call_codex_backend_result(
+                    messages,
+                    tools,
+                    tool_choice=tool_choice,
+                    parallel_tool_calls=parallel_tool_calls,
+                )
                 _write_model_trace(messages, result.content, tool_calls=result.tool_calls)
                 return result
-            response = _make_client().responses.create(
+            kwargs: dict[str, Any] = dict(
                 model=terminal_model(),
                 input=messages,
                 reasoning={"effort": terminal_reasoning_effort()},
@@ -132,6 +140,11 @@ def call_terminal_model_with_tools(
                 max_output_tokens=MAX_OUTPUT_TOKENS,
                 timeout=TIMEOUT_SEC,
             )
+            if tool_choice is not None:
+                kwargs["tool_choice"] = tool_choice
+            if parallel_tool_calls is not None:
+                kwargs["parallel_tool_calls"] = parallel_tool_calls
+            response = _make_client().responses.create(**kwargs)
             result = _extract_result(response)
             _write_model_trace(messages, result.content, tool_calls=result.tool_calls)
             return result
@@ -218,11 +231,19 @@ def _call_codex_backend(messages: list[dict[str, str]]) -> str:
 def _call_codex_backend_result(
     messages: list[dict[str, str]],
     tools: list[dict[str, Any]] | None = None,
+    *,
+    tool_choice: Any | None = None,
+    parallel_tool_calls: bool | None = None,
 ) -> ToolModelResult:
     auth = _load_codex_auth()
     access_token = _fresh_codex_access_token(auth)
     account_id = _codex_account_id(access_token, auth)
-    body = _codex_body(messages, tools)
+    body = _codex_body(
+        messages,
+        tools,
+        tool_choice=tool_choice,
+        parallel_tool_calls=parallel_tool_calls,
+    )
     request = Request(
         CODEX_BASE_URL,
         data=json.dumps(body).encode("utf-8"),
@@ -247,6 +268,9 @@ def _call_codex_backend_result(
 def _codex_body(
     messages: list[dict[str, str]],
     tools: list[dict[str, Any]] | None = None,
+    *,
+    tool_choice: Any | None = None,
+    parallel_tool_calls: bool | None = None,
 ) -> dict[str, Any]:
     instructions = "\n\n".join(
         item.get("content", "")
@@ -268,6 +292,10 @@ def _codex_body(
     }
     if tools:
         body["tools"] = tools
+    if tool_choice is not None:
+        body["tool_choice"] = tool_choice
+    if parallel_tool_calls is not None:
+        body["parallel_tool_calls"] = parallel_tool_calls
     return body
 
 
@@ -346,6 +374,7 @@ def _extract_sse_text(text: str) -> str:
 
 def _extract_sse_result(text: str) -> ToolModelResult:
     chunks: list[str] = []
+    streamed_calls: list[ModelToolCall] = []
     completed: dict[str, Any] | None = None
     for line in text.splitlines():
         if not line.startswith("data: "):
@@ -357,15 +386,22 @@ def _extract_sse_result(text: str) -> ToolModelResult:
         event_type = event.get("type")
         if event_type == "response.output_text.delta":
             chunks.append(str(event.get("delta", "")))
+        elif event_type in {"response.output_item.done", "response.output_item.added"}:
+            item = event.get("item")
+            if isinstance(item, dict):
+                call = _tool_call_from_mapping(item)
+                if call is not None:
+                    streamed_calls.append(call)
         elif event_type == "response.completed":
             completed = event.get("response")
     if chunks:
         content = "".join(chunks)
-        calls = _extract_response_dict_tool_calls(completed or {})
+        calls = _merge_tool_calls(streamed_calls, _extract_response_dict_tool_calls(completed or {}))
         return ToolModelResult(content, calls)
     if completed:
-        return _extract_response_dict_result(completed)
-    return ToolModelResult("", [])
+        result = _extract_response_dict_result(completed)
+        return ToolModelResult(result.content, _merge_tool_calls(streamed_calls, result.tool_calls))
+    return ToolModelResult("", streamed_calls)
 
 
 def _extract_response_dict_text(response: dict[str, Any]) -> str:
@@ -420,27 +456,112 @@ def _extract_response_dict_tool_calls(response: dict[str, Any]) -> list[ModelToo
     return calls
 
 
+def _merge_tool_calls(*groups: list[ModelToolCall]) -> list[ModelToolCall]:
+    merged: list[ModelToolCall] = []
+    seen: set[tuple[str, str, str]] = set()
+    for group in groups:
+        for call in group:
+            key = (call.call_id, call.name, call.arguments_text)
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(call)
+    return merged
+
+
 def _tool_call_from_obj(item: Any) -> ModelToolCall | None:
     item_type = getattr(item, "type", "")
+    call_id = getattr(item, "call_id", None) or getattr(item, "id", "") or ""
+    if item_type == "local_shell_call":
+        return _make_tool_call(
+            "local_shell",
+            _local_shell_args_from_obj(item),
+            call_id,
+        )
+    if item_type == "custom_tool_call":
+        name = getattr(item, "name", "")
+        arguments = getattr(item, "input", None)
+        if arguments is None:
+            arguments = getattr(item, "arguments", "")
+        return _make_custom_tool_call(name, arguments, call_id)
     if item_type not in {"function_call", "tool_call"} and not hasattr(item, "arguments"):
         return None
     name = getattr(item, "name", "")
     arguments_text = getattr(item, "arguments", "") or ""
-    call_id = getattr(item, "call_id", None) or getattr(item, "id", "") or ""
     return _make_tool_call(name, arguments_text, call_id)
 
 
 def _tool_call_from_mapping(item: dict[str, Any]) -> ModelToolCall | None:
     item_type = item.get("type", "")
     function = item.get("function") if isinstance(item.get("function"), dict) else {}
+    call_id = item.get("call_id") or item.get("id") or ""
+    if item_type == "local_shell_call":
+        return _make_tool_call("local_shell", _local_shell_args_from_mapping(item), str(call_id))
+    if item_type == "custom_tool_call":
+        name = item.get("name") or ""
+        arguments = item["input"] if "input" in item else item.get("arguments", "")
+        return _make_custom_tool_call(str(name), arguments, str(call_id))
     if item_type not in {"function_call", "tool_call"} and not function:
         return None
     name = item.get("name") or function.get("name") or ""
     arguments = item.get("arguments")
     if arguments is None:
         arguments = function.get("arguments", "")
-    call_id = item.get("call_id") or item.get("id") or ""
     return _make_tool_call(str(name), arguments, str(call_id))
+
+
+def _local_shell_args_from_obj(item: Any) -> dict[str, Any]:
+    args = _coerce_tool_args(getattr(item, "action", None))
+    for key in ("command", "cmd", "timeout_sec", "timeout_ms", "duration"):
+        value = getattr(item, key, None)
+        if value is not None and key not in args:
+            args[key] = value
+    return args
+
+
+def _local_shell_args_from_mapping(item: dict[str, Any]) -> dict[str, Any]:
+    args = _coerce_tool_args(item.get("action"))
+    for key in ("command", "cmd", "timeout_sec", "timeout_ms", "duration"):
+        if key in item and key not in args:
+            args[key] = item[key]
+    return args
+
+
+def _coerce_tool_args(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return dict(value)
+    if value is None:
+        return {}
+    args: dict[str, Any] = {}
+    for key in ("command", "cmd", "timeout_sec", "timeout_ms", "duration"):
+        item = getattr(value, key, None)
+        if item is not None:
+            args[key] = item
+    if args:
+        return args
+    return {"command": str(value)}
+
+
+def _make_custom_tool_call(name: str, arguments: Any, call_id: str) -> ModelToolCall | None:
+    if not name:
+        return None
+    if isinstance(arguments, str):
+        try:
+            parsed = json.loads(arguments) if arguments else {}
+        except json.JSONDecodeError:
+            return ModelToolCall(
+                name=name,
+                arguments={"input": arguments},
+                arguments_text=arguments,
+                call_id=call_id,
+            )
+        return ModelToolCall(
+            name=name,
+            arguments=parsed if isinstance(parsed, dict) else {"input": parsed},
+            arguments_text=arguments,
+            call_id=call_id,
+        )
+    return _make_tool_call(name, arguments, call_id)
 
 
 def _make_tool_call(name: str, arguments: Any, call_id: str) -> ModelToolCall | None:

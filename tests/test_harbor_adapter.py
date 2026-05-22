@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -79,6 +80,74 @@ def test_harbor_agent_forwards_candidate_timeout(tmp_path: Path) -> None:
     asyncio.run(agent.run("instruction", env, SimpleNamespace(metadata=None)))
     assert env.commands == ["sleep 10"]
     assert env.timeouts == [3]
+
+
+def test_harbor_agent_executes_candidate_tool_calls(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    candidate = workspace / "candidate"
+    candidate.mkdir(parents=True)
+    (candidate / "harness.py").write_text(
+        "from plumbing.base_agent import BaseHarness\n"
+        "from plumbing.types import HarnessToolCall, HarnessTurn\n"
+        "class H(BaseHarness):\n"
+        "    def next_command(self, task, history):\n"
+        "        if history:\n"
+        "            return HarnessTurn(done=True)\n"
+        "        return HarnessTurn(tool_calls=(\n"
+        "            HarnessToolCall('local_shell', {'command': 'echo one'}, 'call_1'),\n"
+        "            HarnessToolCall('execute_commands', {'commands': [{'keystrokes': 'echo two', 'timeout_sec': 5}]}, 'call_2'),\n"
+        "        ))\n"
+        "def create_agent():\n"
+        "    return H()\n",
+        encoding="utf-8",
+    )
+    env = FakeEnvironment()
+    agent = HarborHarnessAgent(logs_dir=tmp_path / "logs", candidate_dir=workspace)
+    asyncio.run(agent.run("instruction", env, SimpleNamespace(metadata=None)))
+
+    assert env.commands == ["echo one", "echo two"]
+    assert env.timeouts == [None, 5]
+    payload = json.loads((tmp_path / "logs" / "harness-turn-02.json").read_text())
+    assert payload["tool_name"] == "execute_commands"
+    assert payload["tool_call_id"] == "call_2"
+
+
+def test_harbor_agent_executes_candidate_apply_patch_tool(tmp_path: Path) -> None:
+    workdir = tmp_path / "task"
+    workdir.mkdir()
+    (workdir / "hello.txt").write_text("old\n", encoding="utf-8")
+    workspace = tmp_path / "workspace"
+    candidate = workspace / "candidate"
+    candidate.mkdir(parents=True)
+    patch = (
+        "*** Begin Patch\n"
+        "*** Update File: hello.txt\n"
+        "@@\n"
+        "-old\n"
+        "+new\n"
+        "*** End of File\n"
+        "*** End Patch\n"
+    )
+    (candidate / "harness.py").write_text(
+        "from plumbing.base_agent import BaseHarness\n"
+        "from plumbing.types import HarnessToolCall, HarnessTurn\n"
+        f"PATCH = {patch!r}\n"
+        "class H(BaseHarness):\n"
+        "    def next_command(self, task, history):\n"
+        "        if history:\n"
+        "            return HarnessTurn(done=True)\n"
+        "        return HarnessTurn(tool_calls=(HarnessToolCall('apply_patch', {'patch': PATCH}),))\n"
+        "def create_agent():\n"
+        "    return H()\n",
+        encoding="utf-8",
+    )
+    agent = HarborHarnessAgent(logs_dir=tmp_path / "logs", candidate_dir=workspace)
+    asyncio.run(agent.run("instruction", LocalEnvironment(workdir), SimpleNamespace(metadata=None)))
+
+    assert (workdir / "hello.txt").read_text(encoding="utf-8") == "new\n"
+    payload = json.loads((tmp_path / "logs" / "harness-turn-01.json").read_text())
+    assert payload["tool_name"] == "apply_patch"
+    assert payload["return_code"] == 0
 
 
 def test_harbor_agent_records_candidate_timeout_as_observation(tmp_path: Path) -> None:
@@ -192,6 +261,27 @@ class FakeEnvironment:
         self.commands.append(command)
         self.timeouts.append(timeout_sec)
         return SimpleNamespace(stdout="ok\n", stderr="", return_code=0)
+
+
+class LocalEnvironment:
+    def __init__(self, workdir: Path) -> None:
+        self.workdir = workdir
+
+    async def exec(self, command: str, timeout_sec: int | None = None):
+        result = subprocess.run(
+            command,
+            cwd=self.workdir,
+            shell=True,
+            capture_output=True,
+            text=True,
+            timeout=timeout_sec,
+            check=False,
+        )
+        return SimpleNamespace(
+            stdout=result.stdout,
+            stderr=result.stderr,
+            return_code=result.returncode,
+        )
 
 
 class FailingEnvironment:

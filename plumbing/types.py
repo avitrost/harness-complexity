@@ -18,6 +18,16 @@ class CommandResult:
     return_code: int | None
     stdout: str = ""
     stderr: str = ""
+    tool_name: str = "local_shell"
+    tool_call_id: str = ""
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class HarnessToolCall:
+    name: str
+    arguments: dict[str, Any] = field(default_factory=dict)
+    call_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -25,3 +35,4 @@ class HarnessTurn:
     command: str = ""
     done: bool = False
     timeout_sec: int | None = None
+    tool_calls: tuple[HarnessToolCall, ...] = ()

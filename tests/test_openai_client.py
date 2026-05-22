@@ -5,6 +5,8 @@ from types import SimpleNamespace
 
 from plumbing.openai_client import (
     _codex_body,
+    _extract_response_dict_result,
+    _extract_sse_result,
     call_terminal_model_with_tools,
     call_terminal_model,
     check_terminal_model_available,
@@ -51,6 +53,19 @@ def test_codex_backend_body_can_include_tools() -> None:
     assert body["tools"] == tools
 
 
+def test_codex_backend_body_can_enable_parallel_tool_calls() -> None:
+    tools = [{"type": "function", "name": "execute_commands", "parameters": {}}]
+    body = _codex_body(
+        [{"role": "user", "content": "next?"}],
+        tools,
+        tool_choice="auto",
+        parallel_tool_calls=True,
+    )
+
+    assert body["tool_choice"] == "auto"
+    assert body["parallel_tool_calls"] is True
+
+
 def test_terminal_model_tool_calls_are_extracted(monkeypatch) -> None:
     monkeypatch.delenv("OPENAI_AUTH_MODE", raising=False)
     fake = RecordingToolOpenAI()
@@ -66,6 +81,40 @@ def test_terminal_model_tool_calls_are_extracted(monkeypatch) -> None:
     assert len(result.tool_calls) == 1
     assert result.tool_calls[0].name == "execute_commands"
     assert result.tool_calls[0].arguments == {"commands": [{"keystrokes": "pwd\n"}]}
+
+
+def test_codex_response_items_extract_custom_and_local_shell_calls() -> None:
+    result = _extract_response_dict_result(
+        {
+            "output": [
+                {"type": "custom_tool_call", "name": "apply_patch", "input": "diff", "call_id": "c1"},
+                {
+                    "type": "local_shell_call",
+                    "action": {"command": "pytest -q", "timeout_ms": 1500},
+                    "call_id": "c2",
+                },
+            ]
+        }
+    )
+
+    assert [(call.name, call.call_id) for call in result.tool_calls] == [
+        ("apply_patch", "c1"),
+        ("local_shell", "c2"),
+    ]
+    assert result.tool_calls[0].arguments == {"input": "diff"}
+    assert result.tool_calls[0].arguments_text == "diff"
+    assert result.tool_calls[1].arguments == {"command": "pytest -q", "timeout_ms": 1500}
+
+
+def test_codex_sse_extracts_streamed_tool_call_items() -> None:
+    result = _extract_sse_result(
+        'data: {"type":"response.output_item.done","item":{"type":"local_shell_call",'
+        '"action":{"command":"ls"},"call_id":"c1"}}\n\n'
+    )
+
+    assert len(result.tool_calls) == 1
+    assert result.tool_calls[0].name == "local_shell"
+    assert result.tool_calls[0].arguments == {"command": "ls"}
 
 
 def test_model_trace_records_reasoning_effort(monkeypatch, tmp_path) -> None:
