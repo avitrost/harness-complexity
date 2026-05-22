@@ -243,6 +243,41 @@ def test_harbor_agent_uses_unified_exec_command_when_available(tmp_path: Path) -
     assert payload["return_code"] is None
 
 
+def test_harbor_agent_uses_unified_exec_for_native_local_shell(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    candidate = workspace / "candidate"
+    candidate.mkdir(parents=True)
+    (candidate / "harness.py").write_text(
+        "from plumbing.base_agent import BaseHarness\n"
+        "from plumbing.types import HarnessToolCall, HarnessTurn\n"
+        "class H(BaseHarness):\n"
+        "    def next_command(self, task, history):\n"
+        "        if history:\n"
+        "            return HarnessTurn(done=True)\n"
+        "        return HarnessTurn(tool_calls=(HarnessToolCall('local_shell', {\n"
+        "            'action': {\n"
+        "                'type': 'exec',\n"
+        "                'command': ['/bin/bash', '-lc', 'pwd'],\n"
+        "                'working_directory': 'src',\n"
+        "                'timeout_ms': 1500,\n"
+        "            }\n"
+        "        }, 'call_1'),))\n"
+        "def create_agent():\n"
+        "    return H()\n",
+        encoding="utf-8",
+    )
+    env = UnifiedEnvironment()
+    env._workdir = "/app"
+    agent = HarborHarnessAgent(logs_dir=tmp_path / "logs", candidate_dir=workspace)
+    asyncio.run(agent.run("instruction", env, SimpleNamespace(metadata=None)))
+
+    assert env.exec_calls[0]["command"] == "pwd"
+    assert env.exec_calls[0]["cwd"] == "/app/src"
+    assert env.exec_calls[0]["timeout_sec"] == 2
+    assert env.exec_calls[0]["shell"] == "/bin/bash"
+    assert env.exec_calls[0]["login"] is True
+
+
 def test_harbor_agent_resolves_relative_codex_workdir(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     candidate = workspace / "candidate"

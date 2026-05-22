@@ -37,6 +37,7 @@ DEFAULT_STARTUP_RETRY_DELAY_SEC = 60
 DEFAULT_EXEC_REQUEST_GRACE_SEC = 120
 DEFAULT_SHUTDOWN_TIMEOUT_SEC = 5
 DEFAULT_SCANCEL_TIMEOUT_SEC = 5
+DEFAULT_POST_TIMEOUT_GRACE_SEC = 5
 DEFAULT_IO_WORKERS = 512
 _TRANSIENT_STARTUP_ERRORS = (
     "node failure",
@@ -1019,9 +1020,18 @@ class SlurmPyxisEnvironment(BaseEnvironment):
             else None
         )
         tasks = {request_task, *([wait_task] if wait_task else [])}
-        done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+        done, pending = await asyncio.wait(
+            tasks,
+            timeout=timeout + DEFAULT_POST_TIMEOUT_GRACE_SEC,
+            return_when=asyncio.FIRST_COMPLETED,
+        )
         for task in pending:
             task.cancel()
+        if not done:
+            request_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await request_task
+            raise RuntimeError(f"Slurm/Pyxis request to {path} timed out after {timeout}s")
         if request_task in done:
             return await request_task
         request_task.cancel()

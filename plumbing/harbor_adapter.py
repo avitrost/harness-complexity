@@ -204,7 +204,7 @@ async def _execute_tool_call(
     if lowered in PLAN_TOOL_NAMES:
         return _plan_observed(tool_call, name)
     if lowered in SHELL_TOOL_NAMES:
-        if lowered == "exec_command" and hasattr(environment, "exec_command"):
+        if lowered in {"exec_command", "local_shell"} and hasattr(environment, "exec_command"):
             return await _exec_command_observed(
                 environment,
                 tool_call=tool_call,
@@ -277,16 +277,28 @@ async def _exec_command_observed(
                 "intercepted_apply_patch": True,
             },
         )
-    result = await environment.exec_command(
-        command=command,
-        cwd=cwd,
-        timeout_sec=_tool_timeout(args, default_timeout_sec),
-        shell=_tool_string(args.get("shell")),
-        login=bool(args.get("login")) if isinstance(args.get("login"), bool) else True,
-        tty=bool(args.get("tty")) if isinstance(args.get("tty"), bool) else False,
-        yield_time_ms=_tool_int(args.get("yield_time_ms")),
-        max_output_tokens=_tool_int(args.get("max_output_tokens")),
-    )
+    try:
+        result = await environment.exec_command(
+            command=command,
+            cwd=cwd,
+            timeout_sec=_tool_timeout(args, default_timeout_sec),
+            shell=_tool_string(args.get("shell")),
+            login=bool(args.get("login")) if isinstance(args.get("login"), bool) else True,
+            tty=bool(args.get("tty")) if isinstance(args.get("tty"), bool) else False,
+            yield_time_ms=_tool_int(args.get("yield_time_ms")),
+            max_output_tokens=_tool_int(args.get("max_output_tokens")),
+        )
+    except RuntimeError as exc:
+        if not _model_visible_tool_error(str(exc)):
+            raise
+        return CommandResult(
+            command=command,
+            return_code=1,
+            stderr=str(exc),
+            tool_name=tool_name,
+            tool_call_id=tool_call.call_id,
+            metadata={"arguments": tool_call.arguments},
+        )
     metadata = {
         "arguments": tool_call.arguments,
         "unified_exec": _unified_exec_metadata(result),
@@ -328,12 +340,24 @@ async def _write_stdin_observed(
             metadata={"arguments": args},
         )
     chars = str(args.get("chars") or "")
-    result = await environment.write_stdin(
-        session_id=session_id,
-        chars=chars,
-        yield_time_ms=_tool_int(args.get("yield_time_ms")),
-        max_output_tokens=_tool_int(args.get("max_output_tokens")),
-    )
+    try:
+        result = await environment.write_stdin(
+            session_id=session_id,
+            chars=chars,
+            yield_time_ms=_tool_int(args.get("yield_time_ms")),
+            max_output_tokens=_tool_int(args.get("max_output_tokens")),
+        )
+    except RuntimeError as exc:
+        if not _model_visible_tool_error(str(exc)):
+            raise
+        return CommandResult(
+            command=f"write_stdin(session_id={session_id}, chars={len(chars)} chars)",
+            return_code=1,
+            stderr=str(exc),
+            tool_name=tool_name,
+            tool_call_id=tool_call.call_id,
+            metadata={"arguments": args},
+        )
     metadata = {
         "arguments": args,
         "unified_exec": _unified_exec_metadata(result),
@@ -404,6 +428,20 @@ def _with_metadata(record: CommandResult, extra: dict[str, Any]) -> CommandResul
         tool_name=record.tool_name,
         tool_call_id=record.tool_call_id,
         metadata=metadata,
+    )
+
+
+def _model_visible_tool_error(message: str) -> bool:
+    lowered = message.lower()
+    return any(
+        phrase in lowered
+        for phrase in (
+            "timed out",
+            "exec_command failed",
+            "write_stdin failed",
+            "stdin is closed",
+            "unknown session_id",
+        )
     )
 
 
@@ -490,6 +528,7 @@ def _shell_args(args: dict[str, Any]) -> dict[str, Any]:
         merged = dict(action)
         merged.update({key: value for key, value in args.items() if key != "action"})
         args = merged
+    args = _normalize_native_shell_args(args)
     commands = args.get("commands")
     if isinstance(commands, str):
         try:
@@ -512,6 +551,25 @@ def _shell_args(args: dict[str, Any]) -> dict[str, Any]:
                 merged["command"] = str(item)
                 return merged
     return args
+
+
+def _normalize_native_shell_args(args: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(args)
+    if "working_directory" in normalized and "workdir" not in normalized:
+        normalized["workdir"] = normalized["working_directory"]
+    command = normalized.get("command")
+    if isinstance(command, list):
+        argv = [str(item) for item in command]
+        if len(argv) >= 3 and Path(argv[0]).name in {"bash", "sh", "zsh"} and argv[1] in {
+            "-c",
+            "-lc",
+        }:
+            normalized["shell"] = argv[0]
+            normalized["login"] = argv[1] == "-lc"
+            normalized["command"] = argv[2]
+        else:
+            normalized["command"] = shlex.join(argv)
+    return normalized
 
 
 def _tool_timeout(args: dict[str, Any], default: int | None = None) -> int | None:

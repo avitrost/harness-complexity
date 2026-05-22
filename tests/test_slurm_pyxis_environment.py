@@ -163,6 +163,21 @@ def test_exec_stops_waiting_when_srun_exits(tmp_path: Path, monkeypatch) -> None
         asyncio.run(env.exec("sleep 10"))
 
 
+def test_post_while_srun_lives_has_hard_timeout(tmp_path: Path, monkeypatch) -> None:
+    env = _make_env(tmp_path)
+    env._node = "node"
+    env._process = _RunningProcess()
+    monkeypatch.setattr(slurm_pyxis, "DEFAULT_POST_TIMEOUT_GRACE_SEC", 0)
+
+    async def slow_post(path, payload, timeout):
+        await asyncio.sleep(30)
+
+    monkeypatch.setattr(env, "_post", slow_post)
+
+    with pytest.raises(RuntimeError, match=r"request to /write_stdin timed out"):
+        asyncio.run(env._post_while_srun_lives("/write_stdin", {}, timeout=0))
+
+
 def test_exec_command_uses_unified_session_route(tmp_path: Path, monkeypatch) -> None:
     env = _make_env(tmp_path)
     call = {}
@@ -374,6 +389,15 @@ class _ExitedProcess:
     async def wait(self) -> int:
         self.returncode = 1
         return self.returncode
+
+
+class _RunningProcess:
+    pid = 1234
+    returncode = None
+
+    async def wait(self) -> int:
+        await asyncio.sleep(30)
+        return 0
 
 
 def _post_json(endpoint: str, path: str, payload: dict[str, object]) -> dict[str, object]:
