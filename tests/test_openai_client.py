@@ -79,11 +79,21 @@ def test_codex_backend_body_can_enable_parallel_tool_calls() -> None:
 def test_codex_backend_body_preserves_response_items() -> None:
     item = {"type": "function_call_output", "call_id": "call_1", "output": "ok"}
     body = _codex_body(
-        [{"role": "system", "content": "sys"}, {"role": "user", "content": "task"}, item]
+        [
+            {"role": "system", "content": "sys"},
+            {"role": "developer", "content": "dev"},
+            {"role": "user", "content": "task"},
+            item,
+        ]
     )
 
     assert body["instructions"] == "sys"
     assert body["input"] == [
+        {
+            "type": "message",
+            "role": "developer",
+            "content": [{"type": "input_text", "text": "dev"}],
+        },
         {
             "type": "message",
             "role": "user",

@@ -37,6 +37,8 @@ _trace_dir: contextvars.ContextVar[Path | None] = contextvars.ContextVar(
 _trace_count: contextvars.ContextVar[int] = contextvars.ContextVar(
     "terminal_model_trace_count", default=0
 )
+
+
 @dataclass(frozen=True)
 class ModelToolCall:
     name: str
@@ -323,7 +325,7 @@ def _codex_body(
     instructions = "\n\n".join(
         item.get("content", "")
         for item in messages
-        if item.get("role") in {"system", "developer"} and item.get("content")
+        if item.get("role") == "system" and item.get("content")
     )
     input_messages = [_codex_input_item(item) for item in messages if not _is_instruction(item)]
     reasoning = {"effort": terminal_reasoning_effort()}
@@ -415,7 +417,7 @@ def _codex_request_metadata(
 
 
 def _is_instruction(item: dict[str, Any]) -> bool:
-    return item.get("role") in {"system", "developer"} and bool(item.get("content"))
+    return item.get("role") == "system" and bool(item.get("content"))
 
 
 def _codex_include(reasoning: dict[str, Any] | None) -> list[str]:
@@ -746,7 +748,9 @@ def _sanitize_response_item(item: dict[str, Any]) -> dict[str, Any]:
     return cleaned
 
 
-def _sanitize_content_item(item: dict[str, Any], default_type: str = "input_text") -> dict[str, Any]:
+def _sanitize_content_item(
+    item: dict[str, Any], default_type: str = "input_text"
+) -> dict[str, Any]:
     item_type = item.get("type") or default_type
     if item_type in {"input_text", "output_text"}:
         return {"type": item_type, "text": item.get("text", "")}
