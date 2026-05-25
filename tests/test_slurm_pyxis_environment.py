@@ -41,6 +41,8 @@ def test_stdlib_exec_server_has_required_routes_without_fastapi() -> None:
     assert 'self.path == "/exec"' in STDLIB_EXEC_SERVER
     assert 'self.path == "/exec_command"' in STDLIB_EXEC_SERVER
     assert 'self.path == "/write_stdin"' in STDLIB_EXEC_SERVER
+    assert "HARBOR_SLURM_PYXIS_VERIFY_SETTLE_SEC" in STDLIB_EXEC_SERVER
+    assert '_settle_verifier_mount(data["command"])' in STDLIB_EXEC_SERVER
     assert "__HARBOR_PYXIS_READY__" in STDLIB_EXEC_SERVER
     assert "server.server_address[1]" in STDLIB_EXEC_SERVER
     assert "fastapi" not in STDLIB_EXEC_SERVER.lower()
@@ -117,6 +119,15 @@ def test_default_exec_request_timeout_tracks_slurm_time(tmp_path: Path) -> None:
     assert env._exec_request_timeout_sec == 2 * 60 * 60 + 120
 
 
+def test_srun_env_passes_verifier_settle_timeout(tmp_path: Path) -> None:
+    env = _make_env(tmp_path)
+    env._verifier_reward_settle_sec = 2.5
+
+    srun_env = env._srun_env()
+
+    assert srun_env["HARBOR_SLURM_PYXIS_VERIFY_SETTLE_SEC"] == "2.5"
+
+
 def test_dockerfile_workdir_uses_final_workdir_with_relative_steps(tmp_path: Path) -> None:
     env = _make_env(tmp_path)
     (env.environment_dir / "Dockerfile").write_text(
@@ -161,6 +172,28 @@ def test_exec_stops_waiting_when_srun_exits(tmp_path: Path, monkeypatch) -> None
 
     with pytest.raises(RuntimeError, match="Node failure"):
         asyncio.run(env.exec("sleep 10"))
+
+
+def test_exec_waits_for_mounted_verifier_reward(tmp_path: Path, monkeypatch) -> None:
+    env = _make_env(tmp_path)
+    verifier_dir = tmp_path / "verifier"
+    verifier_dir.mkdir()
+    env._mounts = [{"type": "bind", "source": verifier_dir, "target": "/logs/verifier"}]
+
+    async def fake_post(path, payload, timeout):
+        async def write_reward():
+            await asyncio.sleep(0.05)
+            (verifier_dir / "reward.txt").write_text("1\n", encoding="utf-8")
+
+        asyncio.create_task(write_reward())
+        return {"stdout": "", "stderr": None, "return_code": 0}
+
+    monkeypatch.setattr(env, "_post_while_srun_lives", fake_post)
+
+    result = asyncio.run(env.exec("(/tests/test.sh) > /logs/verifier/test-stdout.txt 2>&1"))
+
+    assert result.return_code == 0
+    assert (verifier_dir / "reward.txt").read_text(encoding="utf-8") == "1\n"
 
 
 def test_post_while_srun_lives_has_hard_timeout(tmp_path: Path, monkeypatch) -> None:

@@ -38,6 +38,7 @@ DEFAULT_EXEC_REQUEST_GRACE_SEC = 120
 DEFAULT_SHUTDOWN_TIMEOUT_SEC = 5
 DEFAULT_SCANCEL_TIMEOUT_SEC = 5
 DEFAULT_POST_TIMEOUT_GRACE_SEC = 5
+DEFAULT_VERIFIER_REWARD_SETTLE_SEC = 5.0
 DEFAULT_IO_WORKERS = 512
 _TRANSIENT_STARTUP_ERRORS = (
     "node failure",
@@ -123,6 +124,8 @@ _DEFAULT_YIELD_TIME_MS = 10000
 _DEFAULT_WRITE_STDIN_YIELD_TIME_MS = 250
 _MIN_EMPTY_WRITE_STDIN_YIELD_TIME_MS = 5000
 _DEFAULT_MAX_OUTPUT_TOKENS = 10000
+_VERIFY_SETTLE_SEC = float(os.environ.get("HARBOR_SLURM_PYXIS_VERIFY_SETTLE_SEC", "5"))
+_VERIFY_SETTLE_MARKERS = ("/verifier/", "test-stdout", "reward.txt", "reward.json", "ctrf.json")
 
 
 def _setup(workdir):
@@ -222,6 +225,7 @@ def _exec(data):
             stderr=subprocess.STDOUT,
             timeout=data.get("timeout_sec"),
         )
+        _settle_verifier_mount(data["command"])
         return {"stdout": (result.stdout or "").strip(), "stderr": None, "return_code": result.returncode}
     except subprocess.TimeoutExpired as exc:
         output = exc.stdout or ""
@@ -234,6 +238,18 @@ def _exec(data):
             "timeout": True,
             "timeout_sec": data.get("timeout_sec"),
         }
+
+
+def _settle_verifier_mount(command):
+    if _VERIFY_SETTLE_SEC <= 0:
+        return
+    if not any(marker in command for marker in _VERIFY_SETTLE_MARKERS):
+        return
+    try:
+        os.sync()
+    except Exception:
+        pass
+    time.sleep(_VERIFY_SETTLE_SEC)
 
 
 def _exec_command(data):
@@ -562,6 +578,7 @@ class SlurmPyxisEnvironment(BaseEnvironment):
         startup_parallelism: int | str | None = None,
         host_python_prefix: str | Path | None = DEFAULT_HOST_PYTHON_PREFIX,
         remap_root: bool = True,
+        verifier_reward_settle_sec: int | float | str = DEFAULT_VERIFIER_REWARD_SETTLE_SEC,
         **kwargs,
     ):
         self._sqsh_cache_dir = Path(sqsh_cache_dir)
@@ -582,6 +599,7 @@ class SlurmPyxisEnvironment(BaseEnvironment):
             Path(host_python_prefix).resolve() if host_python_prefix else None
         )
         self._remap_root = remap_root
+        self._verifier_reward_settle_sec = max(0.0, float(verifier_reward_settle_sec))
         self._process: asyncio.subprocess.Process | None = None
         self._stream_task: asyncio.Task | None = None
         self._node: str | None = None
@@ -759,6 +777,7 @@ class SlurmPyxisEnvironment(BaseEnvironment):
             timeout_sec + 10 if timeout_sec is not None else self._exec_request_timeout_sec
         )
         data = await self._post_while_srun_lives("/exec", payload, timeout=request_timeout)
+        await self._settle_verifier_reward(command)
         if data.get("timeout"):
             seconds = data.get("timeout_sec", timeout_sec)
             raise RuntimeError(f"Command timed out after {seconds} seconds")
@@ -864,6 +883,45 @@ class SlurmPyxisEnvironment(BaseEnvironment):
             shutil.rmtree(target)
         shutil.copytree(staged, target)
 
+    async def _settle_verifier_reward(self, command: str) -> None:
+        if self._verifier_reward_settle_sec <= 0 or "/logs/verifier" not in command:
+            return
+        reward_paths = self._verifier_reward_host_paths()
+        if not reward_paths:
+            return
+        deadline = time.monotonic() + self._verifier_reward_settle_sec
+        while time.monotonic() < deadline:
+            if any(path.exists() for path in reward_paths):
+                return
+            await asyncio.sleep(0.05)
+
+    def _verifier_reward_host_paths(self) -> list[Path]:
+        host_verifier = self._host_path_for_container("/logs/verifier")
+        if host_verifier is None:
+            trial_paths = getattr(self, "trial_paths", None)
+            host_verifier = getattr(trial_paths, "verifier_dir", None)
+        if host_verifier is None:
+            return []
+        host_verifier = Path(host_verifier)
+        return [host_verifier / "reward.txt", host_verifier / "reward.json"]
+
+    def _host_path_for_container(self, container_path: str) -> Path | None:
+        best_target = ""
+        best_source: Path | None = None
+        for mount in self._mounts:
+            if mount.get("type") != "bind":
+                continue
+            target = str(mount.get("target") or "").rstrip("/")
+            source = mount.get("source")
+            if not target or source is None:
+                continue
+            if container_path == target or container_path.startswith(target + "/"):
+                if len(target) > len(best_target):
+                    best_target = target
+                    suffix = container_path[len(target) :].lstrip("/")
+                    best_source = Path(source) / suffix if suffix else Path(source)
+        return best_source
+
     @property
     def _staging(self) -> Path:
         if self._staging_dir is None:
@@ -883,6 +941,7 @@ class SlurmPyxisEnvironment(BaseEnvironment):
         env = os.environ.copy()
         env.setdefault("TZ", "Etc/UTC")
         env["DEBIAN_FRONTEND"] = "noninteractive"
+        env["HARBOR_SLURM_PYXIS_VERIFY_SETTLE_SEC"] = str(self._verifier_reward_settle_sec)
         if self._enroot_sysconf_dir:
             env["ENROOT_SYSCONF_PATH"] = str(self._enroot_sysconf_dir)
         return env
