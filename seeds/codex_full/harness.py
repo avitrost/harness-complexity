@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import json
+import os
+import time
 from dataclasses import dataclass, field
+from datetime import date
 from typing import Any
 
 from plumbing.base_agent import BaseHarness
@@ -319,6 +322,15 @@ CUSTOM_OUTPUT_TYPES = {"custom_tool_call_output"}
 TOOL_OUTPUT_TYPES = FUNCTION_OUTPUT_TYPES | CUSTOM_OUTPUT_TYPES | {"tool_search_output"}
 TOOL_CALL_TYPES = FUNCTION_CALL_TYPES | CUSTOM_CALL_TYPES | {"tool_search_call"}
 SHELL_TOOL_NAMES = {"exec_command", "shell_command", "local_shell", "local_shell_call"}
+PERMISSIONS_SANDBOX_DANGER_FULL_ACCESS = (
+    "Filesystem sandboxing defines which files can be read or written. "
+    "`sandbox_mode` is `danger-full-access`: No filesystem sandboxing - all commands "
+    "are permitted. Network access is enabled."
+)
+PERMISSIONS_APPROVAL_NEVER = (
+    "Approval policy is currently never. Do not provide the `sandbox_permissions` "
+    "for any reason, commands will be rejected."
+)
 
 
 # === 01. Port-Parity Manifest ===
@@ -385,10 +397,22 @@ PORT_PARITY_MANIFEST: tuple[dict[str, str], ...] = (
         "notes": "Harbor collects AGENTS.md; the harness renders hierarchical context fragments.",
     },
     {
+        "upstream": "codex-rs/core/src/context/environment_context.rs",
+        "status": "included",
+        "python": "InitialContextBuilder.environment_context",
+        "notes": "Single-environment cwd, shell, date, and timezone fragment follows Codex format.",
+    },
+    {
+        "upstream": "codex-rs/core/src/context/permissions_instructions.rs",
+        "status": "included",
+        "python": "PermissionsInstructionsRenderer",
+        "notes": "Danger-full-access plus never-approval developer fragment is rendered exactly for TB2.",
+    },
+    {
         "upstream": "codex-rs/core/src/guardian and sandboxing",
-        "status": "omitted",
+        "status": "simplified",
         "python": "ExecutionPolicy",
-        "notes": "TB2 runs with noninteractive approval; policy is represented as prompt/context only.",
+        "notes": "TB2 runs noninteractively; approval/sandbox handling is represented in prompts and metadata.",
     },
     {
         "upstream": "TUI, MCP, plugins, apps, telemetry, realtime, cloud persistence",
@@ -420,6 +444,26 @@ ENABLE_COMPLETION_POLICY = True
 ENABLE_INSTRUMENTATION = True
 
 
+def _current_date() -> str:
+    return os.getenv("CODEX_CURRENT_DATE") or date.today().isoformat()
+
+
+def _local_timezone_name() -> str:
+    if timezone := os.getenv("TZ"):
+        return timezone
+    try:
+        with open("/etc/timezone", encoding="utf-8") as timezone_file:
+            timezone = timezone_file.read().strip()
+        if timezone:
+            return timezone
+    except OSError:
+        pass
+    local_name = time.tzname[0] if time.tzname else ""
+    if local_name in {"UTC", "GMT"}:
+        return "Etc/UTC"
+    return local_name or "Etc/UTC"
+
+
 # === 03. Data Models ===
 
 
@@ -431,6 +475,9 @@ class BaseInstructions:
 @dataclass(frozen=True)
 class TurnEnvironment:
     cwd: str = "."
+    shell: str = "bash"
+    current_date: str = field(default_factory=_current_date)
+    timezone: str = field(default_factory=_local_timezone_name)
     approval_policy: str = "never"
     sandbox_mode: str = "danger-full-access"
     network_access: str = "enabled"
@@ -451,12 +498,17 @@ class Prompt:
     tools: list[dict[str, Any]]
     parallel_tool_calls: bool
     base_instructions: BaseInstructions
+    developer_messages: list[dict[str, Any]] = field(default_factory=list)
     personality: str | None = None
     output_schema: dict[str, Any] | None = None
     output_schema_strict: bool = True
 
     def messages(self) -> list[dict[str, Any]]:
-        return [{"role": "system", "content": self.base_instructions.text}, *self.input]
+        return [
+            {"role": "system", "content": self.base_instructions.text},
+            *self.developer_messages,
+            *self.input,
+        ]
 
 
 @dataclass(frozen=True)
@@ -1363,6 +1415,38 @@ class ContextManager:
 # === 09. Prompt and Context Rendering ===
 
 
+class PermissionsInstructionsRenderer:
+    def messages(self, environment: TurnEnvironment) -> list[dict[str, Any]]:
+        return [{"role": "developer", "content": self.render(environment)}]
+
+    def render(self, environment: TurnEnvironment) -> str:
+        sandbox_text = self.sandbox_text(environment)
+        approval_text = self.approval_text(environment)
+        return (
+            "<permissions instructions>\n"
+            f"{sandbox_text}\n"
+            f"{approval_text}\n"
+            "</permissions instructions>"
+        )
+
+    def sandbox_text(self, environment: TurnEnvironment) -> str:
+        if environment.sandbox_mode == "danger-full-access":
+            return PERMISSIONS_SANDBOX_DANGER_FULL_ACCESS
+        return (
+            "Filesystem sandboxing defines which files can be read or written. "
+            f"`sandbox_mode` is `{environment.sandbox_mode}`. "
+            f"Network access is {environment.network_access}."
+        )
+
+    def approval_text(self, environment: TurnEnvironment) -> str:
+        if environment.approval_policy == "never":
+            return PERMISSIONS_APPROVAL_NEVER
+        return (
+            "Approvals are your mechanism to get user consent to run shell commands "
+            f"without the sandbox. `approval_policy` is `{environment.approval_policy}`."
+        )
+
+
 class InitialContextBuilder:
     def render(self, task: TaskContext) -> str:
         cwd = task.working_dir or "."
@@ -1378,9 +1462,9 @@ class InitialContextBuilder:
         return (
             "<environment_context>\n"
             f"  <cwd>{environment.cwd}</cwd>\n"
-            f"  <approval_policy>{environment.approval_policy}</approval_policy>\n"
-            f"  <sandbox_mode>{environment.sandbox_mode}</sandbox_mode>\n"
-            f"  <network_access>{environment.network_access}</network_access>\n"
+            f"  <shell>{environment.shell}</shell>\n"
+            f"  <current_date>{environment.current_date}</current_date>\n"
+            f"  <timezone>{environment.timezone}</timezone>\n"
             "</environment_context>"
         )
 
@@ -1442,6 +1526,7 @@ def build_prompt(
         tools=router.model_visible_specs(),
         parallel_tool_calls=turn_context.supports_parallel_tool_calls,
         base_instructions=base_instructions,
+        developer_messages=PermissionsInstructionsRenderer().messages(turn_context.environment),
         personality=turn_context.personality,
         output_schema=turn_context.output_schema,
         output_schema_strict=True,

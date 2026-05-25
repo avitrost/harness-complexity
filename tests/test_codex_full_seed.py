@@ -118,13 +118,56 @@ def test_codex_full_seed_preserves_codex_prompt_shape_across_tasks(
 
     messages = fake.calls[0]["input"]
     assert messages[0] == {"role": "system", "content": module.CODEX_BASE_INSTRUCTIONS}
-    assert messages[1]["role"] == "user"
-    assert f"<cwd>/app/{task_name}</cwd>" in messages[1]["content"]
-    assert messages[1]["content"].endswith(instruction)
+    assert messages[1]["role"] == "developer"
+    assert messages[1]["content"].startswith("<permissions instructions>\n")
+    assert "`sandbox_mode` is `danger-full-access`" in messages[1]["content"]
+    assert "Approval policy is currently never." in messages[1]["content"]
+    assert messages[2]["role"] == "user"
+    assert f"<cwd>/app/{task_name}</cwd>" in messages[2]["content"]
+    assert "<shell>bash</shell>" in messages[2]["content"]
+    assert "<current_date>" in messages[2]["content"]
+    assert "<timezone>" in messages[2]["content"]
+    assert messages[2]["content"].endswith(instruction)
     assert fake.calls[0]["tools"] == module._built_tools()
     assert fake.calls[0]["tool_choice"] == "auto"
     assert fake.calls[0]["parallel_tool_calls"] is True
     assert turn.done is True
+
+
+def test_codex_full_seed_renders_current_environment_fragment() -> None:
+    module = _load_seed()
+    environment = module.TurnEnvironment(
+        cwd="/repo",
+        shell="bash",
+        current_date="2026-02-26",
+        timezone="America/Los_Angeles",
+    )
+
+    rendered = module.InitialContextBuilder().environment_context(environment)
+
+    assert rendered == (
+        "<environment_context>\n"
+        "  <cwd>/repo</cwd>\n"
+        "  <shell>bash</shell>\n"
+        "  <current_date>2026-02-26</current_date>\n"
+        "  <timezone>America/Los_Angeles</timezone>\n"
+        "</environment_context>"
+    )
+
+
+def test_codex_full_seed_renders_permissions_developer_fragment() -> None:
+    module = _load_seed()
+    rendered = module.PermissionsInstructionsRenderer().render(module.TurnEnvironment())
+
+    assert rendered == (
+        "<permissions instructions>\n"
+        "Filesystem sandboxing defines which files can be read or written. "
+        "`sandbox_mode` is `danger-full-access`: No filesystem sandboxing - all commands "
+        "are permitted. Network access is enabled.\n"
+        "Approval policy is currently never. Do not provide the `sandbox_permissions` "
+        "for any reason, commands will be rejected.\n"
+        "</permissions instructions>"
+    )
 
 
 def test_codex_full_seed_returns_apply_patch_custom_tool(monkeypatch) -> None:
@@ -256,11 +299,11 @@ def test_codex_full_seed_replays_history_as_response_items(monkeypatch) -> None:
         set_client_factory(None)
 
     input_items = fake.calls[0]["input"]
-    assert input_items[2]["type"] == "function_call"
-    assert input_items[2]["name"] == "exec_command"
-    assert input_items[3]["type"] == "function_call_output"
-    assert input_items[3]["output"].startswith("Chunk ID: abc123")
-    assert "Wall time: 0.2500 seconds" in input_items[3]["output"]
+    assert input_items[3]["type"] == "function_call"
+    assert input_items[3]["name"] == "exec_command"
+    assert input_items[4]["type"] == "function_call_output"
+    assert input_items[4]["output"].startswith("Chunk ID: abc123")
+    assert "Wall time: 0.2500 seconds" in input_items[4]["output"]
     assert turn.done is True
 
 
@@ -294,8 +337,8 @@ def test_codex_full_seed_replays_write_stdin_history(monkeypatch) -> None:
         set_client_factory(None)
 
     input_items = fake.calls[0]["input"]
-    assert input_items[2]["name"] == "write_stdin"
-    assert json.loads(input_items[2]["arguments"])["session_id"] == 9
+    assert input_items[3]["name"] == "write_stdin"
+    assert json.loads(input_items[3]["arguments"])["session_id"] == 9
 
 
 def test_codex_full_seed_injects_agents_context(monkeypatch) -> None:
@@ -320,7 +363,7 @@ def test_codex_full_seed_injects_agents_context(monkeypatch) -> None:
     finally:
         set_client_factory(None)
 
-    user_message = fake.calls[0]["input"][1]["content"]
+    user_message = fake.calls[0]["input"][2]["content"]
     assert '<agents_md path="/app/AGENTS.md">' in user_message
     assert "Run tests before final." in user_message
 
@@ -349,8 +392,8 @@ def test_codex_full_seed_replays_assistant_text_before_tool(monkeypatch) -> None
         set_client_factory(None)
 
     input_items = fake.calls[0]["input"]
-    assert input_items[2] == {"role": "assistant", "content": "I will inspect the repo."}
-    assert input_items[3]["name"] == "exec_command"
+    assert input_items[3] == {"role": "assistant", "content": "I will inspect the repo."}
+    assert input_items[4]["name"] == "exec_command"
 
 
 def test_codex_full_seed_replays_raw_codex_items_without_duplication(monkeypatch) -> None:
@@ -380,9 +423,9 @@ def test_codex_full_seed_replays_raw_codex_items_without_duplication(monkeypatch
         set_client_factory(None)
 
     input_items = fake.calls[0]["input"]
-    assert input_items[2] == raw_call
-    assert input_items[3]["type"] == "function_call_output"
-    assert len(input_items) == 4
+    assert input_items[3] == raw_call
+    assert input_items[4]["type"] == "function_call_output"
+    assert len(input_items) == 5
 
 
 def test_codex_full_seed_replays_parallel_raw_items_once(monkeypatch) -> None:
@@ -428,11 +471,11 @@ def test_codex_full_seed_replays_parallel_raw_items_once(monkeypatch) -> None:
         set_client_factory(None)
 
     input_items = fake.calls[0]["input"]
-    assert input_items[2:4] == raw_calls
-    assert input_items[4]["type"] == "function_call_output"
-    assert input_items[4]["call_id"] == "call_1"
+    assert input_items[3:5] == raw_calls
     assert input_items[5]["type"] == "function_call_output"
-    assert input_items[5]["call_id"] == "call_2"
+    assert input_items[5]["call_id"] == "call_1"
+    assert input_items[6]["type"] == "function_call_output"
+    assert input_items[6]["call_id"] == "call_2"
     assert len([item for item in input_items if item.get("type") == "function_call"]) == 2
 
 
