@@ -7,6 +7,8 @@ import os
 import shlex
 import shutil
 import subprocess
+import time
+import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -25,6 +27,9 @@ HARBOR_AGENT_IMPORT_PATH = "plumbing.harbor_adapter:HarborHarnessAgent"
 SLURM_PYXIS_ENV_IMPORT_PATH = "plumbing.slurm_pyxis_environment:SlurmPyxisEnvironment"
 SLURM_ENVIRONMENT_BUILD_TIMEOUT_MULTIPLIER = "18"
 MAX_OBSERVATION_CHARS = 6000
+SOFT_AGENT_TIMEOUT_GRACE_SEC = 150
+TOOL_TIMEOUT_RESPONSE_GRACE_SEC = 15
+UNIFIED_EXEC_REQUEST_GRACE_SEC = 120
 SHELL_TOOL_NAMES = {
     "local_shell",
     "shell",
@@ -98,19 +103,35 @@ class HarborHarnessAgent(HarborBaseAgent):
         history: list[CommandResult] = []
         self.logs_dir.mkdir(parents=True, exist_ok=True)
         done = False
+        termination_reason: str | None = None
+        started_at = _monotonic()
+        agent_timeout_sec = _agent_timeout_seconds(self.logs_dir, environment)
+        soft_deadline = _soft_deadline(started_at, agent_timeout_sec)
         turn_index = 0
         token = set_trace_dir(self.logs_dir)
         try:
             while True:
+                if _soft_deadline_expired(soft_deadline):
+                    termination_reason = "soft_agent_timeout_before_model"
+                    break
                 turn_index += 1
                 turn = agent.next_command(task, history)
                 tool_calls = _turn_tool_calls(turn)
                 if turn.done or not tool_calls:
                     done = turn.done
                     break
+                if _soft_deadline_expired(soft_deadline):
+                    termination_reason = "soft_agent_timeout_before_tools"
+                    break
+                max_timeout_sec = _remaining_timeout_sec(soft_deadline)
                 records = await asyncio.gather(
                     *(
-                        _execute_tool_call(environment, tool_call, turn.timeout_sec)
+                        _execute_tool_call_with_timeout(
+                            environment,
+                            tool_call,
+                            turn.timeout_sec,
+                            max_timeout_sec=max_timeout_sec,
+                        )
                         for tool_call in tool_calls
                     )
                 )
@@ -137,12 +158,22 @@ class HarborHarnessAgent(HarborBaseAgent):
                 turn_index -= 1
         finally:
             reset_trace_dir(token)
-            self._write_result_logs(history, done)
+            elapsed_sec = max(0.0, _monotonic() - started_at)
+            self._write_result_logs(
+                history,
+                done,
+                termination_reason=termination_reason,
+                agent_timeout_sec=agent_timeout_sec,
+                elapsed_sec=elapsed_sec,
+            )
             context.metadata = {
                 "candidate_dir": str(self.candidate_dir),
                 "done": done,
                 "turns": len(history),
                 "last_return_code": history[-1].return_code if history else None,
+                "termination_reason": termination_reason,
+                "agent_timeout_sec": agent_timeout_sec,
+                "elapsed_sec": elapsed_sec,
             }
 
     def _write_turn_log(self, turn_index: int, record: CommandResult) -> None:
@@ -151,13 +182,26 @@ class HarborHarnessAgent(HarborBaseAgent):
             encoding="utf-8",
         )
 
-    def _write_result_logs(self, history: list[CommandResult], done: bool) -> None:
+    def _write_result_logs(
+        self,
+        history: list[CommandResult],
+        done: bool,
+        termination_reason: str | None = None,
+        agent_timeout_sec: float | None = None,
+        elapsed_sec: float | None = None,
+    ) -> None:
         payload = {
             "done": done,
             "turns": len(history),
             "commands": [record.command for record in history],
             "last_return_code": history[-1].return_code if history else None,
         }
+        if termination_reason:
+            payload["termination_reason"] = termination_reason
+        if agent_timeout_sec is not None:
+            payload["agent_timeout_sec"] = agent_timeout_sec
+        if elapsed_sec is not None:
+            payload["elapsed_sec"] = elapsed_sec
         (self.logs_dir / "harness-result.json").write_text(
             json.dumps(payload, indent=2),
             encoding="utf-8",
@@ -188,10 +232,104 @@ async def _task_context(instruction: str, environment: Any, agent: Any) -> TaskC
     return TaskContext(instruction=instruction, working_dir=workdir, metadata=metadata)
 
 
+def _agent_timeout_seconds(logs_dir: Path, environment: Any) -> float | None:
+    trial_config = _trial_config(logs_dir)
+    agent_config = trial_config.get("agent") if isinstance(trial_config.get("agent"), dict) else {}
+    override = _float_or_none(agent_config.get("override_timeout_sec"))
+    base = override if override is not None else _task_agent_timeout_seconds(environment)
+    if base is None:
+        return None
+    cap = _float_or_none(agent_config.get("max_timeout_sec"))
+    if cap is not None:
+        base = min(base, cap)
+    multiplier = _float_or_none(trial_config.get("agent_timeout_multiplier"))
+    if multiplier is None:
+        multiplier = _float_or_none(trial_config.get("timeout_multiplier")) or 1.0
+    return max(0.0, base * multiplier)
+
+
+def _trial_config(logs_dir: Path) -> dict[str, Any]:
+    config_path = Path(logs_dir).parent / "config.json"
+    try:
+        data = json.loads(config_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _task_agent_timeout_seconds(environment: Any) -> float | None:
+    environment_dir = getattr(environment, "environment_dir", None)
+    if environment_dir is None:
+        return None
+    config_path = Path(environment_dir).parent / "task.toml"
+    try:
+        data = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError):
+        return None
+    agent_config = data.get("agent")
+    if not isinstance(agent_config, dict):
+        return None
+    return _float_or_none(agent_config.get("timeout_sec"))
+
+
+def _float_or_none(value: Any) -> float | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value.strip())
+        except ValueError:
+            return None
+    return None
+
+
+def _soft_deadline(started_at: float, agent_timeout_sec: float | None) -> float | None:
+    if agent_timeout_sec is None:
+        return None
+    return started_at + max(0.0, agent_timeout_sec - SOFT_AGENT_TIMEOUT_GRACE_SEC)
+
+
+def _soft_deadline_expired(soft_deadline: float | None) -> bool:
+    return soft_deadline is not None and _monotonic() >= soft_deadline
+
+
+def _remaining_timeout_sec(soft_deadline: float | None) -> int | None:
+    if soft_deadline is None:
+        return None
+    remaining = soft_deadline - _monotonic()
+    if remaining <= 0:
+        return 1
+    return max(1, int(remaining))
+
+
+def _monotonic() -> float:
+    return time.monotonic()
+
+
+def _cap_timeout(timeout_sec: int | None, max_timeout_sec: int | None) -> int | None:
+    if max_timeout_sec is None:
+        return timeout_sec
+    if timeout_sec is None:
+        return max_timeout_sec
+    return max(1, min(timeout_sec, max_timeout_sec))
+
+
+def _cap_yield_time_ms(yield_time_ms: int | None, max_timeout_sec: int | None) -> int | None:
+    if max_timeout_sec is None:
+        return yield_time_ms
+    cap_ms = max(1, max_timeout_sec) * 1000
+    if yield_time_ms is None:
+        return None
+    return max(1, min(yield_time_ms, cap_ms))
+
+
 async def _execute_tool_call(
     environment: Any,
     tool_call: HarnessToolCall,
     default_timeout_sec: int | None,
+    max_timeout_sec: int | None = None,
 ) -> CommandResult:
     name = tool_call.name.strip() or "local_shell"
     lowered = name.lower()
@@ -200,6 +338,7 @@ async def _execute_tool_call(
             environment,
             tool_call=tool_call,
             tool_name=name,
+            max_timeout_sec=max_timeout_sec,
         )
     if lowered in PLAN_TOOL_NAMES:
         return _plan_observed(tool_call, name)
@@ -209,9 +348,11 @@ async def _execute_tool_call(
                 environment,
                 tool_call=tool_call,
                 default_timeout_sec=default_timeout_sec,
+                max_timeout_sec=max_timeout_sec,
                 tool_name=name,
             )
         command, timeout_sec = _shell_command(tool_call, default_timeout_sec)
+        timeout_sec = _cap_timeout(timeout_sec, max_timeout_sec)
         return await _exec_observed(
             environment,
             command=command,
@@ -226,7 +367,10 @@ async def _execute_tool_call(
         return await _exec_observed(
             environment,
             command=command,
-            timeout_sec=_tool_timeout(tool_call.arguments, default_timeout_sec) or 30,
+            timeout_sec=_cap_timeout(
+                _tool_timeout(tool_call.arguments, default_timeout_sec) or 30,
+                max_timeout_sec,
+            ),
             tool_name=name,
             tool_call_id=tool_call.call_id,
             display_command=_patch_display(patch),
@@ -242,10 +386,111 @@ async def _execute_tool_call(
     )
 
 
+async def _execute_tool_call_with_timeout(
+    environment: Any,
+    tool_call: HarnessToolCall,
+    default_timeout_sec: int | None,
+    max_timeout_sec: int | None = None,
+) -> CommandResult:
+    wait_timeout_sec = _tool_wait_timeout_sec(
+        environment,
+        tool_call,
+        default_timeout_sec,
+        max_timeout_sec,
+    )
+    try:
+        operation = _execute_tool_call(
+            environment,
+            tool_call,
+            default_timeout_sec,
+            max_timeout_sec=max_timeout_sec,
+        )
+        if wait_timeout_sec is None:
+            return await operation
+        return await asyncio.wait_for(operation, timeout=wait_timeout_sec)
+    except TimeoutError:
+        return _tool_wait_timeout_result(tool_call, wait_timeout_sec)
+
+
+def _tool_wait_timeout_sec(
+    environment: Any,
+    tool_call: HarnessToolCall,
+    default_timeout_sec: int | None,
+    max_timeout_sec: int | None,
+) -> int | None:
+    name = tool_call.name.strip() or "local_shell"
+    lowered = name.lower()
+    if lowered in WRITE_STDIN_TOOL_NAMES:
+        args = tool_call.arguments
+        yield_time_ms = _cap_yield_time_ms(_tool_int(args.get("yield_time_ms")), max_timeout_sec)
+        if yield_time_ms is None:
+            yield_time_ms = 250 if args.get("chars") else 5000
+        request_timeout_sec = max(
+            UNIFIED_EXEC_REQUEST_GRACE_SEC,
+            int((yield_time_ms + 999) / 1000) + UNIFIED_EXEC_REQUEST_GRACE_SEC,
+        )
+        return _cap_wait_timeout(request_timeout_sec, max_timeout_sec)
+    if lowered in SHELL_TOOL_NAMES:
+        args = _shell_args(tool_call.arguments)
+        command = _shell_command_text(args)
+        if lowered in {"exec_command", "local_shell"} and hasattr(environment, "exec_command"):
+            if _extract_apply_patch(command):
+                return _cap_wait_timeout(
+                    _cap_timeout(_tool_timeout(args, default_timeout_sec) or 30, max_timeout_sec),
+                    max_timeout_sec,
+                )
+            yield_time_ms = _cap_yield_time_ms(_tool_int(args.get("yield_time_ms")), max_timeout_sec)
+            wait_ms = yield_time_ms if yield_time_ms is not None else 10000
+            request_timeout_sec = max(
+                UNIFIED_EXEC_REQUEST_GRACE_SEC,
+                int(wait_ms / 1000) + UNIFIED_EXEC_REQUEST_GRACE_SEC,
+            )
+            return _cap_wait_timeout(request_timeout_sec, max_timeout_sec)
+        timeout_sec = _cap_timeout(_tool_timeout(args, default_timeout_sec), max_timeout_sec)
+        return _cap_wait_timeout(timeout_sec, max_timeout_sec)
+    if lowered in PATCH_TOOL_NAMES:
+        timeout_sec = _cap_timeout(
+            _tool_timeout(tool_call.arguments, default_timeout_sec) or 30,
+            max_timeout_sec,
+        )
+        return _cap_wait_timeout(timeout_sec, max_timeout_sec)
+    return None
+
+
+def _cap_wait_timeout(timeout_sec: int | None, max_timeout_sec: int | None) -> int | None:
+    if max_timeout_sec is None:
+        if timeout_sec is None:
+            return None
+        return max(1, timeout_sec + TOOL_TIMEOUT_RESPONSE_GRACE_SEC)
+    ceiling = max(1, max_timeout_sec + TOOL_TIMEOUT_RESPONSE_GRACE_SEC)
+    if timeout_sec is None:
+        return ceiling
+    return max(1, min(timeout_sec + TOOL_TIMEOUT_RESPONSE_GRACE_SEC, ceiling))
+
+
+def _tool_wait_timeout_result(
+    tool_call: HarnessToolCall,
+    wait_timeout_sec: int | None,
+) -> CommandResult:
+    name = tool_call.name.strip() or "local_shell"
+    return CommandResult(
+        command=_display_tool_call(tool_call),
+        return_code=124,
+        stderr=f"Tool call timed out after {wait_timeout_sec} seconds",
+        tool_name=name,
+        tool_call_id=tool_call.call_id,
+        metadata={
+            "arguments": tool_call.arguments,
+            "adapter_timeout_sec": wait_timeout_sec,
+        },
+    )
+
+
 async def _exec_command_observed(
     environment: Any,
     tool_call: HarnessToolCall,
     default_timeout_sec: int | None,
+    max_timeout_sec: int | None,
     tool_name: str,
 ) -> CommandResult:
     args = _shell_args(tool_call.arguments)
@@ -267,7 +512,10 @@ async def _exec_command_observed(
         return await _exec_observed(
             environment,
             command=patch_command,
-            timeout_sec=_tool_timeout(args, default_timeout_sec) or 30,
+            timeout_sec=_cap_timeout(
+                _tool_timeout(args, default_timeout_sec) or 30,
+                max_timeout_sec,
+            ),
             tool_name=tool_name,
             tool_call_id=tool_call.call_id,
             display_command=_patch_display(patch),
@@ -278,14 +526,18 @@ async def _exec_command_observed(
             },
         )
     try:
+        timeout_sec = _cap_timeout(_tool_timeout(args, default_timeout_sec), max_timeout_sec)
         result = await environment.exec_command(
             command=command,
             cwd=cwd,
-            timeout_sec=_tool_timeout(args, default_timeout_sec),
+            timeout_sec=timeout_sec,
             shell=_tool_string(args.get("shell")),
             login=bool(args.get("login")) if isinstance(args.get("login"), bool) else True,
             tty=bool(args.get("tty")) if isinstance(args.get("tty"), bool) else False,
-            yield_time_ms=_tool_int(args.get("yield_time_ms")),
+            yield_time_ms=_cap_yield_time_ms(
+                _tool_int(args.get("yield_time_ms")),
+                max_timeout_sec,
+            ),
             max_output_tokens=_tool_int(args.get("max_output_tokens")),
         )
     except RuntimeError as exc:
@@ -318,6 +570,7 @@ async def _write_stdin_observed(
     environment: Any,
     tool_call: HarnessToolCall,
     tool_name: str,
+    max_timeout_sec: int | None = None,
 ) -> CommandResult:
     if not hasattr(environment, "write_stdin"):
         return CommandResult(
@@ -344,7 +597,10 @@ async def _write_stdin_observed(
         result = await environment.write_stdin(
             session_id=session_id,
             chars=chars,
-            yield_time_ms=_tool_int(args.get("yield_time_ms")),
+            yield_time_ms=_cap_yield_time_ms(
+                _tool_int(args.get("yield_time_ms")),
+                max_timeout_sec,
+            ),
             max_output_tokens=_tool_int(args.get("max_output_tokens")),
         )
     except RuntimeError as exc:
@@ -494,6 +750,10 @@ def _display_tool_call(tool_call: HarnessToolCall) -> str:
     lowered = tool_call.name.lower()
     if lowered in SHELL_TOOL_NAMES:
         return _shell_command(tool_call, None)[0]
+    if lowered in WRITE_STDIN_TOOL_NAMES:
+        session_id = _tool_int(tool_call.arguments.get("session_id"))
+        chars = str(tool_call.arguments.get("chars") or "")
+        return f"write_stdin(session_id={session_id}, chars={len(chars)} chars)"
     if lowered in PATCH_TOOL_NAMES:
         return _patch_display(_patch_text(tool_call.arguments))
     return f"<unsupported tool {tool_call.name}>"
@@ -560,10 +820,15 @@ def _normalize_native_shell_args(args: dict[str, Any]) -> dict[str, Any]:
     command = normalized.get("command")
     if isinstance(command, list):
         argv = [str(item) for item in command]
-        if len(argv) >= 3 and Path(argv[0]).name in {"bash", "sh", "zsh"} and argv[1] in {
-            "-c",
-            "-lc",
-        }:
+        if (
+            len(argv) >= 3
+            and Path(argv[0]).name in {"bash", "sh", "zsh"}
+            and argv[1]
+            in {
+                "-c",
+                "-lc",
+            }
+        ):
             normalized["shell"] = argv[0]
             normalized["login"] = argv[1] == "-lc"
             normalized["command"] = argv[2]

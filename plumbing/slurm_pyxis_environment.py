@@ -811,7 +811,10 @@ class SlurmPyxisEnvironment(BaseEnvironment):
             "max_output_tokens": max_output_tokens,
         }
         wait_ms = yield_time_ms if yield_time_ms is not None else 10000
-        request_timeout = max(30, int(wait_ms / 1000) + 30)
+        request_timeout = max(
+            DEFAULT_EXEC_REQUEST_GRACE_SEC,
+            int(wait_ms / 1000) + DEFAULT_EXEC_REQUEST_GRACE_SEC,
+        )
         data = await self._post_while_srun_lives("/exec_command", payload, timeout=request_timeout)
         return _unified_exec_result(data)
 
@@ -829,7 +832,10 @@ class SlurmPyxisEnvironment(BaseEnvironment):
             "max_output_tokens": max_output_tokens,
         }
         wait_ms = yield_time_ms if yield_time_ms is not None else 250
-        request_timeout = max(30, int(wait_ms / 1000) + 30)
+        request_timeout = max(
+            DEFAULT_EXEC_REQUEST_GRACE_SEC,
+            int(wait_ms / 1000) + DEFAULT_EXEC_REQUEST_GRACE_SEC,
+        )
         data = await self._post_while_srun_lives("/write_stdin", payload, timeout=request_timeout)
         return _unified_exec_result(data)
 
@@ -1079,11 +1085,20 @@ class SlurmPyxisEnvironment(BaseEnvironment):
             else None
         )
         tasks = {request_task, *([wait_task] if wait_task else [])}
-        done, pending = await asyncio.wait(
-            tasks,
-            timeout=timeout + DEFAULT_POST_TIMEOUT_GRACE_SEC,
-            return_when=asyncio.FIRST_COMPLETED,
-        )
+        try:
+            done, pending = await asyncio.wait(
+                tasks,
+                timeout=timeout + DEFAULT_POST_TIMEOUT_GRACE_SEC,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+        except BaseException:
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            for task in tasks:
+                with suppress(asyncio.CancelledError):
+                    await task
+            raise
         for task in pending:
             task.cancel()
         if not done:

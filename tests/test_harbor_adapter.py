@@ -6,6 +6,7 @@ import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
+import plumbing.harbor_adapter as harbor_adapter
 from plumbing.base_agent import load_harness
 from plumbing.harbor_adapter import (
     HarborHarnessAgent,
@@ -491,6 +492,48 @@ def test_harbor_agent_records_candidate_timeout_as_observation(tmp_path: Path) -
     assert context.metadata["done"] is True
 
 
+def test_harbor_agent_records_stuck_tool_timeout_as_observation(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(harbor_adapter, "TOOL_TIMEOUT_RESPONSE_GRACE_SEC", 0)
+    workspace = tmp_path / "workspace"
+    candidate = workspace / "candidate"
+    candidate.mkdir(parents=True)
+    patch = (
+        "*** Begin Patch\n"
+        "*** Add File: hello.txt\n"
+        "+hello\n"
+        "*** End Patch\n"
+    )
+    (candidate / "harness.py").write_text(
+        "from plumbing.base_agent import BaseHarness\n"
+        "from plumbing.types import HarnessToolCall, HarnessTurn\n"
+        f"PATCH = {patch!r}\n"
+        "class H(BaseHarness):\n"
+        "    def next_command(self, task, history):\n"
+        "        if history:\n"
+        "            return HarnessTurn(done=True)\n"
+        "        return HarnessTurn(tool_calls=(\n"
+        "            HarnessToolCall('apply_patch', {'patch': PATCH, 'timeout_sec': 1}),\n"
+        "        ))\n"
+        "def create_agent():\n"
+        "    return H()\n",
+        encoding="utf-8",
+    )
+    env = HangingEnvironment()
+    agent = HarborHarnessAgent(logs_dir=tmp_path / "logs", candidate_dir=workspace)
+    context = SimpleNamespace(metadata=None)
+
+    asyncio.run(agent.run("instruction", env, context))
+
+    payload = json.loads((tmp_path / "logs" / "harness-turn-01.json").read_text())
+    assert env.timeouts == [1]
+    assert payload["return_code"] == 124
+    assert payload["stderr"] == "Tool call timed out after 1 seconds"
+    assert payload["metadata"]["adapter_timeout_sec"] == 1
+    assert context.metadata["done"] is True
+
+
 def test_harbor_agent_logs_model_call_traces(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.delenv("OPENAI_AUTH_MODE", raising=False)
     set_client_factory(lambda: FakeOpenAI("ok"))
@@ -548,6 +591,65 @@ def test_harbor_agent_writes_partial_result_on_exec_error(tmp_path: Path) -> Non
     assert context.metadata["done"] is False
 
 
+def test_harbor_agent_soft_stops_before_harbor_timeout(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(harbor_adapter, "SOFT_AGENT_TIMEOUT_GRACE_SEC", 150)
+    workspace = tmp_path / "workspace"
+    candidate = workspace / "candidate"
+    candidate.mkdir(parents=True)
+    (candidate / "harness.py").write_text(
+        "from plumbing.base_agent import BaseHarness\n"
+        "from plumbing.types import HarnessTurn\n"
+        "class H(BaseHarness):\n"
+        "    def next_command(self, task, history):\n"
+        "        return HarnessTurn(command='echo should-not-run')\n"
+        "def create_agent():\n"
+        "    return H()\n",
+        encoding="utf-8",
+    )
+    env = TaskTimeoutEnvironment(tmp_path / "task", timeout_sec=1)
+    agent = HarborHarnessAgent(logs_dir=tmp_path / "logs", candidate_dir=workspace)
+    context = SimpleNamespace(metadata=None)
+
+    asyncio.run(agent.run("instruction", env, context))
+
+    payload = json.loads((tmp_path / "logs" / "harness-result.json").read_text())
+    assert env.commands == []
+    assert payload["turns"] == 0
+    assert payload["termination_reason"] == "soft_agent_timeout_before_model"
+    assert payload["agent_timeout_sec"] == 1.0
+    assert context.metadata["termination_reason"] == "soft_agent_timeout_before_model"
+
+
+def test_harbor_agent_caps_uncapped_tool_to_remaining_soft_timeout(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(harbor_adapter, "SOFT_AGENT_TIMEOUT_GRACE_SEC", 100)
+    ticks = iter([0.0, 10.0, 20.0, 21.0, 22.0])
+    monkeypatch.setattr(harbor_adapter, "_monotonic", lambda: next(ticks, 22.0))
+    workspace = tmp_path / "workspace"
+    candidate = workspace / "candidate"
+    candidate.mkdir(parents=True)
+    (candidate / "harness.py").write_text(
+        "from plumbing.base_agent import BaseHarness\n"
+        "from plumbing.types import HarnessTurn\n"
+        "class H(BaseHarness):\n"
+        "    def next_command(self, task, history):\n"
+        "        if history:\n"
+        "            return HarnessTurn(done=True)\n"
+        "        return HarnessTurn(command='sleep maybe')\n"
+        "def create_agent():\n"
+        "    return H()\n",
+        encoding="utf-8",
+    )
+    env = TaskTimeoutEnvironment(tmp_path / "task", timeout_sec=300)
+    agent = HarborHarnessAgent(logs_dir=tmp_path / "logs", candidate_dir=workspace)
+
+    asyncio.run(agent.run("instruction", env, SimpleNamespace(metadata=None)))
+
+    assert env.commands == ["sleep maybe"]
+    assert env.timeouts == [179]
+
+
 def test_slurm_command_uses_longer_environment_start_multiplier() -> None:
     plan = build_harbor_command(
         HarborRunSpec(
@@ -576,6 +678,17 @@ class FakeEnvironment:
         self.commands.append(command)
         self.timeouts.append(timeout_sec)
         return SimpleNamespace(stdout="ok\n", stderr="", return_code=0)
+
+
+class TaskTimeoutEnvironment(FakeEnvironment):
+    def __init__(self, task_dir: Path, timeout_sec: float) -> None:
+        super().__init__()
+        self.environment_dir = task_dir / "environment"
+        self.environment_dir.mkdir(parents=True)
+        (task_dir / "task.toml").write_text(
+            f"[agent]\ntimeout_sec = {timeout_sec}\n",
+            encoding="utf-8",
+        )
 
 
 class UnifiedEnvironment:
@@ -713,6 +826,17 @@ class FailingEnvironment:
 class TimeoutEnvironment:
     async def exec(self, command: str, timeout_sec: int | None = None):
         raise RuntimeError(f"Command timed out after {timeout_sec} seconds")
+
+
+class HangingEnvironment:
+    def __init__(self) -> None:
+        self.commands: list[str] = []
+        self.timeouts: list[int | None] = []
+
+    async def exec(self, command: str, timeout_sec: int | None = None):
+        self.commands.append(command)
+        self.timeouts.append(timeout_sec)
+        await asyncio.Event().wait()
 
 
 class FakeOpenAI:
