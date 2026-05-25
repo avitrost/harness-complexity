@@ -500,12 +500,7 @@ def test_harbor_agent_records_stuck_tool_timeout_as_observation(
     workspace = tmp_path / "workspace"
     candidate = workspace / "candidate"
     candidate.mkdir(parents=True)
-    patch = (
-        "*** Begin Patch\n"
-        "*** Add File: hello.txt\n"
-        "+hello\n"
-        "*** End Patch\n"
-    )
+    patch = "*** Begin Patch\n*** Add File: hello.txt\n+hello\n*** End Patch\n"
     (candidate / "harness.py").write_text(
         "from plumbing.base_agent import BaseHarness\n"
         "from plumbing.types import HarnessToolCall, HarnessTurn\n"
@@ -593,7 +588,7 @@ def test_harbor_agent_writes_partial_result_on_exec_error(tmp_path: Path) -> Non
 
 
 def test_harbor_agent_soft_stops_before_harbor_timeout(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setattr(harbor_adapter, "SOFT_AGENT_TIMEOUT_GRACE_SEC", 150)
+    monkeypatch.setattr(harbor_adapter, "MODEL_CALL_RUNWAY_SEC", 150)
     workspace = tmp_path / "workspace"
     candidate = workspace / "candidate"
     candidate.mkdir(parents=True)
@@ -621,10 +616,9 @@ def test_harbor_agent_soft_stops_before_harbor_timeout(tmp_path: Path, monkeypat
     assert context.metadata["termination_reason"] == "soft_agent_timeout_before_model"
 
 
-def test_harbor_agent_caps_uncapped_tool_to_remaining_soft_timeout(
+def test_harbor_agent_caps_uncapped_tool_to_remaining_hard_timeout(
     tmp_path: Path, monkeypatch
 ) -> None:
-    monkeypatch.setattr(harbor_adapter, "SOFT_AGENT_TIMEOUT_GRACE_SEC", 100)
     ticks = iter([0.0, 10.0, 20.0, 21.0, 22.0])
     monkeypatch.setattr(harbor_adapter, "_monotonic", lambda: next(ticks, 22.0))
     workspace = tmp_path / "workspace"
@@ -648,7 +642,44 @@ def test_harbor_agent_caps_uncapped_tool_to_remaining_soft_timeout(
     asyncio.run(agent.run("instruction", env, SimpleNamespace(metadata=None)))
 
     assert env.commands == ["sleep maybe"]
-    assert env.timeouts == [179]
+    assert env.timeouts == [259]
+
+
+def test_harbor_agent_soft_stops_before_tool_without_enough_runway(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(harbor_adapter, "EXEC_REQUEST_GRACE_SEC", 120)
+    monkeypatch.setattr(harbor_adapter, "TOOL_TIMEOUT_RESPONSE_GRACE_SEC", 15)
+    ticks = iter([0.0, 300.0, 430.0])
+    monkeypatch.setattr(harbor_adapter, "_monotonic", lambda: next(ticks, 430.0))
+    workspace = tmp_path / "workspace"
+    candidate = workspace / "candidate"
+    candidate.mkdir(parents=True)
+    patch = "*** Begin Patch\n*** Add File: hello.txt\n+hello\n*** End Patch\n"
+    (candidate / "harness.py").write_text(
+        "from plumbing.base_agent import BaseHarness\n"
+        "from plumbing.types import HarnessToolCall, HarnessTurn\n"
+        f"PATCH = {patch!r}\n"
+        "class H(BaseHarness):\n"
+        "    def next_command(self, task, history):\n"
+        "        return HarnessTurn(tool_calls=(\n"
+        "            HarnessToolCall('apply_patch', {'patch': PATCH, 'timeout_sec': 30}),\n"
+        "        ))\n"
+        "def create_agent():\n"
+        "    return H()\n",
+        encoding="utf-8",
+    )
+    env = TaskTimeoutEnvironment(tmp_path / "task", timeout_sec=600)
+    agent = HarborHarnessAgent(logs_dir=tmp_path / "logs", candidate_dir=workspace)
+    context = SimpleNamespace(metadata=None)
+
+    asyncio.run(agent.run("instruction", env, context))
+
+    payload = json.loads((tmp_path / "logs" / "harness-result.json").read_text())
+    assert env.commands == []
+    assert payload["turns"] == 0
+    assert payload["termination_reason"] == "soft_agent_timeout_before_tools"
+    assert context.metadata["termination_reason"] == "soft_agent_timeout_before_tools"
 
 
 def test_slurm_command_uses_longer_environment_start_multiplier() -> None:

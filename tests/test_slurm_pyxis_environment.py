@@ -116,7 +116,7 @@ def test_srun_command_uses_unique_job_name(tmp_path: Path) -> None:
 def test_default_exec_request_timeout_tracks_slurm_time(tmp_path: Path) -> None:
     env = _make_env(tmp_path)
 
-    assert env._exec_request_timeout_sec == 2 * 60 * 60 + 120
+    assert env._exec_request_timeout_sec == 2 * 60 * 60 + 180
 
 
 def test_srun_env_passes_verifier_settle_timeout(tmp_path: Path) -> None:
@@ -242,7 +242,7 @@ def test_exec_command_uses_unified_session_route(tmp_path: Path, monkeypatch) ->
     )
 
     assert call["path"] == "/exec_command"
-    assert call["timeout"] == 120
+    assert call["timeout"] == 180
     assert call["payload"]["command"] == "python -i"
     assert call["payload"]["cwd"] == "/app/src"
     assert call["payload"]["shell"] == "/bin/sh"
@@ -275,7 +275,7 @@ def test_write_stdin_uses_unified_session_route(tmp_path: Path, monkeypatch) -> 
     assert call["path"] == "/write_stdin"
     assert call["payload"]["session_id"] == 7
     assert call["payload"]["chars"] == "exit()\n"
-    assert call["timeout"] == 120
+    assert call["timeout"] == 180
     assert result.return_code == 0
     assert result.session_id is None
     assert result.stdout == "done\n"

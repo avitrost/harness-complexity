@@ -27,9 +27,10 @@ HARBOR_AGENT_IMPORT_PATH = "plumbing.harbor_adapter:HarborHarnessAgent"
 SLURM_PYXIS_ENV_IMPORT_PATH = "plumbing.slurm_pyxis_environment:SlurmPyxisEnvironment"
 SLURM_ENVIRONMENT_BUILD_TIMEOUT_MULTIPLIER = "18"
 MAX_OBSERVATION_CHARS = 6000
-SOFT_AGENT_TIMEOUT_GRACE_SEC = 150
+MODEL_CALL_RUNWAY_SEC = 180
+HARD_AGENT_TIMEOUT_GUARD_SEC = 20
 TOOL_TIMEOUT_RESPONSE_GRACE_SEC = 15
-EXEC_REQUEST_GRACE_SEC = 120
+EXEC_REQUEST_GRACE_SEC = 180
 SHELL_TOOL_NAMES = {
     "local_shell",
     "shell",
@@ -106,12 +107,12 @@ class HarborHarnessAgent(HarborBaseAgent):
         termination_reason: str | None = None
         started_at = _monotonic()
         agent_timeout_sec = _agent_timeout_seconds(self.logs_dir, environment)
-        soft_deadline = _soft_deadline(started_at, agent_timeout_sec)
+        agent_deadline = _agent_deadline(started_at, agent_timeout_sec)
         turn_index = 0
         token = set_trace_dir(self.logs_dir)
         try:
             while True:
-                if _soft_deadline_expired(soft_deadline):
+                if _insufficient_deadline_runway(agent_deadline, MODEL_CALL_RUNWAY_SEC):
                     termination_reason = "soft_agent_timeout_before_model"
                     break
                 turn_index += 1
@@ -120,10 +121,17 @@ class HarborHarnessAgent(HarborBaseAgent):
                 if turn.done or not tool_calls:
                     done = turn.done
                     break
-                if _soft_deadline_expired(soft_deadline):
+                if _insufficient_tool_runway(
+                    environment,
+                    tool_calls,
+                    turn.timeout_sec,
+                    agent_deadline,
+                ):
                     termination_reason = "soft_agent_timeout_before_tools"
                     break
-                max_timeout_sec = _remaining_timeout_sec(soft_deadline)
+                max_timeout_sec = _remaining_timeout_sec(
+                    _guarded_deadline(agent_deadline, HARD_AGENT_TIMEOUT_GUARD_SEC)
+                )
                 records = await asyncio.gather(
                     *(
                         _execute_tool_call_with_timeout(
@@ -285,20 +293,58 @@ def _float_or_none(value: Any) -> float | None:
     return None
 
 
-def _soft_deadline(started_at: float, agent_timeout_sec: float | None) -> float | None:
+def _agent_deadline(started_at: float, agent_timeout_sec: float | None) -> float | None:
     if agent_timeout_sec is None:
         return None
-    return started_at + max(0.0, agent_timeout_sec - SOFT_AGENT_TIMEOUT_GRACE_SEC)
+    return started_at + max(0.0, agent_timeout_sec)
 
 
-def _soft_deadline_expired(soft_deadline: float | None) -> bool:
-    return soft_deadline is not None and _monotonic() >= soft_deadline
-
-
-def _remaining_timeout_sec(soft_deadline: float | None) -> int | None:
-    if soft_deadline is None:
+def _guarded_deadline(deadline: float | None, guard_sec: int) -> float | None:
+    if deadline is None:
         return None
-    remaining = soft_deadline - _monotonic()
+    return deadline - max(0, guard_sec)
+
+
+def _remaining_seconds(deadline: float | None) -> float | None:
+    if deadline is None:
+        return None
+    return deadline - _monotonic()
+
+
+def _insufficient_deadline_runway(deadline: float | None, required_sec: int) -> bool:
+    remaining = _remaining_seconds(deadline)
+    if remaining is None:
+        return False
+    return remaining <= max(0, required_sec)
+
+
+def _insufficient_tool_runway(
+    environment: Any,
+    tool_calls: tuple[HarnessToolCall, ...],
+    default_timeout_sec: int | None,
+    agent_deadline: float | None,
+) -> bool:
+    remaining = _remaining_seconds(_guarded_deadline(agent_deadline, HARD_AGENT_TIMEOUT_GUARD_SEC))
+    if remaining is None:
+        return False
+    if remaining <= 0:
+        return True
+    for tool_call in tool_calls:
+        wait_timeout = _tool_wait_timeout_sec(
+            environment,
+            tool_call,
+            default_timeout_sec,
+            max_timeout_sec=None,
+        )
+        if wait_timeout is not None and wait_timeout >= remaining:
+            return True
+    return False
+
+
+def _remaining_timeout_sec(deadline: float | None) -> int | None:
+    if deadline is None:
+        return None
+    remaining = deadline - _monotonic()
     if remaining <= 0:
         return 1
     return max(1, int(remaining))
@@ -439,7 +485,9 @@ def _tool_wait_timeout_sec(
                     _cap_timeout(_tool_timeout(args, default_timeout_sec) or 30, max_timeout_sec),
                     max_timeout_sec,
                 )
-            yield_time_ms = _cap_yield_time_ms(_tool_int(args.get("yield_time_ms")), max_timeout_sec)
+            yield_time_ms = _cap_yield_time_ms(
+                _tool_int(args.get("yield_time_ms")), max_timeout_sec
+            )
             wait_ms = yield_time_ms if yield_time_ms is not None else 10000
             request_timeout_sec = max(
                 EXEC_REQUEST_GRACE_SEC,
