@@ -4,7 +4,7 @@ import hashlib
 import json
 import os
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date
 from typing import Any
 
@@ -459,18 +459,112 @@ ENABLE_PATCH_TOOL = True
 ENABLE_PLAN_TOOL = True
 ENABLE_WRITE_STDIN_TOOL = True
 ENABLE_UNIFIED_EXEC_OUTPUT_FORMAT = True
-ENABLE_APPLY_PATCH_INTERCEPTION_HINTS = True
 ENABLE_MODEL_RESPONSE_ITEM_REPLAY = True
 ENABLE_MODEL_CALL_RESILIENCE = True
 ENABLE_RECOVERY_POLICY = True
 ENABLE_COMMAND_CLASSIFICATION = True
-ENABLE_FILE_CHANGE_AWARENESS = True
 ENABLE_COMPLETION_POLICY = True
 ENABLE_INSTRUMENTATION = True
 
 
+@dataclass(frozen=True)
+class FeatureSet:
+    port_parity_manifest: bool = True
+    history_replay: bool = True
+    context_manager: bool = True
+    context_normalization: bool = True
+    context_budgeting: bool = True
+    model_context_compaction: bool = True
+    patch_tool: bool = True
+    plan_tool: bool = True
+    write_stdin_tool: bool = True
+    unified_exec_output_format: bool = True
+    model_response_item_replay: bool = True
+    model_call_resilience: bool = True
+    recovery_policy: bool = True
+    command_classification: bool = True
+    completion_policy: bool = True
+    instrumentation: bool = True
+
+    @classmethod
+    def from_globals(cls) -> "FeatureSet":
+        return cls(
+            port_parity_manifest=ENABLE_PORT_PARITY_MANIFEST,
+            history_replay=ENABLE_HISTORY_REPLAY,
+            context_manager=ENABLE_CONTEXT_MANAGER,
+            context_normalization=ENABLE_CONTEXT_NORMALIZATION,
+            context_budgeting=ENABLE_CONTEXT_BUDGETING,
+            model_context_compaction=ENABLE_MODEL_CONTEXT_COMPACTION,
+            patch_tool=ENABLE_PATCH_TOOL,
+            plan_tool=ENABLE_PLAN_TOOL,
+            write_stdin_tool=ENABLE_WRITE_STDIN_TOOL,
+            unified_exec_output_format=ENABLE_UNIFIED_EXEC_OUTPUT_FORMAT,
+            model_response_item_replay=ENABLE_MODEL_RESPONSE_ITEM_REPLAY,
+            model_call_resilience=ENABLE_MODEL_CALL_RESILIENCE,
+            recovery_policy=ENABLE_RECOVERY_POLICY,
+            command_classification=ENABLE_COMMAND_CLASSIFICATION,
+            completion_policy=ENABLE_COMPLETION_POLICY,
+            instrumentation=ENABLE_INSTRUMENTATION,
+        )
+
+    def with_overrides(self, overrides: dict[str, bool]) -> "FeatureSet":
+        return replace(self, **overrides)
+
+
+PROFILE_OVERRIDES: dict[str, dict[str, bool]] = {
+    "codex_full": {},
+    "no_instrumentation": {
+        "instrumentation": False,
+        "port_parity_manifest": False,
+    },
+    "no_classifier": {"command_classification": False},
+    "no_recovery": {"recovery_policy": False},
+    "no_compaction": {"model_context_compaction": False},
+    "exec_only_tools": {
+        "patch_tool": False,
+        "plan_tool": False,
+        "write_stdin_tool": False,
+    },
+    "minimal_loop": {
+        "history_replay": False,
+        "context_manager": False,
+        "context_normalization": False,
+        "context_budgeting": False,
+        "model_context_compaction": False,
+        "patch_tool": False,
+        "plan_tool": False,
+        "write_stdin_tool": False,
+        "unified_exec_output_format": False,
+        "model_response_item_replay": False,
+        "model_call_resilience": False,
+        "recovery_policy": False,
+        "command_classification": False,
+        "port_parity_manifest": False,
+        "instrumentation": False,
+    },
+}
+DEFAULT_PROFILE_NAME = "codex_full"
+
+
+def resolve_features(profile: str | FeatureSet | None = None) -> FeatureSet:
+    if isinstance(profile, FeatureSet):
+        return profile
+    features = FeatureSet.from_globals()
+    profile_name = profile or os.getenv("CODEX_HARNESS_PROFILE") or DEFAULT_PROFILE_NAME
+    if profile_name not in PROFILE_OVERRIDES:
+        expected = ", ".join(sorted(PROFILE_OVERRIDES))
+        raise ValueError(
+            f"unknown CODEX_HARNESS_PROFILE {profile_name!r}; expected one of: {expected}"
+        )
+    return features.with_overrides(PROFILE_OVERRIDES.get(profile_name, {}))
+
+
 def _current_date() -> str:
     return os.getenv("CODEX_CURRENT_DATE") or date.today().isoformat()
+
+
+def _construct(symbol_name: str, *args: Any) -> Any:
+    return globals()[symbol_name](*args)
 
 
 def _local_timezone_name() -> str:
@@ -550,14 +644,6 @@ class ToolCall:
     tool_name: str
     call_id: str
     payload: ToolPayload
-
-
-@dataclass(frozen=True)
-class ToolObservation:
-    call_id: str
-    tool_name: str
-    output_item: dict[str, Any]
-    source_record: CommandResult
 
 
 @dataclass(frozen=True)
@@ -698,14 +784,15 @@ class TextBudget:
 # === 05. Upstream-Like Tool Schemas ===
 
 
-def _built_tools() -> list[dict[str, Any]]:
+def _built_tools(features: FeatureSet | None = None) -> list[dict[str, Any]]:
+    features = features or FeatureSet.from_globals()
     tools = [_exec_command_tool()]
-    if ENABLE_WRITE_STDIN_TOOL:
-        tools.append(_write_stdin_tool())
-    if ENABLE_PLAN_TOOL:
-        tools.append(_update_plan_tool())
-    if ENABLE_PATCH_TOOL:
-        tools.append(_apply_patch_tool())
+    if features.write_stdin_tool:
+        tools.append(_construct("_write_stdin_tool"))
+    if features.plan_tool:
+        tools.append(_construct("_update_plan_tool"))
+    if features.patch_tool:
+        tools.append(_construct("_apply_patch_tool"))
     return tools
 
 
@@ -1004,6 +1091,9 @@ def _shell_quote(value: str) -> str:
 
 
 class ToolOutputFormatter:
+    def __init__(self, features: FeatureSet | None = None) -> None:
+        self.features = features or FeatureSet.from_globals()
+
     def tool_output_item(self, record: CommandResult, call_id: str) -> dict[str, Any]:
         output = self.tool_output_text(record)
         if self._is_custom_output(record):
@@ -1019,7 +1109,7 @@ class ToolOutputFormatter:
         }
 
     def tool_output_text(self, record: CommandResult) -> str:
-        if ENABLE_UNIFIED_EXEC_OUTPUT_FORMAT and self._has_unified_exec(record):
+        if self.features.unified_exec_output_format and self._has_unified_exec(record):
             return self.unified_exec_text(record)
         return self.generic_function_text(record)
 
@@ -1146,13 +1236,14 @@ class ResponseItemFactory:
 
 
 class HistoryReplay:
-    def __init__(self, formatter: ToolOutputFormatter):
+    def __init__(self, formatter: ToolOutputFormatter, features: FeatureSet | None = None):
         self.formatter = formatter
+        self.features = features or FeatureSet.from_globals()
         self.items = ResponseItemFactory()
 
     def input_items(self, task: TaskContext, history: list[CommandResult]) -> list[dict[str, Any]]:
         items = [{"role": "user", "content": InitialContextBuilder().render(task)}]
-        if not ENABLE_HISTORY_REPLAY:
+        if not self.features.history_replay:
             return items
         for index, record in enumerate(history, start=1):
             items.extend(self.record_items(index, record))
@@ -1170,7 +1261,7 @@ class HistoryReplay:
         return items
 
     def raw_codex_response_items(self, record: CommandResult) -> list[dict[str, Any]] | None:
-        if not ENABLE_MODEL_RESPONSE_ITEM_REPLAY:
+        if not self.features.model_response_item_replay:
             return None
         if not isinstance(record.metadata, dict):
             return None
@@ -1285,8 +1376,11 @@ class HistoryReplay:
 
 
 class ConversationNormalizer:
+    def __init__(self, features: FeatureSet | None = None) -> None:
+        self.features = features or FeatureSet.from_globals()
+
     def normalize(self, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        if not ENABLE_CONTEXT_NORMALIZATION:
+        if not self.features.context_normalization:
             return list(items)
         normalized = [dict(item) for item in items]
         self.ensure_call_outputs_present(normalized)
@@ -1352,7 +1446,8 @@ class ConversationNormalizer:
 
 
 class ContextCompactor:
-    def __init__(self) -> None:
+    def __init__(self, features: FeatureSet | None = None) -> None:
+        self.features = features or FeatureSet.from_globals()
         self.checkpoint: CompactionCheckpoint | None = None
 
     def maybe_compact(
@@ -1361,12 +1456,12 @@ class ContextCompactor:
         raw_items = self.copy_items(items)
         reused = False
         working = raw_items
-        if ENABLE_MODEL_CONTEXT_COMPACTION:
+        if self.features.model_context_compaction:
             applied = self.apply_checkpoint(raw_items)
             if applied is not None:
                 working = applied
                 reused = True
-        if not ENABLE_MODEL_CONTEXT_COMPACTION or not self.should_compact(working):
+        if not self.features.model_context_compaction or not self.should_compact(working):
             return working, self.checkpoint if reused else None, reused
         compacted, summary_text = self.compact(working, initial_context or [])
         if compacted is None:
@@ -1490,19 +1585,32 @@ class ContextCompactor:
 
 
 class ContextManager:
-    def __init__(self) -> None:
-        self.normalizer = ConversationNormalizer()
-        self.compactor = ContextCompactor()
+    def __init__(self, features: FeatureSet | None = None) -> None:
+        self.features = features or FeatureSet.from_globals()
+        self.normalizer = (
+            _construct("ConversationNormalizer", self.features)
+            if self.features.context_normalization
+            else None
+        )
+        self.compactor = (
+            _construct("ContextCompactor", self.features)
+            if self.features.model_context_compaction
+            else None
+        )
 
     def prepare(
         self, items: list[dict[str, Any]], initial_context: list[dict[str, Any]] | None = None
     ) -> tuple[list[dict[str, Any]], ContextStats]:
         raw_count = len(items)
-        normalized = self.normalizer.normalize(items)
+        normalized = self.normalizer.normalize(items) if self.normalizer else list(items)
         normalized_count = len(normalized)
-        normalized, checkpoint, reused = self.compactor.maybe_compact(
-            normalized, initial_context or []
-        )
+        if self.compactor:
+            normalized, checkpoint, reused = self.compactor.maybe_compact(
+                normalized, initial_context or []
+            )
+        else:
+            checkpoint = None
+            reused = False
         budgeted = self.apply_budget(normalized)
         estimated_bytes = sum(TextBudget.item_bytes(item) for item in budgeted)
         return (
@@ -1520,7 +1628,7 @@ class ContextManager:
         )
 
     def apply_budget(self, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        if not ENABLE_CONTEXT_BUDGETING:
+        if not self.features.context_budgeting:
             return list(items)
         clipped = [self.clip_item(item) for item in items]
         if len(clipped) > MAX_CONTEXT_HISTORY_ITEMS:
@@ -1593,6 +1701,24 @@ class ContextManager:
             if item.get("type") in TOOL_CALL_TYPES and item.get("call_id") == call_id:
                 return index
         return None
+
+
+class NoopContextManager:
+    def prepare(
+        self, items: list[dict[str, Any]], initial_context: list[dict[str, Any]] | None = None
+    ) -> tuple[list[dict[str, Any]], ContextStats]:
+        kept = [dict(item) for item in items]
+        estimated_bytes = sum(TextBudget.item_bytes(item) for item in kept)
+        return (
+            kept,
+            ContextStats(
+                raw_items=len(items),
+                normalized_items=len(items),
+                pruned_items=0,
+                estimated_bytes=estimated_bytes,
+                estimated_tokens=max(1, estimated_bytes // 4),
+            ),
+        )
 
 
 # === 09. Prompt and Context Rendering ===
@@ -1674,15 +1800,32 @@ class AgentInstructionsRenderer:
 
 
 class PromptBuilder:
-    def __init__(self, router: ToolRouter):
+    def __init__(self, router: ToolRouter, features: FeatureSet | None = None):
+        self.features = features or FeatureSet.from_globals()
         self.router = router
-        self.history = HistoryReplay(ToolOutputFormatter())
-        self.context_manager = ContextManager()
+        self.history = (
+            _construct(
+                "HistoryReplay",
+                _construct("ToolOutputFormatter", self.features),
+                self.features,
+            )
+            if self.features.history_replay
+            else None
+        )
+        self.context_manager = (
+            _construct("ContextManager", self.features)
+            if self.features.context_manager
+            else NoopContextManager()
+        )
 
     def build(
         self, task: TaskContext, history: list[CommandResult], context: TurnContext
     ) -> CodexPromptBundle:
-        raw_items = self.history.input_items(task, history)
+        raw_items = (
+            self.history.input_items(task, history)
+            if self.history
+            else [{"role": "user", "content": InitialContextBuilder().render(task)}]
+        )
         input_items, stats = self.context_manager.prepare(raw_items, raw_items[:1])
         prompt = build_prompt(
             input_items,
@@ -1798,13 +1941,16 @@ class CommandClassifier:
 
 
 class ExecutionPolicy:
+    def __init__(self, features: FeatureSet | None = None) -> None:
+        self.features = features or FeatureSet.from_globals()
+
     def annotate_tool_calls(self, calls: list[HarnessToolCall]) -> list[HarnessToolCall]:
         return list(calls)
 
     def assessments(self, calls: list[HarnessToolCall]) -> list[dict[str, Any]]:
-        if not ENABLE_COMMAND_CLASSIFICATION:
+        if not self.features.command_classification:
             return []
-        classifier = CommandClassifier()
+        classifier = _construct("CommandClassifier")
         assessments = []
         for call in calls:
             if call.name != "exec_command":
@@ -1825,8 +1971,11 @@ class ExecutionPolicy:
 
 
 class ModelCallResilience:
+    def __init__(self, features: FeatureSet | None = None) -> None:
+        self.features = features or FeatureSet.from_globals()
+
     def call(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]]) -> ToolModelResult:
-        if not ENABLE_MODEL_CALL_RESILIENCE:
+        if not self.features.model_call_resilience:
             return call_terminal_model_with_tools(
                 messages,
                 tools,
@@ -1861,10 +2010,13 @@ class ModelCallResilience:
 
 
 class RecoveryPolicy:
+    def __init__(self, features: FeatureSet | None = None) -> None:
+        self.features = features or FeatureSet.from_globals()
+
     def fallback_turn(
         self, result: ToolModelResult, history: list[CommandResult], metadata: dict[str, Any]
     ) -> HarnessTurn | None:
-        if not ENABLE_RECOVERY_POLICY:
+        if not self.features.recovery_policy:
             return None
         if result.tool_calls or result.content.strip():
             return None
@@ -1901,16 +2053,28 @@ class RecoveryPolicy:
         )
 
 
+class NullRecoveryPolicy:
+    def fallback_turn(
+        self, result: ToolModelResult, history: list[CommandResult], metadata: dict[str, Any]
+    ) -> HarnessTurn | None:
+        return None
+
+
 # === 12. Completion Policy ===
 
 
 class CompletionPolicy:
+    def __init__(self, features: FeatureSet | None = None) -> None:
+        self.features = features or FeatureSet.from_globals()
+
     def is_complete(self, result: ToolModelResult, tool_calls: list[HarnessToolCall]) -> bool:
         if tool_calls:
             return False
         return bool(self.visible_text(result).strip())
 
     def visible_text(self, result: ToolModelResult) -> str:
+        if not self.features.completion_policy:
+            return result.content
         if result.content.strip():
             return result.content
         chunks: list[str] = []
@@ -1931,6 +2095,9 @@ class CompletionPolicy:
 
 
 class Instrumentation:
+    def __init__(self, features: FeatureSet | None = None) -> None:
+        self.features = features or FeatureSet.from_globals()
+
     def turn_metadata(
         self,
         result: ToolModelResult,
@@ -1946,7 +2113,7 @@ class Instrumentation:
             "codex_tool_names": [tool.get("name") for tool in bundle.tools],
             "codex_emitted_tool_calls": len(tool_calls),
         }
-        if ENABLE_PORT_PARITY_MANIFEST:
+        if self.features.port_parity_manifest:
             metadata["codex_port_manifest"] = PORT_PARITY_MANIFEST
         if result.request_metadata:
             metadata["codex_request_metadata"] = result.request_metadata
@@ -1959,6 +2126,17 @@ class Instrumentation:
         return metadata
 
 
+class NullInstrumentation:
+    def turn_metadata(
+        self,
+        result: ToolModelResult,
+        bundle: CodexPromptBundle,
+        tool_calls: list[HarnessToolCall],
+        assessments: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        return {}
+
+
 # === 14. Candidate Harness ===
 
 
@@ -1966,15 +2144,24 @@ class CandidateHarness(BaseHarness):
     wants_environment_context = True
     wants_agents_context = True
 
-    def __init__(self) -> None:
-        self.router = ToolRouter(_built_tools())
+    def __init__(self, profile: str | FeatureSet | None = None) -> None:
+        self.features = resolve_features(profile)
+        self.router = ToolRouter(_built_tools(self.features))
         self.context = TurnContext()
-        self.prompt_builder = PromptBuilder(self.router)
-        self.model = ModelCallResilience()
-        self.completion = CompletionPolicy()
-        self.recovery = RecoveryPolicy()
-        self.execution_policy = ExecutionPolicy()
-        self.instrumentation = Instrumentation()
+        self.prompt_builder = PromptBuilder(self.router, self.features)
+        self.model = ModelCallResilience(self.features)
+        self.completion = CompletionPolicy(self.features)
+        self.recovery = (
+            _construct("RecoveryPolicy", self.features)
+            if self.features.recovery_policy
+            else NullRecoveryPolicy()
+        )
+        self.execution_policy = ExecutionPolicy(self.features)
+        self.instrumentation = (
+            _construct("Instrumentation", self.features)
+            if self.features.instrumentation
+            else NullInstrumentation()
+        )
 
     def next_command(self, task: TaskContext, history: list[CommandResult]) -> HarnessTurn:
         bundle = self.prompt_builder.build(task, history, self._turn_context_for_task(task))

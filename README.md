@@ -87,6 +87,23 @@ response-item replay for prior assistant/tool calls/outputs. Its context manager
 uses Codex's pinned compact prompt and summary prefix for memento-style
 replacement history before falling back to deterministic budget trimming.
 
+The full Codex seed now exposes named thinning profiles through
+`CODEX_HARNESS_PROFILE` and `scripts/thin_codex_harness.py`. Profiles are meant
+to make LOC-axis ablations mechanical rather than hand-edited:
+
+- `codex_full` preserves the full port baseline.
+- `no_instrumentation`, `no_classifier`, `no_recovery`, and `no_compaction`
+  remove isolated behavior slices.
+- `exec_only_tools` keeps only the `exec_command` tool.
+- `minimal_loop` removes history replay, context management, compaction,
+  non-exec tools, recovery, classifier metadata, and instrumentation.
+
+To emit a counted single-file variant:
+
+```bash
+python scripts/thin_codex_harness.py --profile minimal_loop --output /tmp/harness.py --validate
+```
+
 For a real-Codex comparison point, run `python -m evaluator.run_codex_cli`.
 This routes Harbor tasks to `codex exec` inside the same Slurm/Pyxis task
 container using the mounted host Codex CLI and workspace-local auth.
