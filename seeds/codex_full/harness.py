@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import time
@@ -8,7 +9,11 @@ from datetime import date
 from typing import Any
 
 from plumbing.base_agent import BaseHarness
-from plumbing.openai_client import ToolModelResult, call_terminal_model_with_tools
+from plumbing.openai_client import (
+    ToolModelResult,
+    call_terminal_model,
+    call_terminal_model_with_tools,
+)
 from plumbing.types import CommandResult, HarnessToolCall, HarnessTurn, TaskContext
 
 CODEX_BASE_INSTRUCTIONS = r"""You are a coding agent running in the Codex CLI, a terminal-based coding assistant. Codex CLI is an open source project led by OpenAI. You are expected to be precise, safe, and helpful.
@@ -307,6 +312,18 @@ eof_line: "*** End of File" LF
 
 %import common.LF"""
 
+SUMMARIZATION_PROMPT = r"""You are performing a CONTEXT CHECKPOINT COMPACTION. Create a handoff summary for another LLM that will resume the task.
+
+Include:
+- Current progress and key decisions made
+- Important context, constraints, or user preferences
+- What remains to be done (clear next steps)
+- Any critical data, examples, or references needed to continue
+
+Be concise, structured, and focused on helping the next LLM seamlessly continue the work."""
+
+SUMMARY_PREFIX = r"""Another language model started to solve this problem and produced a summary of its thinking process. You also have access to the state of the tools that were used by that language model. Use this to build on the work that has already been done and avoid duplicating work. Here is the summary produced by the other language model, use the information in this summary to assist with your own analysis:"""
+
 CODEX_UPSTREAM_COMMIT = "9f42c89c0112771dc29100a6f3fc904049b2655f"
 CODEX_UPSTREAM_DATE = "2026-05-24"
 MAX_OBSERVATION_CHARS = 20000
@@ -314,6 +331,7 @@ MAX_FUNCTION_OUTPUT_CHARS = 24000
 MAX_CONTEXT_HISTORY_ITEMS = 96
 MAX_CONTEXT_HISTORY_CHARS = 90000
 MAX_RAW_RESPONSE_ITEMS = 48
+COMPACT_USER_MESSAGE_MAX_TOKENS = 20000
 FUNCTION_HISTORY_TOOLS = {"exec_command", "write_stdin", "update_plan"}
 FUNCTION_CALL_TYPES = {"function_call", "local_shell_call"}
 FUNCTION_OUTPUT_TYPES = {"function_call_output"}
@@ -382,7 +400,13 @@ PORT_PARITY_MANIFEST: tuple[dict[str, str], ...] = (
         "upstream": "codex-rs/core/src/context_manager/history.rs",
         "status": "simplified",
         "python": "ContextManager",
-        "notes": "Pair normalization and budget trimming are retained without encrypted compaction.",
+        "notes": "Pair normalization and budget fallback are retained around compact.rs-style memento compaction.",
+    },
+    {
+        "upstream": "codex-rs/core/src/compact.rs::run_inline_auto_compact_task",
+        "status": "simplified",
+        "python": "ContextCompactor",
+        "notes": "Exact compact prompt/prefix and replacement-history shape are used without hooks or remote compaction.",
     },
     {
         "upstream": "codex-rs/core/src/context_manager/normalize.rs",
@@ -430,6 +454,7 @@ ENABLE_HISTORY_REPLAY = True
 ENABLE_CONTEXT_MANAGER = True
 ENABLE_CONTEXT_NORMALIZATION = True
 ENABLE_CONTEXT_BUDGETING = True
+ENABLE_MODEL_CONTEXT_COMPACTION = True
 ENABLE_PATCH_TOOL = True
 ENABLE_PLAN_TOOL = True
 ENABLE_WRITE_STDIN_TOOL = True
@@ -542,6 +567,9 @@ class ContextStats:
     pruned_items: int
     estimated_bytes: int
     estimated_tokens: int
+    compacted: bool = False
+    compaction_summary_chars: int = 0
+    compaction_reused: bool = False
 
 
 @dataclass(frozen=True)
@@ -559,6 +587,14 @@ class CommandAssessment:
     long_running: bool = False
     needs_verification: bool = False
     notes: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class CompactionCheckpoint:
+    prefix_digest: str
+    prefix_len: int
+    replacement: tuple[dict[str, Any], ...]
+    summary_text: str
 
 
 # === 04. Small Structured Helpers ===
@@ -1315,14 +1351,158 @@ class ConversationNormalizer:
         }
 
 
+class ContextCompactor:
+    def __init__(self) -> None:
+        self.checkpoint: CompactionCheckpoint | None = None
+
+    def maybe_compact(
+        self, items: list[dict[str, Any]], initial_context: list[dict[str, Any]] | None = None
+    ) -> tuple[list[dict[str, Any]], CompactionCheckpoint | None, bool]:
+        raw_items = self.copy_items(items)
+        reused = False
+        working = raw_items
+        if ENABLE_MODEL_CONTEXT_COMPACTION:
+            applied = self.apply_checkpoint(raw_items)
+            if applied is not None:
+                working = applied
+                reused = True
+        if not ENABLE_MODEL_CONTEXT_COMPACTION or not self.should_compact(working):
+            return working, self.checkpoint if reused else None, reused
+        compacted, summary_text = self.compact(working, initial_context or [])
+        if compacted is None:
+            return working, self.checkpoint if reused else None, reused
+        checkpoint = CompactionCheckpoint(
+            prefix_digest=self.digest(raw_items),
+            prefix_len=len(raw_items),
+            replacement=tuple(self.copy_items(compacted)),
+            summary_text=summary_text,
+        )
+        self.checkpoint = checkpoint
+        return self.copy_items(compacted), checkpoint, False
+
+    def should_compact(self, items: list[dict[str, Any]]) -> bool:
+        return (
+            len(items) > MAX_CONTEXT_HISTORY_ITEMS
+            or sum(TextBudget.item_bytes(item) for item in items) > MAX_CONTEXT_HISTORY_CHARS
+        )
+
+    def apply_checkpoint(self, items: list[dict[str, Any]]) -> list[dict[str, Any]] | None:
+        checkpoint = self.checkpoint
+        if checkpoint is None or len(items) < checkpoint.prefix_len:
+            return None
+        prefix = items[: checkpoint.prefix_len]
+        if self.digest(prefix) != checkpoint.prefix_digest:
+            return None
+        suffix = items[checkpoint.prefix_len :]
+        return [*self.copy_items(list(checkpoint.replacement)), *self.copy_items(suffix)]
+
+    def compact(
+        self, items: list[dict[str, Any]], initial_context: list[dict[str, Any]]
+    ) -> tuple[list[dict[str, Any]], str] | tuple[None, str]:
+        compact_input = [
+            {"role": "system", "content": CODEX_BASE_INSTRUCTIONS},
+            *self.copy_items(items),
+            ResponseItemFactory().responses_message("user", SUMMARIZATION_PROMPT),
+        ]
+        try:
+            summary_suffix = call_terminal_model(compact_input)
+        except Exception:
+            return None, ""
+        summary_text = f"{SUMMARY_PREFIX}\n{summary_suffix}"
+        user_messages = self.collect_user_messages(items, initial_context)
+        return (
+            self.build_compacted_history(initial_context, user_messages, summary_text),
+            summary_text,
+        )
+
+    def collect_user_messages(
+        self, items: list[dict[str, Any]], initial_context: list[dict[str, Any]]
+    ) -> list[str]:
+        initial_digests = {self.digest([item]) for item in initial_context}
+        messages: list[str] = []
+        for item in items:
+            if self.digest([item]) in initial_digests:
+                continue
+            if self.message_role(item) != "user":
+                continue
+            text = self.message_text(item)
+            if text and not self.is_summary_message(text):
+                messages.append(text)
+        return messages
+
+    def build_compacted_history(
+        self,
+        initial_context: list[dict[str, Any]],
+        user_messages: list[str],
+        summary_text: str,
+    ) -> list[dict[str, Any]]:
+        history = self.copy_items(initial_context)
+        for message in self.selected_user_messages(user_messages):
+            history.append(ResponseItemFactory().responses_message("user", message))
+        history.append(
+            ResponseItemFactory().responses_message(
+                "user", summary_text if summary_text else "(no summary available)"
+            )
+        )
+        return history
+
+    def selected_user_messages(self, user_messages: list[str]) -> list[str]:
+        selected: list[str] = []
+        remaining = COMPACT_USER_MESSAGE_MAX_TOKENS
+        for message in reversed(user_messages):
+            if remaining <= 0:
+                break
+            tokens = TextBudget.approx_token_count(message)
+            if tokens <= remaining:
+                selected.append(message)
+                remaining -= tokens
+            else:
+                selected.append(TextBudget.clip_middle(message, remaining * 4))
+                break
+        selected.reverse()
+        return selected
+
+    def is_summary_message(self, message: str) -> bool:
+        return message.startswith(f"{SUMMARY_PREFIX}\n")
+
+    def message_role(self, item: dict[str, Any]) -> str:
+        if item.get("type") == "message" or "role" in item:
+            return str(item.get("role") or "")
+        return ""
+
+    def message_text(self, item: dict[str, Any]) -> str:
+        content = item.get("content")
+        if isinstance(content, str):
+            return content
+        if not isinstance(content, list):
+            return ""
+        pieces = []
+        for content_item in content:
+            if isinstance(content_item, dict) and isinstance(content_item.get("text"), str):
+                pieces.append(content_item["text"])
+        return "\n".join(piece for piece in pieces if piece)
+
+    def digest(self, items: list[dict[str, Any]]) -> str:
+        return hashlib.sha256(StableJson.dumps(items).encode("utf-8")).hexdigest()
+
+    def copy_items(self, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return [json.loads(json.dumps(item)) for item in items]
+
+
 class ContextManager:
     def __init__(self) -> None:
         self.normalizer = ConversationNormalizer()
+        self.compactor = ContextCompactor()
 
-    def prepare(self, items: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], ContextStats]:
+    def prepare(
+        self, items: list[dict[str, Any]], initial_context: list[dict[str, Any]] | None = None
+    ) -> tuple[list[dict[str, Any]], ContextStats]:
         raw_count = len(items)
         normalized = self.normalizer.normalize(items)
         normalized_count = len(normalized)
+        normalized, checkpoint, reused = self.compactor.maybe_compact(
+            normalized, initial_context or []
+        )
         budgeted = self.apply_budget(normalized)
         estimated_bytes = sum(TextBudget.item_bytes(item) for item in budgeted)
         return (
@@ -1333,6 +1513,9 @@ class ContextManager:
                 pruned_items=max(0, normalized_count - len(budgeted)),
                 estimated_bytes=estimated_bytes,
                 estimated_tokens=max(1, estimated_bytes // 4),
+                compacted=checkpoint is not None,
+                compaction_summary_chars=len(checkpoint.summary_text) if checkpoint else 0,
+                compaction_reused=reused,
             ),
         )
 
@@ -1500,7 +1683,7 @@ class PromptBuilder:
         self, task: TaskContext, history: list[CommandResult], context: TurnContext
     ) -> CodexPromptBundle:
         raw_items = self.history.input_items(task, history)
-        input_items, stats = self.context_manager.prepare(raw_items)
+        input_items, stats = self.context_manager.prepare(raw_items, raw_items[:1])
         prompt = build_prompt(
             input_items,
             self.router,

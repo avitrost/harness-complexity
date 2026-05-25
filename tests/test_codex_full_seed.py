@@ -35,6 +35,18 @@ def test_codex_full_seed_embeds_pinned_prompt_and_grammar() -> None:
         .read_text(encoding="utf-8")
         .rstrip()
     )
+    assert (
+        module.SUMMARIZATION_PROMPT
+        == (ROOT / "references" / "codex_port" / "compact_prompt.md")
+        .read_text(encoding="utf-8")
+        .rstrip()
+    )
+    assert (
+        module.SUMMARY_PREFIX
+        == (ROOT / "references" / "codex_port" / "summary_prefix.md")
+        .read_text(encoding="utf-8")
+        .rstrip()
+    )
 
 
 def test_codex_full_seed_uses_codex_tool_specs() -> None:
@@ -523,6 +535,7 @@ def test_codex_full_seed_normalizes_missing_and_orphan_tool_outputs() -> None:
 
 def test_codex_full_seed_context_manager_prunes_old_paired_items(monkeypatch) -> None:
     module = _load_seed()
+    monkeypatch.setattr(module, "ENABLE_MODEL_CONTEXT_COMPACTION", False)
     monkeypatch.setattr(module, "MAX_CONTEXT_HISTORY_ITEMS", 5)
     manager = module.ContextManager()
     items = [{"role": "user", "content": "task"}]
@@ -554,6 +567,103 @@ def test_codex_full_seed_context_manager_prunes_old_paired_items(monkeypatch) ->
         item.get("call_id") for item in prepared if item.get("type") == "function_call_output"
     }
     assert call_ids == output_ids
+
+
+def test_codex_full_seed_compacts_context_with_codex_prompt(monkeypatch) -> None:
+    monkeypatch.delenv("OPENAI_AUTH_MODE", raising=False)
+    module = _load_seed()
+    monkeypatch.setattr(module, "MAX_CONTEXT_HISTORY_CHARS", 500)
+    fake = RecordingToolOpenAI(
+        [
+            SimpleNamespace(
+                output_text="Summary: changed foo.py and pytest still fails.", output=[]
+            ),
+            SimpleNamespace(output_text="done", output=[]),
+        ]
+    )
+    set_client_factory(lambda: fake)
+    history = [
+        CommandResult(
+            command=f"cmd-{index}",
+            return_code=0,
+            stdout=("output " + str(index) + " ") * 80,
+            tool_name="exec_command",
+            tool_call_id=f"call_{index}",
+            metadata={"arguments": {"cmd": f"cmd-{index}"}},
+        )
+        for index in range(4)
+    ]
+    try:
+        turn = module.create_agent().next_command(TaskContext("Fix the bug."), history)
+    finally:
+        set_client_factory(None)
+
+    assert turn.done is True
+    compact_messages = fake.calls[0]["input"]
+    assert compact_messages[0] == {"role": "system", "content": module.CODEX_BASE_INSTRUCTIONS}
+    assert compact_messages[-1] == {
+        "type": "message",
+        "role": "user",
+        "content": [{"type": "input_text", "text": module.SUMMARIZATION_PROMPT}],
+    }
+    main_messages = fake.calls[1]["input"]
+    summary_item = main_messages[-1]
+    assert summary_item["type"] == "message"
+    assert summary_item["role"] == "user"
+    summary_text = summary_item["content"][0]["text"]
+    assert summary_text.startswith(module.SUMMARY_PREFIX + "\n")
+    assert "Summary: changed foo.py" in summary_text
+    assert not any(item.get("type") == "function_call" for item in main_messages)
+
+
+def test_codex_full_seed_reuses_compacted_history_checkpoint(monkeypatch) -> None:
+    monkeypatch.delenv("OPENAI_AUTH_MODE", raising=False)
+    module = _load_seed()
+    monkeypatch.setattr(module, "MAX_CONTEXT_HISTORY_CHARS", 1800)
+    fake = RecordingToolOpenAI(
+        [
+            SimpleNamespace(output_text="Summary: inspected failing tests.", output=[]),
+            SimpleNamespace(output_text="done first", output=[]),
+            SimpleNamespace(output_text="done second", output=[]),
+        ]
+    )
+    set_client_factory(lambda: fake)
+    history = [
+        CommandResult(
+            command=f"cmd-{index}",
+            return_code=0,
+            stdout=("large output " + str(index) + " ") * 60,
+            tool_name="exec_command",
+            tool_call_id=f"call_{index}",
+            metadata={"arguments": {"cmd": f"cmd-{index}"}},
+        )
+        for index in range(3)
+    ]
+    agent = module.create_agent()
+    try:
+        agent.next_command(TaskContext("Fix the bug."), history)
+        agent.next_command(
+            TaskContext("Fix the bug."),
+            [
+                *history,
+                CommandResult(
+                    command="small",
+                    return_code=0,
+                    stdout="ok\n",
+                    tool_name="exec_command",
+                    tool_call_id="call_small",
+                    metadata={"arguments": {"cmd": "small"}},
+                ),
+            ],
+        )
+    finally:
+        set_client_factory(None)
+
+    assert len(fake.calls) == 3
+    assert fake.calls[0]["input"][-1]["content"][0]["text"] == module.SUMMARIZATION_PROMPT
+    assert not any(
+        _call_contains_text(call, module.SUMMARIZATION_PROMPT) for call in fake.calls[1:]
+    )
 
 
 def test_codex_full_seed_command_assessment_stays_out_of_tool_arguments(monkeypatch) -> None:
@@ -634,3 +744,15 @@ class RecordingToolOpenAI:
     def _create(self, **kwargs):
         self.calls.append(kwargs)
         return self._responses.pop(0)
+
+
+def _call_contains_text(call: dict[str, object], text: str) -> bool:
+    for item in call.get("input", []):
+        if isinstance(item, dict) and item.get("content") == text:
+            return True
+        content = item.get("content") if isinstance(item, dict) else None
+        if isinstance(content, list):
+            for content_item in content:
+                if isinstance(content_item, dict) and content_item.get("text") == text:
+                    return True
+    return False

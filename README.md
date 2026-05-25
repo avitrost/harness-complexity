@@ -83,7 +83,9 @@ seed mirrors Codex's base-instruction prompt, `exec_command` function tool,
 `write_stdin` continuation tool, plan updates, freeform `apply_patch` grammar
 tool, prompt-building shape, AGENTS.md context injection, parallel tool-call
 execution, shell-style patch interception, relative workdir resolution, and
-response-item replay for prior assistant/tool calls/outputs.
+response-item replay for prior assistant/tool calls/outputs. Its context manager
+uses Codex's pinned compact prompt and summary prefix for memento-style
+replacement history before falling back to deterministic budget trimming.
 
 For a real-Codex comparison point, run `python -m evaluator.run_codex_cli`.
 This routes Harbor tasks to `codex exec` inside the same Slurm/Pyxis task
