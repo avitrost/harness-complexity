@@ -304,8 +304,123 @@ eof_line: "*** End of File" LF
 
 %import common.LF"""
 
+CODEX_UPSTREAM_COMMIT = "9f42c89c0112771dc29100a6f3fc904049b2655f"
+CODEX_UPSTREAM_DATE = "2026-05-24"
 MAX_OBSERVATION_CHARS = 20000
+MAX_FUNCTION_OUTPUT_CHARS = 24000
+MAX_CONTEXT_HISTORY_ITEMS = 96
+MAX_CONTEXT_HISTORY_CHARS = 90000
+MAX_RAW_RESPONSE_ITEMS = 48
 FUNCTION_HISTORY_TOOLS = {"exec_command", "write_stdin", "update_plan"}
+FUNCTION_CALL_TYPES = {"function_call", "local_shell_call"}
+FUNCTION_OUTPUT_TYPES = {"function_call_output"}
+CUSTOM_CALL_TYPES = {"custom_tool_call"}
+CUSTOM_OUTPUT_TYPES = {"custom_tool_call_output"}
+TOOL_OUTPUT_TYPES = FUNCTION_OUTPUT_TYPES | CUSTOM_OUTPUT_TYPES | {"tool_search_output"}
+TOOL_CALL_TYPES = FUNCTION_CALL_TYPES | CUSTOM_CALL_TYPES | {"tool_search_call"}
+SHELL_TOOL_NAMES = {"exec_command", "shell_command", "local_shell", "local_shell_call"}
+
+
+# === 01. Port-Parity Manifest ===
+
+PORT_PARITY_MANIFEST: tuple[dict[str, str], ...] = (
+    {
+        "upstream": "codex-rs/core/src/session/turn.rs::build_prompt",
+        "status": "included",
+        "python": "build_prompt",
+        "notes": "Responses input, tool specs, parallel flag, and base instructions are preserved.",
+    },
+    {
+        "upstream": "codex-rs/core/src/session/turn.rs::run_sampling_request",
+        "status": "simplified",
+        "python": "CandidateHarness.next_command",
+        "notes": "Harbor owns the outer loop; each next_command reconstructs the Codex transcript.",
+    },
+    {
+        "upstream": "codex-rs/core/src/tools/router.rs::ToolRouter::build_tool_call",
+        "status": "included",
+        "python": "ToolRouter.build_tool_call",
+        "notes": "Function and custom tool calls are decoded from Responses items.",
+    },
+    {
+        "upstream": "codex-rs/core/src/tools/parallel.rs::ToolCallRuntime",
+        "status": "simplified",
+        "python": "ToolRouter.tool_calls_from_result",
+        "notes": "Parallel tool call ordering is preserved; Harbor executes returned calls concurrently.",
+    },
+    {
+        "upstream": "codex-rs/core/src/tools/handlers/shell_spec.rs",
+        "status": "included",
+        "python": "_exec_command_tool and _write_stdin_tool",
+        "notes": "Current unified exec tool schema and output schema are copied into Python dicts.",
+    },
+    {
+        "upstream": "codex-rs/core/src/tools/handlers/apply_patch_spec.rs",
+        "status": "included",
+        "python": "_apply_patch_tool",
+        "notes": "Freeform Lark grammar is pinned in APPLY_PATCH_GRAMMAR.",
+    },
+    {
+        "upstream": "codex-rs/core/src/tools/context.rs::ExecCommandToolOutput",
+        "status": "included",
+        "python": "ToolOutputFormatter.unified_exec_text",
+        "notes": "Model-visible unified exec output headings and ordering match Codex.",
+    },
+    {
+        "upstream": "codex-rs/core/src/context_manager/history.rs",
+        "status": "simplified",
+        "python": "ContextManager",
+        "notes": "Pair normalization and budget trimming are retained without encrypted compaction.",
+    },
+    {
+        "upstream": "codex-rs/core/src/context_manager/normalize.rs",
+        "status": "included",
+        "python": "ConversationNormalizer",
+        "notes": "Missing outputs are synthesized and orphan outputs are removed with matching pairs.",
+    },
+    {
+        "upstream": "codex-rs/core/src/agents_md.rs",
+        "status": "simplified",
+        "python": "AgentInstructionsRenderer",
+        "notes": "Harbor collects AGENTS.md; the harness renders hierarchical context fragments.",
+    },
+    {
+        "upstream": "codex-rs/core/src/guardian and sandboxing",
+        "status": "omitted",
+        "python": "ExecutionPolicy",
+        "notes": "TB2 runs with noninteractive approval; policy is represented as prompt/context only.",
+    },
+    {
+        "upstream": "TUI, MCP, plugins, apps, telemetry, realtime, cloud persistence",
+        "status": "omitted",
+        "python": "PORT_PARITY_MANIFEST",
+        "notes": "Product surfaces not needed by a TB2 noninteractive harness are intentionally absent.",
+    },
+)
+
+
+# === 02. Feature Switches ===
+
+ENABLE_PORT_PARITY_MANIFEST = True
+ENABLE_HISTORY_REPLAY = True
+ENABLE_CONTEXT_MANAGER = True
+ENABLE_CONTEXT_NORMALIZATION = True
+ENABLE_CONTEXT_BUDGETING = True
+ENABLE_PATCH_TOOL = True
+ENABLE_PLAN_TOOL = True
+ENABLE_WRITE_STDIN_TOOL = True
+ENABLE_UNIFIED_EXEC_OUTPUT_FORMAT = True
+ENABLE_APPLY_PATCH_INTERCEPTION_HINTS = True
+ENABLE_MODEL_RESPONSE_ITEM_REPLAY = True
+ENABLE_MODEL_CALL_RESILIENCE = True
+ENABLE_RECOVERY_POLICY = True
+ENABLE_COMMAND_CLASSIFICATION = True
+ENABLE_FILE_CHANGE_AWARENESS = True
+ENABLE_COMPLETION_POLICY = True
+ENABLE_INSTRUMENTATION = True
+
+
+# === 03. Data Models ===
 
 
 @dataclass(frozen=True)
@@ -314,11 +429,20 @@ class BaseInstructions:
 
 
 @dataclass(frozen=True)
+class TurnEnvironment:
+    cwd: str = "."
+    approval_policy: str = "never"
+    sandbox_mode: str = "danger-full-access"
+    network_access: str = "enabled"
+
+
+@dataclass(frozen=True)
 class TurnContext:
     cwd: str = "."
     supports_parallel_tool_calls: bool = True
     personality: str | None = None
     output_schema: dict[str, Any] | None = None
+    environment: TurnEnvironment = field(default_factory=TurnEnvironment)
 
 
 @dataclass(frozen=True)
@@ -329,6 +453,7 @@ class Prompt:
     base_instructions: BaseInstructions
     personality: str | None = None
     output_schema: dict[str, Any] | None = None
+    output_schema_strict: bool = True
 
     def messages(self) -> list[dict[str, Any]]:
         return [{"role": "system", "content": self.base_instructions.text}, *self.input]
@@ -340,347 +465,229 @@ class ToolPayload:
     arguments: dict[str, Any] = field(default_factory=dict)
     input: str = ""
     call_id: str = ""
+    payload_type: str = "function"
 
 
-class ToolRouter:
-    def __init__(self, tools: list[dict[str, Any]]):
-        self._tools = tools
-
-    def model_visible_specs(self) -> list[dict[str, Any]]:
-        return [dict(tool) for tool in self._tools]
-
-    def tool_calls_from_result(self, result: ToolModelResult) -> list[HarnessToolCall]:
-        calls: list[HarnessToolCall] = []
-        for call in result.tool_calls:
-            payload = self._payload_from_model_call(call.name, call.arguments, call.arguments_text)
-            if payload is not None:
-                calls.append(HarnessToolCall(payload.name, payload.arguments, call.call_id))
-        return calls
-
-    def _payload_from_model_call(
-        self, name: str, arguments: dict[str, Any], arguments_text: str
-    ) -> ToolPayload | None:
-        if name == "apply_patch":
-            patch = arguments.get("input") or arguments.get("patch") or arguments_text
-            return ToolPayload("apply_patch", {"patch": str(patch)})
-        if name == "write_stdin":
-            return ToolPayload("write_stdin", arguments)
-        if name in {"update_plan", "plan"}:
-            return ToolPayload("update_plan", arguments)
-        if name in {"exec_command", "shell_command", "local_shell", "local_shell_call"}:
-            return ToolPayload("exec_command", self._exec_arguments(arguments))
-        return ToolPayload(name, arguments)
-
-    def _exec_arguments(self, arguments: dict[str, Any]) -> dict[str, Any]:
-        args = dict(arguments)
-        if "command" in args and "cmd" not in args:
-            args["cmd"] = args.pop("command")
-        return args
+@dataclass(frozen=True)
+class ToolCall:
+    tool_name: str
+    call_id: str
+    payload: ToolPayload
 
 
-class ConversationBuilder:
-    def input_items(self, task: TaskContext, history: list[CommandResult]) -> list[dict[str, Any]]:
-        items = [{"role": "user", "content": self._initial_user_message(task)}]
-        for index, record in enumerate(history, start=1):
-            items.extend(self._history_items(index, record))
-        return items
+@dataclass(frozen=True)
+class ToolObservation:
+    call_id: str
+    tool_name: str
+    output_item: dict[str, Any]
+    source_record: CommandResult
 
-    def _initial_user_message(self, task: TaskContext) -> str:
-        cwd = task.working_dir or "."
-        message = (
-            "<environment_context>\n"
-            f"  <cwd>{cwd}</cwd>\n"
-            "  <approval_policy>never</approval_policy>\n"
-            "  <sandbox_mode>danger-full-access</sandbox_mode>\n"
-            "  <network_access>enabled</network_access>\n"
-            "</environment_context>\n\n"
-        )
-        agents = self._agents_context(task)
-        if agents:
-            message += f"{agents}\n\n"
-        return message + f"{task.instruction}"
 
-    def _history_items(self, index: int, record: CommandResult) -> list[dict[str, Any]]:
-        call_id = record.tool_call_id or f"call_{index}"
-        raw_items = self._codex_response_items(record)
-        if raw_items is not None:
-            return [*raw_items, self._tool_output_item(record, call_id)]
-        if isinstance(record.metadata, dict) and record.metadata.get("codex_output_only"):
-            return [self._tool_output_item(record, call_id)]
-        items = self._assistant_history(record)
-        if record.tool_name == "apply_patch":
-            patch = str(record.metadata.get("input") or self._patch_from_display(record.command))
-            items.extend(
-                [
-                    {
-                        "type": "custom_tool_call",
-                        "call_id": call_id,
-                        "name": "apply_patch",
-                        "input": patch,
-                    },
-                    self._tool_output_item(record, call_id),
-                ]
-            )
-            return items
-        args = record.metadata.get("arguments") if isinstance(record.metadata, dict) else None
-        if not isinstance(args, dict):
-            args = {"cmd": record.command}
-        if "command" in args and "cmd" not in args:
-            args = dict(args)
-            args["cmd"] = args.pop("command")
-        tool_name = (
-            record.tool_name if record.tool_name in FUNCTION_HISTORY_TOOLS else "exec_command"
-        )
-        items.extend(
-            [
-                {
-                    "type": "function_call",
-                    "call_id": call_id,
-                    "name": tool_name,
-                    "arguments": json.dumps(args, sort_keys=True),
-                },
-                self._tool_output_item(record, call_id),
-            ]
-        )
-        return items
+@dataclass(frozen=True)
+class ContextStats:
+    raw_items: int
+    normalized_items: int
+    pruned_items: int
+    estimated_bytes: int
+    estimated_tokens: int
 
-    def _codex_response_items(self, record: CommandResult) -> list[dict[str, Any]] | None:
-        if not isinstance(record.metadata, dict):
-            return None
-        items = record.metadata.get("codex_response_items")
-        if not isinstance(items, list) or not items:
-            return None
-        return [dict(item) for item in items if isinstance(item, dict)]
 
-    def _tool_output_item(self, record: CommandResult, call_id: str) -> dict[str, Any]:
-        item_type = (
-            "custom_tool_call_output"
-            if record.tool_name == "apply_patch"
-            else "function_call_output"
-        )
-        return {
-            "type": item_type,
-            "call_id": call_id,
-            "output": self._tool_output_text(record),
+@dataclass(frozen=True)
+class CodexPromptBundle:
+    messages: list[dict[str, Any]]
+    input_items: list[dict[str, Any]]
+    tools: list[dict[str, Any]]
+    stats: ContextStats
+
+
+@dataclass(frozen=True)
+class CommandAssessment:
+    kind: str
+    risky: bool = False
+    long_running: bool = False
+    needs_verification: bool = False
+    notes: tuple[str, ...] = ()
+
+
+# === 04. Small Structured Helpers ===
+
+
+class JsonSchema:
+    @staticmethod
+    def string(description: str | None = None) -> dict[str, Any]:
+        schema: dict[str, Any] = {"type": "string"}
+        if description is not None:
+            schema["description"] = description
+        return schema
+
+    @staticmethod
+    def number(description: str | None = None) -> dict[str, Any]:
+        schema: dict[str, Any] = {"type": "number"}
+        if description is not None:
+            schema["description"] = description
+        return schema
+
+    @staticmethod
+    def boolean(description: str | None = None) -> dict[str, Any]:
+        schema: dict[str, Any] = {"type": "boolean"}
+        if description is not None:
+            schema["description"] = description
+        return schema
+
+    @staticmethod
+    def array(items: dict[str, Any], description: str | None = None) -> dict[str, Any]:
+        schema: dict[str, Any] = {"type": "array", "items": items}
+        if description is not None:
+            schema["description"] = description
+        return schema
+
+    @staticmethod
+    def object(
+        properties: dict[str, Any],
+        required: list[str] | None = None,
+        additional_properties: bool = False,
+        description: str | None = None,
+    ) -> dict[str, Any]:
+        schema: dict[str, Any] = {
+            "type": "object",
+            "properties": properties,
+            "additionalProperties": additional_properties,
         }
+        if required is not None:
+            schema["required"] = required
+        if description is not None:
+            schema["description"] = description
+        return schema
 
-    def _agents_context(self, task: TaskContext) -> str:
-        agents = task.metadata.get("agents_md") if isinstance(task.metadata, dict) else None
-        if not isinstance(agents, list):
-            return ""
-        sections = []
-        for item in agents:
-            if not isinstance(item, dict):
-                continue
-            path = str(item.get("path") or "AGENTS.md")
-            content = str(item.get("content") or "").strip()
-            if content:
-                sections.append(f"<agents_md path={json.dumps(path)}>\n{content}\n</agents_md>")
-        return "\n".join(sections)
 
-    def _assistant_history(self, record: CommandResult) -> list[dict[str, Any]]:
-        if not isinstance(record.metadata, dict):
-            return []
-        content = str(record.metadata.get("assistant_content") or "").strip()
-        if not content:
-            return []
-        return [{"role": "assistant", "content": content}]
+class StableJson:
+    @staticmethod
+    def dumps(value: Any) -> str:
+        return json.dumps(value, sort_keys=True, separators=(",", ":"))
 
-    def _tool_output_text(self, record: CommandResult) -> str:
-        if isinstance(record.metadata, dict) and isinstance(
-            record.metadata.get("unified_exec"), dict
-        ):
-            return self._unified_exec_output_text(record)
-        output = self._combined_output(record)
-        sections = ["Wall time: 0.0000 seconds"]
-        if record.return_code is not None:
-            sections.append(f"Process exited with code {record.return_code}")
-        sections.append("Output:")
-        sections.append(self._tail(output, MAX_OBSERVATION_CHARS))
-        return "\n".join(sections)
+    @staticmethod
+    def object_or_empty(value: Any) -> dict[str, Any]:
+        if isinstance(value, dict):
+            return dict(value)
+        if isinstance(value, str) and value.strip():
+            try:
+                parsed = json.loads(value)
+            except json.JSONDecodeError:
+                return {}
+            return dict(parsed) if isinstance(parsed, dict) else {}
+        return {}
 
-    def _unified_exec_output_text(self, record: CommandResult) -> str:
-        metadata = record.metadata["unified_exec"]
-        output = self._combined_output(record)
-        sections = []
-        chunk_id = metadata.get("chunk_id")
-        if chunk_id:
-            sections.append(f"Chunk ID: {chunk_id}")
-        sections.append(f"Wall time: {float(metadata.get('wall_time_seconds') or 0.0):.4f} seconds")
-        exit_code = metadata.get("exit_code")
-        if exit_code is not None:
-            sections.append(f"Process exited with code {exit_code}")
-        session_id = metadata.get("session_id")
-        if session_id is not None:
-            sections.append(f"Process running with session ID {session_id}")
-        original_token_count = metadata.get("original_token_count")
-        if original_token_count is not None:
-            sections.append(f"Original token count: {original_token_count}")
-        sections.append("Output:")
-        sections.append(self._tail(output, MAX_OBSERVATION_CHARS))
-        return "\n".join(sections)
 
-    def _combined_output(self, record: CommandResult) -> str:
-        if record.stderr:
-            return f"{record.stdout}\nSTDERR:\n{record.stderr}".strip()
-        return record.stdout or ""
+class TextBudget:
+    @staticmethod
+    def approx_token_count(text: str) -> int:
+        if not text:
+            return 0
+        return max(1, (len(text.encode("utf-8")) + 3) // 4)
 
-    def _patch_from_display(self, command: str) -> str:
-        marker = "apply_patch <<'PATCH'\n"
-        if command.startswith(marker) and command.endswith("\nPATCH"):
-            return command[len(marker) : -len("\nPATCH")]
-        return command
-
-    def _tail(self, text: str, limit: int) -> str:
+    @staticmethod
+    def clip_tail(text: str, limit: int, marker: str = "omitted") -> str:
         text = text or ""
-        if len(text) <= limit:
+        if limit < 0 or len(text) <= limit:
             return text
-        return f"<omitted {len(text) - limit} chars>\n" + text[-limit:]
+        return f"<{marker} {len(text) - limit} chars>\n{text[-limit:]}"
+
+    @staticmethod
+    def clip_middle(text: str, limit: int) -> str:
+        text = text or ""
+        if limit < 0 or len(text) <= limit:
+            return text
+        head = max(0, limit // 3)
+        tail = max(0, limit - head)
+        omitted = len(text) - head - tail
+        return f"{text[:head]}\n<omitted {omitted} chars>\n{text[-tail:]}"
+
+    @staticmethod
+    def item_bytes(item: dict[str, Any]) -> int:
+        return len(StableJson.dumps(item).encode("utf-8", errors="replace"))
 
 
-class CompletionPolicy:
-    def is_complete(self, result: ToolModelResult, history: list[CommandResult]) -> bool:
-        return not result.tool_calls and bool(result.content.strip())
-
-
-class CandidateHarness(BaseHarness):
-    wants_environment_context = True
-    wants_agents_context = True
-
-    def __init__(self) -> None:
-        self.router = ToolRouter(_built_tools())
-        self.context = TurnContext()
-        self.conversation = ConversationBuilder()
-        self.completion = CompletionPolicy()
-
-    def next_command(self, task: TaskContext, history: list[CommandResult]) -> HarnessTurn:
-        prompt = build_prompt(
-            self.conversation.input_items(task, history),
-            self.router,
-            self.context,
-            BaseInstructions(CODEX_BASE_INSTRUCTIONS),
-        )
-        result = call_terminal_model_with_tools(
-            prompt.messages(),
-            prompt.tools,
-            tool_choice="auto",
-            parallel_tool_calls=prompt.parallel_tool_calls,
-        )
-        tool_calls = self.router.tool_calls_from_result(result)
-        metadata = self._turn_metadata(result)
-        if tool_calls:
-            return HarnessTurn(
-                tool_calls=tuple(tool_calls),
-                assistant_content=result.content,
-                metadata=metadata,
-            )
-        return HarnessTurn(
-            done=self.completion.is_complete(result, history),
-            assistant_content=result.content,
-            metadata=metadata,
-        )
-
-    def _turn_metadata(self, result: ToolModelResult) -> dict[str, Any]:
-        metadata: dict[str, Any] = {}
-        if result.response_items:
-            metadata["codex_response_items"] = result.response_items
-        if result.response_id:
-            metadata["codex_response_id"] = result.response_id
-        return metadata
-
-
-def build_prompt(
-    input: list[dict[str, Any]],
-    router: ToolRouter,
-    turn_context: TurnContext,
-    base_instructions: BaseInstructions,
-) -> Prompt:
-    return Prompt(
-        input=input,
-        tools=router.model_visible_specs(),
-        parallel_tool_calls=turn_context.supports_parallel_tool_calls,
-        base_instructions=base_instructions,
-        personality=turn_context.personality,
-        output_schema=turn_context.output_schema,
-    )
+# === 05. Upstream-Like Tool Schemas ===
 
 
 def _built_tools() -> list[dict[str, Any]]:
-    return [_exec_command_tool(), _write_stdin_tool(), _update_plan_tool(), _apply_patch_tool()]
+    tools = [_exec_command_tool()]
+    if ENABLE_WRITE_STDIN_TOOL:
+        tools.append(_write_stdin_tool())
+    if ENABLE_PLAN_TOOL:
+        tools.append(_update_plan_tool())
+    if ENABLE_PATCH_TOOL:
+        tools.append(_apply_patch_tool())
+    return tools
 
 
 def _exec_command_tool() -> dict[str, Any]:
     properties = {
-        "cmd": {"type": "string", "description": "Shell command to execute."},
-        "workdir": {
-            "type": "string",
-            "description": "Optional working directory to run the command in; defaults to the turn cwd.",
-        },
-        "shell": {
-            "type": "string",
-            "description": "Shell binary to launch. Defaults to the user's default shell.",
-        },
-        "login": {
-            "type": "boolean",
-            "description": "Whether to run the shell with -l/-i semantics. Defaults to true.",
-        },
-        "tty": {
-            "type": "boolean",
-            "description": "Whether to allocate a TTY for the command. Defaults to false (plain pipes); set to true to open a PTY and access TTY process.",
-        },
-        "yield_time_ms": {
-            "type": "number",
-            "description": "How long to wait (in milliseconds) for output before yielding.",
-        },
-        "max_output_tokens": {
-            "type": "number",
-            "description": "Maximum number of tokens to return. Excess output will be truncated.",
-        },
-        "sandbox_permissions": {
-            "type": "string",
-            "description": 'Sandbox permissions for the command. Set to "require_escalated" to request running without sandbox restrictions; defaults to "use_default".',
-        },
-        "justification": {
-            "type": "string",
-            "description": (
-                'Only set if sandbox_permissions is \\"require_escalated\\".\n'
-                "                    Request approval from the user to run this command outside the sandbox.\n"
-                "                    Phrased as a simple question that summarizes the purpose of the\n"
-                "                    command as it relates to the task at hand - e.g. 'Do you want to\n"
-                "                    fetch and pull the latest version of this git branch?'"
-            ),
-        },
-        "prefix_rule": {
-            "type": "array",
-            "items": {"type": "string"},
-            "description": (
-                "Only specify when sandbox_permissions is `require_escalated`.\n"
-                "                        Suggest a prefix command pattern that will allow you to fulfill similar requests from the user in the future.\n"
-                '                        Should be a short but reasonable prefix, e.g. [\\"git\\", \\"pull\\"] or [\\"uv\\", \\"run\\"] or [\\"pytest\\"].'
-            ),
-        },
+        "cmd": JsonSchema.string("Shell command to execute."),
+        "workdir": JsonSchema.string(
+            "Optional working directory to run the command in; defaults to the turn cwd."
+        ),
+        "shell": JsonSchema.string("Shell binary to launch. Defaults to the user's default shell."),
+        "login": JsonSchema.boolean(
+            "Whether to run the shell with -l/-i semantics. Defaults to true."
+        ),
+        "tty": JsonSchema.boolean(
+            "Whether to allocate a TTY for the command. Defaults to false (plain pipes); set to true to open a PTY and access TTY process."
+        ),
+        "yield_time_ms": JsonSchema.number(
+            "How long to wait (in milliseconds) for output before yielding."
+        ),
+        "max_output_tokens": JsonSchema.number(
+            "Maximum number of tokens to return. Excess output will be truncated."
+        ),
+        "sandbox_permissions": JsonSchema.string(
+            'Sandbox permissions for the command. Set to "require_escalated" to request running without sandbox restrictions; defaults to "use_default".'
+        ),
+        "justification": JsonSchema.string(
+            'Only set if sandbox_permissions is \\"require_escalated\\".\n'
+            "                    Request approval from the user to run this command outside the sandbox.\n"
+            "                    Phrased as a simple question that summarizes the purpose of the\n"
+            "                    command as it relates to the task at hand - e.g. 'Do you want to\n"
+            "                    fetch and pull the latest version of this git branch?'"
+        ),
+        "prefix_rule": JsonSchema.array(
+            JsonSchema.string(),
+            "Only specify when sandbox_permissions is `require_escalated`.\n"
+            "                        Suggest a prefix command pattern that will allow you to fulfill similar requests from the user in the future.\n"
+            '                        Should be a short but reasonable prefix, e.g. [\\"git\\", \\"pull\\"] or [\\"uv\\", \\"run\\"] or [\\"pytest\\"].',
+        ),
     }
     return {
         "type": "function",
         "name": "exec_command",
         "description": "Runs a command in a PTY, returning output or a session ID for ongoing interaction.",
         "strict": False,
-        "parameters": {
-            "type": "object",
-            "properties": properties,
-            "required": ["cmd"],
-            "additionalProperties": False,
-        },
+        "parameters": JsonSchema.object(properties, ["cmd"], False),
         "output_schema": _unified_exec_output_schema(),
     }
 
 
-def _apply_patch_tool() -> dict[str, Any]:
+def _write_stdin_tool() -> dict[str, Any]:
     return {
-        "type": "custom",
-        "name": "apply_patch",
-        "description": "Use the `apply_patch` tool to edit files. This is a FREEFORM tool, so do not wrap the patch in JSON.",
-        "format": {"type": "grammar", "syntax": "lark", "definition": APPLY_PATCH_GRAMMAR},
+        "type": "function",
+        "name": "write_stdin",
+        "description": "Writes characters to an existing unified exec session and returns recent output.",
+        "strict": False,
+        "parameters": JsonSchema.object(
+            {
+                "session_id": JsonSchema.number("Identifier of the running unified exec session."),
+                "chars": JsonSchema.string("Bytes to write to stdin (may be empty to poll)."),
+                "yield_time_ms": JsonSchema.number(
+                    "How long to wait (in milliseconds) for output before yielding."
+                ),
+                "max_output_tokens": JsonSchema.number(
+                    "Maximum number of tokens to return. Excess output will be truncated."
+                ),
+            },
+            ["session_id"],
+            False,
+        ),
+        "output_schema": _unified_exec_output_schema(),
     }
 
 
@@ -694,65 +701,33 @@ def _update_plan_tool() -> dict[str, Any]:
             "At most one step can be in_progress at a time.\n"
         ),
         "strict": False,
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "explanation": {
-                    "type": "string",
-                },
-                "plan": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "step": {"type": "string"},
-                            "status": {
-                                "type": "string",
-                                "description": "One of: pending, in_progress, completed",
-                            },
+        "parameters": JsonSchema.object(
+            {
+                "explanation": JsonSchema.string(),
+                "plan": JsonSchema.array(
+                    JsonSchema.object(
+                        {
+                            "step": JsonSchema.string(),
+                            "status": JsonSchema.string("One of: pending, in_progress, completed"),
                         },
-                        "required": ["step", "status"],
-                        "additionalProperties": False,
-                    },
-                    "description": "The list of steps",
-                },
+                        ["step", "status"],
+                        False,
+                    ),
+                    "The list of steps",
+                ),
             },
-            "required": ["plan"],
-            "additionalProperties": False,
-        },
+            ["plan"],
+            False,
+        ),
     }
 
 
-def _write_stdin_tool() -> dict[str, Any]:
+def _apply_patch_tool() -> dict[str, Any]:
     return {
-        "type": "function",
-        "name": "write_stdin",
-        "description": "Writes characters to an existing unified exec session and returns recent output.",
-        "strict": False,
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "session_id": {
-                    "type": "number",
-                    "description": "Identifier of the running unified exec session.",
-                },
-                "chars": {
-                    "type": "string",
-                    "description": "Bytes to write to stdin (may be empty to poll).",
-                },
-                "yield_time_ms": {
-                    "type": "number",
-                    "description": "How long to wait (in milliseconds) for output before yielding.",
-                },
-                "max_output_tokens": {
-                    "type": "number",
-                    "description": "Maximum number of tokens to return. Excess output will be truncated.",
-                },
-            },
-            "required": ["session_id"],
-            "additionalProperties": False,
-        },
-        "output_schema": _unified_exec_output_schema(),
+        "type": "custom",
+        "name": "apply_patch",
+        "description": "Use the `apply_patch` tool to edit files. This is a FREEFORM tool, so do not wrap the patch in JSON.",
+        "format": {"type": "grammar", "syntax": "lark", "definition": APPLY_PATCH_GRAMMAR},
     }
 
 
@@ -788,6 +763,980 @@ def _unified_exec_output_schema() -> dict[str, Any]:
         "required": ["wall_time_seconds", "output"],
         "additionalProperties": False,
     }
+
+
+# === 06. Tool Router and Response Parsing ===
+
+
+class ToolRouter:
+    def __init__(self, tools: list[dict[str, Any]]):
+        self._tools = tools
+        self._tool_names = {str(tool.get("name", "")) for tool in tools}
+
+    def model_visible_specs(self) -> list[dict[str, Any]]:
+        return [dict(tool) for tool in self._tools]
+
+    def build_tool_call(self, item: dict[str, Any]) -> ToolCall | None:
+        item_type = str(item.get("type") or "")
+        if item_type == "function_call":
+            name = str(item.get("name") or "")
+            namespace = item.get("namespace")
+            if namespace:
+                name = f"{namespace}.{name}"
+            arguments = self._arguments_from_item(item)
+            payload = self._payload_from_model_call(
+                name, arguments, str(item.get("arguments") or "")
+            )
+            if payload is None:
+                return None
+            return ToolCall(payload.name, str(item.get("call_id") or ""), payload)
+        if item_type == "local_shell_call":
+            arguments = self._local_shell_arguments(item)
+            payload = self._payload_from_model_call(
+                "local_shell", arguments, StableJson.dumps(arguments)
+            )
+            if payload is None:
+                return None
+            return ToolCall(payload.name, str(item.get("call_id") or ""), payload)
+        if item_type == "custom_tool_call":
+            name = str(item.get("name") or "")
+            raw_input = item.get("input", item.get("arguments", ""))
+            arguments = {"input": raw_input} if not isinstance(raw_input, dict) else dict(raw_input)
+            payload = self._payload_from_model_call(name, arguments, str(raw_input or ""))
+            if payload is None:
+                return None
+            return ToolCall(payload.name, str(item.get("call_id") or ""), payload)
+        return None
+
+    def tool_calls_from_result(self, result: ToolModelResult) -> list[HarnessToolCall]:
+        calls: list[HarnessToolCall] = []
+        seen: set[tuple[str, str]] = set()
+        for call in result.tool_calls:
+            payload = self._payload_from_model_call(call.name, call.arguments, call.arguments_text)
+            if payload is None:
+                continue
+            key = (call.call_id, payload.name)
+            if call.call_id and key in seen:
+                continue
+            seen.add(key)
+            calls.append(HarnessToolCall(payload.name, payload.arguments, call.call_id))
+        if calls:
+            return calls
+        for item in result.response_items:
+            tool_call = self.build_tool_call(item)
+            if tool_call is None:
+                continue
+            key = (tool_call.call_id, tool_call.tool_name)
+            if tool_call.call_id and key in seen:
+                continue
+            seen.add(key)
+            calls.append(
+                HarnessToolCall(
+                    tool_call.payload.name,
+                    tool_call.payload.arguments,
+                    tool_call.call_id,
+                )
+            )
+        return calls
+
+    def _payload_from_model_call(
+        self, name: str, arguments: dict[str, Any], arguments_text: str
+    ) -> ToolPayload | None:
+        plain_name = name.rsplit(".", 1)[-1]
+        if plain_name == "apply_patch":
+            patch = self._patch_input(arguments, arguments_text)
+            return ToolPayload("apply_patch", {"patch": patch}, patch, payload_type="custom")
+        if plain_name == "write_stdin":
+            return ToolPayload("write_stdin", self._write_stdin_arguments(arguments))
+        if plain_name in {"update_plan", "plan"}:
+            return ToolPayload("update_plan", self._plan_arguments(arguments))
+        if plain_name in SHELL_TOOL_NAMES:
+            return ToolPayload("exec_command", self._exec_arguments(arguments))
+        if plain_name in self._tool_names:
+            return ToolPayload(plain_name, dict(arguments))
+        return ToolPayload(plain_name or name, dict(arguments))
+
+    def _arguments_from_item(self, item: dict[str, Any]) -> dict[str, Any]:
+        raw = item.get("arguments", {})
+        return StableJson.object_or_empty(raw)
+
+    def _local_shell_arguments(self, item: dict[str, Any]) -> dict[str, Any]:
+        args = StableJson.object_or_empty(item.get("action"))
+        for key in ("command", "cmd", "timeout_sec", "timeout_ms", "duration", "workdir"):
+            if key in item and key not in args:
+                args[key] = item[key]
+        return args
+
+    def _exec_arguments(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        args = dict(arguments)
+        if "command" in args and "cmd" not in args:
+            args["cmd"] = args.pop("command")
+        if "working_directory" in args and "workdir" not in args:
+            args["workdir"] = args.pop("working_directory")
+        command = args.get("cmd")
+        if isinstance(command, list):
+            args["cmd"] = self._join_argv(command)
+        if "cmd" not in args and "input" in args:
+            args["cmd"] = str(args["input"])
+        return args
+
+    def _write_stdin_arguments(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        args = dict(arguments)
+        if "process_id" in args and "session_id" not in args:
+            args["session_id"] = args.pop("process_id")
+        args.setdefault("chars", "")
+        return args
+
+    def _plan_arguments(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        args = dict(arguments)
+        if "plan" not in args:
+            args["plan"] = []
+        return args
+
+    def _patch_input(self, arguments: dict[str, Any], arguments_text: str) -> str:
+        for key in ("input", "patch", "diff", "command"):
+            if key in arguments:
+                return str(arguments[key])
+        return arguments_text
+
+    def _join_argv(self, argv: list[Any]) -> str:
+        return " ".join(_shell_quote(str(item)) for item in argv)
+
+
+def _shell_quote(value: str) -> str:
+    if not value:
+        return "''"
+    safe = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_+-./:=,@%"
+    if all(ch in safe for ch in value):
+        return value
+    return "'" + value.replace("'", "'\"'\"'") + "'"
+
+
+# === 07. Codex Tool Output Formatting ===
+
+
+class ToolOutputFormatter:
+    def tool_output_item(self, record: CommandResult, call_id: str) -> dict[str, Any]:
+        output = self.tool_output_text(record)
+        if self._is_custom_output(record):
+            return {
+                "type": "custom_tool_call_output",
+                "call_id": call_id,
+                "output": output,
+            }
+        return {
+            "type": "function_call_output",
+            "call_id": call_id,
+            "output": output,
+        }
+
+    def tool_output_text(self, record: CommandResult) -> str:
+        if ENABLE_UNIFIED_EXEC_OUTPUT_FORMAT and self._has_unified_exec(record):
+            return self.unified_exec_text(record)
+        return self.generic_function_text(record)
+
+    def unified_exec_text(self, record: CommandResult) -> str:
+        metadata = self._unified_exec(record)
+        output = self._combined_output(record)
+        sections = []
+        chunk_id = metadata.get("chunk_id")
+        if chunk_id:
+            sections.append(f"Chunk ID: {chunk_id}")
+        wall_time = _float_or_zero(metadata.get("wall_time_seconds"))
+        sections.append(f"Wall time: {wall_time:.4f} seconds")
+        exit_code = metadata.get("exit_code", record.return_code)
+        if exit_code is not None:
+            sections.append(f"Process exited with code {exit_code}")
+        session_id = metadata.get("session_id")
+        if session_id is not None:
+            sections.append(f"Process running with session ID {session_id}")
+        original_token_count = metadata.get("original_token_count")
+        if original_token_count is not None:
+            sections.append(f"Original token count: {original_token_count}")
+        sections.append("Output:")
+        sections.append(TextBudget.clip_tail(output, self._max_tokens_to_chars(record)))
+        return "\n".join(sections)
+
+    def generic_function_text(self, record: CommandResult) -> str:
+        sections = ["Wall time: 0.0000 seconds"]
+        if record.return_code is not None:
+            sections.append(f"Process exited with code {record.return_code}")
+        sections.append("Output:")
+        sections.append(TextBudget.clip_tail(self._combined_output(record), MAX_OBSERVATION_CHARS))
+        return "\n".join(sections)
+
+    def failure_response_item(
+        self, call_id: str, payload: ToolPayload, message: str
+    ) -> dict[str, Any]:
+        item_type = (
+            "custom_tool_call_output"
+            if payload.payload_type == "custom"
+            else "function_call_output"
+        )
+        return {
+            "type": item_type,
+            "call_id": call_id,
+            "output": message,
+        }
+
+    def _is_custom_output(self, record: CommandResult) -> bool:
+        return record.tool_name == "apply_patch" or record.tool_name in CUSTOM_CALL_TYPES
+
+    def _has_unified_exec(self, record: CommandResult) -> bool:
+        return isinstance(record.metadata, dict) and isinstance(
+            record.metadata.get("unified_exec"), dict
+        )
+
+    def _unified_exec(self, record: CommandResult) -> dict[str, Any]:
+        if isinstance(record.metadata, dict) and isinstance(
+            record.metadata.get("unified_exec"), dict
+        ):
+            return dict(record.metadata["unified_exec"])
+        return {}
+
+    def _combined_output(self, record: CommandResult) -> str:
+        stdout = record.stdout or ""
+        stderr = record.stderr or ""
+        if stderr:
+            return f"{stdout}\nSTDERR:\n{stderr}".strip()
+        return stdout
+
+    def _max_tokens_to_chars(self, record: CommandResult) -> int:
+        arguments = record.metadata.get("arguments") if isinstance(record.metadata, dict) else None
+        if isinstance(arguments, dict):
+            max_tokens = arguments.get("max_output_tokens")
+            if isinstance(max_tokens, (int, float)) and max_tokens > 0:
+                return max(MAX_OBSERVATION_CHARS // 4, int(max_tokens) * 4)
+        return MAX_OBSERVATION_CHARS
+
+
+def _float_or_zero(value: Any) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+# === 08. History Replay and Context Normalization ===
+
+
+class ResponseItemFactory:
+    def function_call(
+        self, call_id: str, name: str, arguments: dict[str, Any] | str
+    ) -> dict[str, Any]:
+        args_text = (
+            arguments if isinstance(arguments, str) else json.dumps(arguments, sort_keys=True)
+        )
+        return {
+            "type": "function_call",
+            "call_id": call_id,
+            "name": name,
+            "arguments": args_text,
+        }
+
+    def custom_tool_call(self, call_id: str, name: str, input_text: str) -> dict[str, Any]:
+        return {
+            "type": "custom_tool_call",
+            "call_id": call_id,
+            "name": name,
+            "input": input_text,
+        }
+
+    def assistant_message(self, content: str, phase: str | None = None) -> dict[str, Any]:
+        item: dict[str, Any] = {"role": "assistant", "content": content}
+        if phase is not None:
+            item["phase"] = phase
+        return item
+
+    def responses_message(self, role: str, text: str) -> dict[str, Any]:
+        item_type = "output_text" if role == "assistant" else "input_text"
+        return {
+            "type": "message",
+            "role": role,
+            "content": [{"type": item_type, "text": text}],
+        }
+
+
+class HistoryReplay:
+    def __init__(self, formatter: ToolOutputFormatter):
+        self.formatter = formatter
+        self.items = ResponseItemFactory()
+
+    def input_items(self, task: TaskContext, history: list[CommandResult]) -> list[dict[str, Any]]:
+        items = [{"role": "user", "content": InitialContextBuilder().render(task)}]
+        if not ENABLE_HISTORY_REPLAY:
+            return items
+        for index, record in enumerate(history, start=1):
+            items.extend(self.record_items(index, record))
+        return items
+
+    def record_items(self, index: int, record: CommandResult) -> list[dict[str, Any]]:
+        call_id = record.tool_call_id or f"call_{index}"
+        raw_items = self.raw_codex_response_items(record)
+        if raw_items is not None:
+            return [*raw_items, self.formatter.tool_output_item(record, call_id)]
+        if self.is_output_only(record):
+            return [self.formatter.tool_output_item(record, call_id)]
+        items = self.assistant_history(record)
+        items.extend(self.synthetic_tool_pair(record, call_id))
+        return items
+
+    def raw_codex_response_items(self, record: CommandResult) -> list[dict[str, Any]] | None:
+        if not ENABLE_MODEL_RESPONSE_ITEM_REPLAY:
+            return None
+        if not isinstance(record.metadata, dict):
+            return None
+        raw_items = record.metadata.get("codex_response_items")
+        if not isinstance(raw_items, list) or not raw_items:
+            return None
+        kept = []
+        for item in raw_items[:MAX_RAW_RESPONSE_ITEMS]:
+            if isinstance(item, dict):
+                kept.append(self.sanitize_response_item(item))
+        return kept or None
+
+    def is_output_only(self, record: CommandResult) -> bool:
+        return isinstance(record.metadata, dict) and bool(record.metadata.get("codex_output_only"))
+
+    def assistant_history(self, record: CommandResult) -> list[dict[str, Any]]:
+        if not isinstance(record.metadata, dict):
+            return []
+        content = str(record.metadata.get("assistant_content") or "").strip()
+        if not content:
+            return []
+        return [self.items.assistant_message(content)]
+
+    def synthetic_tool_pair(self, record: CommandResult, call_id: str) -> list[dict[str, Any]]:
+        if record.tool_name == "apply_patch":
+            patch = self.patch_from_record(record)
+            return [
+                self.items.custom_tool_call(call_id, "apply_patch", patch),
+                self.formatter.tool_output_item(record, call_id),
+            ]
+        tool_name = (
+            record.tool_name if record.tool_name in FUNCTION_HISTORY_TOOLS else "exec_command"
+        )
+        arguments = self.arguments_from_record(record)
+        return [
+            self.items.function_call(call_id, tool_name, arguments),
+            self.formatter.tool_output_item(record, call_id),
+        ]
+
+    def arguments_from_record(self, record: CommandResult) -> dict[str, Any]:
+        args = record.metadata.get("arguments") if isinstance(record.metadata, dict) else None
+        if not isinstance(args, dict):
+            args = {"cmd": record.command}
+        args = dict(args)
+        if "command" in args and "cmd" not in args:
+            args["cmd"] = args.pop("command")
+        return args
+
+    def patch_from_record(self, record: CommandResult) -> str:
+        if isinstance(record.metadata, dict):
+            for key in ("input", "patch", "diff"):
+                if key in record.metadata:
+                    return str(record.metadata[key])
+        marker = "apply_patch <<'PATCH'\n"
+        if record.command.startswith(marker) and record.command.endswith("\nPATCH"):
+            return record.command[len(marker) : -len("\nPATCH")]
+        return record.command
+
+    def sanitize_response_item(self, item: dict[str, Any]) -> dict[str, Any]:
+        item_type = item.get("type")
+        if item_type == "message":
+            role = str(item.get("role", "assistant"))
+            return {
+                "type": "message",
+                "role": role,
+                "content": self._content_items(item.get("content", []), role),
+            }
+        if item_type == "function_call":
+            cleaned = {
+                "type": "function_call",
+                "name": str(item.get("name", "")),
+                "arguments": str(item.get("arguments", "")),
+                "call_id": str(item.get("call_id", "")),
+            }
+            if item.get("namespace") is not None:
+                cleaned["namespace"] = item["namespace"]
+            return cleaned
+        if item_type == "custom_tool_call":
+            return {
+                "type": "custom_tool_call",
+                "name": str(item.get("name", "")),
+                "input": str(item.get("input", "")),
+                "call_id": str(item.get("call_id", "")),
+            }
+        if item_type in TOOL_OUTPUT_TYPES:
+            cleaned = {"type": item_type, "call_id": str(item.get("call_id", ""))}
+            if "output" in item:
+                cleaned["output"] = item["output"]
+            return cleaned
+        cleaned = dict(item)
+        cleaned.pop("id", None)
+        return cleaned
+
+    def _content_items(self, content: Any, role: str) -> list[dict[str, Any]]:
+        item_type = "output_text" if role == "assistant" else "input_text"
+        if isinstance(content, str):
+            return [{"type": item_type, "text": content}]
+        if not isinstance(content, list):
+            return [{"type": item_type, "text": str(content)}]
+        items = []
+        for content_item in content:
+            if isinstance(content_item, dict):
+                cleaned = dict(content_item)
+                cleaned.pop("id", None)
+                cleaned.setdefault("type", item_type)
+                if cleaned.get("type") in {"input_text", "output_text"}:
+                    cleaned["text"] = str(cleaned.get("text", ""))
+                items.append(cleaned)
+            else:
+                items.append({"type": item_type, "text": str(content_item)})
+        return items
+
+
+class ConversationNormalizer:
+    def normalize(self, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        if not ENABLE_CONTEXT_NORMALIZATION:
+            return list(items)
+        normalized = [dict(item) for item in items]
+        self.ensure_call_outputs_present(normalized)
+        self.remove_orphan_outputs(normalized)
+        return normalized
+
+    def ensure_call_outputs_present(self, items: list[dict[str, Any]]) -> None:
+        insertions: list[tuple[int, dict[str, Any]]] = []
+        output_call_ids = self.output_call_ids(items)
+        for index, item in enumerate(items):
+            call_id = self.call_id_for_call(item)
+            if not call_id or call_id in output_call_ids:
+                continue
+            insertions.append((index + 1, self.synthetic_aborted_output(item, call_id)))
+        for index, output in reversed(insertions):
+            items.insert(index, output)
+
+    def remove_orphan_outputs(self, items: list[dict[str, Any]]) -> None:
+        call_ids = self.call_ids(items)
+        kept = []
+        for item in items:
+            if item.get("type") in TOOL_OUTPUT_TYPES:
+                call_id = str(item.get("call_id") or "")
+                if call_id and call_id not in call_ids:
+                    continue
+            kept.append(item)
+        items[:] = kept
+
+    def call_ids(self, items: list[dict[str, Any]]) -> set[str]:
+        ids = set()
+        for item in items:
+            call_id = self.call_id_for_call(item)
+            if call_id:
+                ids.add(call_id)
+        return ids
+
+    def output_call_ids(self, items: list[dict[str, Any]]) -> set[str]:
+        ids = set()
+        for item in items:
+            if item.get("type") in TOOL_OUTPUT_TYPES:
+                call_id = str(item.get("call_id") or "")
+                if call_id:
+                    ids.add(call_id)
+        return ids
+
+    def call_id_for_call(self, item: dict[str, Any]) -> str:
+        if item.get("type") in TOOL_CALL_TYPES:
+            return str(item.get("call_id") or "")
+        return ""
+
+    def synthetic_aborted_output(self, call_item: dict[str, Any], call_id: str) -> dict[str, Any]:
+        if call_item.get("type") in CUSTOM_CALL_TYPES:
+            return {
+                "type": "custom_tool_call_output",
+                "call_id": call_id,
+                "output": "aborted",
+            }
+        return {
+            "type": "function_call_output",
+            "call_id": call_id,
+            "output": "aborted",
+        }
+
+
+class ContextManager:
+    def __init__(self) -> None:
+        self.normalizer = ConversationNormalizer()
+
+    def prepare(self, items: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], ContextStats]:
+        raw_count = len(items)
+        normalized = self.normalizer.normalize(items)
+        normalized_count = len(normalized)
+        budgeted = self.apply_budget(normalized)
+        estimated_bytes = sum(TextBudget.item_bytes(item) for item in budgeted)
+        return (
+            budgeted,
+            ContextStats(
+                raw_items=raw_count,
+                normalized_items=normalized_count,
+                pruned_items=max(0, normalized_count - len(budgeted)),
+                estimated_bytes=estimated_bytes,
+                estimated_tokens=max(1, estimated_bytes // 4),
+            ),
+        )
+
+    def apply_budget(self, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        if not ENABLE_CONTEXT_BUDGETING:
+            return list(items)
+        clipped = [self.clip_item(item) for item in items]
+        if len(clipped) > MAX_CONTEXT_HISTORY_ITEMS:
+            clipped = self.drop_oldest_pairs(clipped, len(clipped) - MAX_CONTEXT_HISTORY_ITEMS)
+        while sum(TextBudget.item_bytes(item) for item in clipped) > MAX_CONTEXT_HISTORY_CHARS:
+            if len(clipped) <= 2:
+                break
+            clipped = self.drop_oldest_pairs(clipped, 1)
+        return clipped
+
+    def clip_item(self, item: dict[str, Any]) -> dict[str, Any]:
+        item = dict(item)
+        if item.get("type") in TOOL_OUTPUT_TYPES and isinstance(item.get("output"), str):
+            item["output"] = TextBudget.clip_tail(str(item["output"]), MAX_FUNCTION_OUTPUT_CHARS)
+        if item.get("type") == "message":
+            item["content"] = self.clip_content_items(item.get("content", []))
+        elif "content" in item and isinstance(item["content"], str):
+            item["content"] = TextBudget.clip_middle(
+                str(item["content"]), MAX_FUNCTION_OUTPUT_CHARS
+            )
+        return item
+
+    def clip_content_items(self, content: Any) -> Any:
+        if not isinstance(content, list):
+            return content
+        clipped = []
+        for item in content:
+            if isinstance(item, dict) and isinstance(item.get("text"), str):
+                updated = dict(item)
+                updated["text"] = TextBudget.clip_middle(
+                    str(updated["text"]), MAX_FUNCTION_OUTPUT_CHARS
+                )
+                clipped.append(updated)
+            else:
+                clipped.append(item)
+        return clipped
+
+    def drop_oldest_pairs(
+        self, items: list[dict[str, Any]], target_drop: int
+    ) -> list[dict[str, Any]]:
+        if target_drop <= 0:
+            return items
+        kept = list(items)
+        dropped = 0
+        index = 1 if kept and kept[0].get("role") == "user" else 0
+        while dropped < target_drop and index < len(kept):
+            removed = kept.pop(index)
+            dropped += 1
+            call_id = str(removed.get("call_id") or "")
+            if removed.get("type") in TOOL_CALL_TYPES and call_id:
+                match = self.find_output_index(kept, call_id)
+                if match is not None:
+                    kept.pop(match)
+                    dropped += 1
+            elif removed.get("type") in TOOL_OUTPUT_TYPES and call_id:
+                match = self.find_call_index(kept, call_id)
+                if match is not None and match != 0:
+                    kept.pop(match)
+                    dropped += 1
+        return kept
+
+    def find_output_index(self, items: list[dict[str, Any]], call_id: str) -> int | None:
+        for index, item in enumerate(items):
+            if item.get("type") in TOOL_OUTPUT_TYPES and item.get("call_id") == call_id:
+                return index
+        return None
+
+    def find_call_index(self, items: list[dict[str, Any]], call_id: str) -> int | None:
+        for index, item in enumerate(items):
+            if item.get("type") in TOOL_CALL_TYPES and item.get("call_id") == call_id:
+                return index
+        return None
+
+
+# === 09. Prompt and Context Rendering ===
+
+
+class InitialContextBuilder:
+    def render(self, task: TaskContext) -> str:
+        cwd = task.working_dir or "."
+        environment = TurnEnvironment(cwd=cwd)
+        sections = [self.environment_context(environment)]
+        agents = AgentInstructionsRenderer().render(task)
+        if agents:
+            sections.append(agents)
+        sections.append(str(task.instruction))
+        return "\n\n".join(section for section in sections if section)
+
+    def environment_context(self, environment: TurnEnvironment) -> str:
+        return (
+            "<environment_context>\n"
+            f"  <cwd>{environment.cwd}</cwd>\n"
+            f"  <approval_policy>{environment.approval_policy}</approval_policy>\n"
+            f"  <sandbox_mode>{environment.sandbox_mode}</sandbox_mode>\n"
+            f"  <network_access>{environment.network_access}</network_access>\n"
+            "</environment_context>"
+        )
+
+
+class AgentInstructionsRenderer:
+    def render(self, task: TaskContext) -> str:
+        agents = task.metadata.get("agents_md") if isinstance(task.metadata, dict) else None
+        if not isinstance(agents, list):
+            return ""
+        sections = []
+        for item in self.sorted_agents(agents):
+            path = str(item.get("path") or "AGENTS.md")
+            content = str(item.get("content") or "").strip()
+            if content:
+                sections.append(f"<agents_md path={json.dumps(path)}>\n{content}\n</agents_md>")
+        return "\n".join(sections)
+
+    def sorted_agents(self, agents: list[Any]) -> list[dict[str, Any]]:
+        clean = [dict(item) for item in agents if isinstance(item, dict)]
+        return sorted(
+            clean,
+            key=lambda item: (str(item.get("path") or "").count("/"), str(item.get("path") or "")),
+        )
+
+
+class PromptBuilder:
+    def __init__(self, router: ToolRouter):
+        self.router = router
+        self.history = HistoryReplay(ToolOutputFormatter())
+        self.context_manager = ContextManager()
+
+    def build(
+        self, task: TaskContext, history: list[CommandResult], context: TurnContext
+    ) -> CodexPromptBundle:
+        raw_items = self.history.input_items(task, history)
+        input_items, stats = self.context_manager.prepare(raw_items)
+        prompt = build_prompt(
+            input_items,
+            self.router,
+            context,
+            BaseInstructions(CODEX_BASE_INSTRUCTIONS),
+        )
+        return CodexPromptBundle(
+            messages=prompt.messages(),
+            input_items=input_items,
+            tools=prompt.tools,
+            stats=stats,
+        )
+
+
+def build_prompt(
+    input: list[dict[str, Any]],
+    router: ToolRouter,
+    turn_context: TurnContext,
+    base_instructions: BaseInstructions,
+) -> Prompt:
+    return Prompt(
+        input=input,
+        tools=router.model_visible_specs(),
+        parallel_tool_calls=turn_context.supports_parallel_tool_calls,
+        base_instructions=base_instructions,
+        personality=turn_context.personality,
+        output_schema=turn_context.output_schema,
+        output_schema_strict=True,
+    )
+
+
+# === 10. Command Classification and Execution Policy ===
+
+
+class CommandClassifier:
+    def classify(self, arguments: dict[str, Any]) -> CommandAssessment:
+        command = str(arguments.get("cmd") or arguments.get("command") or "")
+        lowered = command.lower()
+        notes: list[str] = []
+        if not command.strip():
+            return CommandAssessment("empty", risky=False, notes=("empty command",))
+        if self.is_destructive(lowered):
+            notes.append("destructive filesystem or git operation")
+            return CommandAssessment(
+                "destructive", risky=True, needs_verification=True, notes=tuple(notes)
+            )
+        if self.is_package_install(lowered):
+            return CommandAssessment("package_install", long_running=True, needs_verification=True)
+        if self.is_test(lowered):
+            return CommandAssessment("test", long_running=True)
+        if self.is_build(lowered):
+            return CommandAssessment("build", long_running=True, needs_verification=True)
+        if self.is_server(lowered):
+            return CommandAssessment("server", long_running=True)
+        if self.is_git(lowered):
+            return CommandAssessment(
+                "git", risky="reset --hard" in lowered, needs_verification=True
+            )
+        if self.is_edit(lowered):
+            return CommandAssessment("edit", needs_verification=True)
+        return CommandAssessment("inspection")
+
+    def is_destructive(self, command: str) -> bool:
+        patterns = (
+            "rm -rf",
+            "git reset --hard",
+            "git checkout --",
+            "mkfs",
+            "dd if=",
+            "truncate -s 0",
+        )
+        return any(pattern in command for pattern in patterns)
+
+    def is_package_install(self, command: str) -> bool:
+        return any(
+            token in command
+            for token in (
+                "pip install",
+                "npm install",
+                "pnpm install",
+                "yarn install",
+                "apt-get install",
+                "uv sync",
+            )
+        )
+
+    def is_test(self, command: str) -> bool:
+        return any(
+            token in command for token in ("pytest", "npm test", "cargo test", "go test", "tox")
+        )
+
+    def is_build(self, command: str) -> bool:
+        return any(
+            token in command
+            for token in ("npm run build", "cargo build", "make", "cmake", "go build")
+        )
+
+    def is_server(self, command: str) -> bool:
+        return any(
+            token in command
+            for token in ("uvicorn", "flask run", "npm run dev", "vite", "python -m http.server")
+        )
+
+    def is_git(self, command: str) -> bool:
+        return command.strip().startswith("git ")
+
+    def is_edit(self, command: str) -> bool:
+        return any(
+            token in command for token in ("apply_patch", "sed -i", "perl -pi", "python - <<")
+        )
+
+
+class ExecutionPolicy:
+    def annotate_tool_calls(self, calls: list[HarnessToolCall]) -> list[HarnessToolCall]:
+        return list(calls)
+
+    def assessments(self, calls: list[HarnessToolCall]) -> list[dict[str, Any]]:
+        if not ENABLE_COMMAND_CLASSIFICATION:
+            return []
+        classifier = CommandClassifier()
+        assessments = []
+        for call in calls:
+            if call.name != "exec_command":
+                continue
+            assessment = classifier.classify(call.arguments)
+            assessments.append(
+                {
+                    "call_id": call.call_id,
+                    "tool": call.name,
+                    "command": str(call.arguments.get("cmd") or ""),
+                    "assessment": assessment.__dict__,
+                }
+            )
+        return assessments
+
+
+# === 11. Model Call Resilience ===
+
+
+class ModelCallResilience:
+    def call(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]]) -> ToolModelResult:
+        if not ENABLE_MODEL_CALL_RESILIENCE:
+            return call_terminal_model_with_tools(
+                messages,
+                tools,
+                tool_choice="auto",
+                parallel_tool_calls=True,
+            )
+        try:
+            return call_terminal_model_with_tools(
+                messages,
+                tools,
+                tool_choice="auto",
+                parallel_tool_calls=True,
+            )
+        except Exception as exc:
+            return ToolModelResult(
+                content="",
+                tool_calls=[],
+                request_metadata={"model_call_error": str(exc)},
+                response_items=[
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [
+                            {
+                                "type": "output_text",
+                                "text": f"Model call failed before tool selection: {exc}",
+                            }
+                        ],
+                    }
+                ],
+            )
+
+
+class RecoveryPolicy:
+    def fallback_turn(
+        self, result: ToolModelResult, history: list[CommandResult], metadata: dict[str, Any]
+    ) -> HarnessTurn | None:
+        if not ENABLE_RECOVERY_POLICY:
+            return None
+        if result.tool_calls or result.content.strip():
+            return None
+        if not history:
+            metadata["codex_recovery"] = "empty_response_initial_reconnaissance"
+            return HarnessTurn(
+                tool_calls=(
+                    HarnessToolCall(
+                        "exec_command",
+                        {
+                            "cmd": "pwd && find . -maxdepth 2 -type f | sort | sed -n '1,200p'",
+                            "yield_time_ms": 1000,
+                            "max_output_tokens": 12000,
+                        },
+                        "recovery_initial_recon",
+                    ),
+                ),
+                metadata=metadata,
+            )
+        metadata["codex_recovery"] = "empty_response_recent_status"
+        return HarnessTurn(
+            tool_calls=(
+                HarnessToolCall(
+                    "exec_command",
+                    {
+                        "cmd": "pwd && git status --short 2>/dev/null || true && find . -maxdepth 2 -type f | sort | sed -n '1,120p'",
+                        "yield_time_ms": 1000,
+                        "max_output_tokens": 12000,
+                    },
+                    "recovery_status",
+                ),
+            ),
+            metadata=metadata,
+        )
+
+
+# === 12. Completion Policy ===
+
+
+class CompletionPolicy:
+    def is_complete(self, result: ToolModelResult, tool_calls: list[HarnessToolCall]) -> bool:
+        if tool_calls:
+            return False
+        return bool(self.visible_text(result).strip())
+
+    def visible_text(self, result: ToolModelResult) -> str:
+        if result.content.strip():
+            return result.content
+        chunks: list[str] = []
+        for item in result.response_items:
+            if item.get("type") != "message" or item.get("role") != "assistant":
+                continue
+            content = item.get("content")
+            if isinstance(content, list):
+                for content_item in content:
+                    if isinstance(content_item, dict) and isinstance(content_item.get("text"), str):
+                        chunks.append(content_item["text"])
+            elif isinstance(content, str):
+                chunks.append(content)
+        return "\n".join(chunks)
+
+
+# === 13. Instrumentation ===
+
+
+class Instrumentation:
+    def turn_metadata(
+        self,
+        result: ToolModelResult,
+        bundle: CodexPromptBundle,
+        tool_calls: list[HarnessToolCall],
+        assessments: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        metadata: dict[str, Any] = {
+            "codex_upstream_commit": CODEX_UPSTREAM_COMMIT,
+            "codex_upstream_date": CODEX_UPSTREAM_DATE,
+            "codex_port_stats": bundle.stats.__dict__,
+            "codex_tool_count": len(bundle.tools),
+            "codex_tool_names": [tool.get("name") for tool in bundle.tools],
+            "codex_emitted_tool_calls": len(tool_calls),
+        }
+        if ENABLE_PORT_PARITY_MANIFEST:
+            metadata["codex_port_manifest"] = PORT_PARITY_MANIFEST
+        if result.request_metadata:
+            metadata["codex_request_metadata"] = result.request_metadata
+        if result.response_items:
+            metadata["codex_response_items"] = result.response_items
+        if result.response_id:
+            metadata["codex_response_id"] = result.response_id
+        if assessments:
+            metadata["codex_command_assessments"] = assessments
+        return metadata
+
+
+# === 14. Candidate Harness ===
+
+
+class CandidateHarness(BaseHarness):
+    wants_environment_context = True
+    wants_agents_context = True
+
+    def __init__(self) -> None:
+        self.router = ToolRouter(_built_tools())
+        self.context = TurnContext()
+        self.prompt_builder = PromptBuilder(self.router)
+        self.model = ModelCallResilience()
+        self.completion = CompletionPolicy()
+        self.recovery = RecoveryPolicy()
+        self.execution_policy = ExecutionPolicy()
+        self.instrumentation = Instrumentation()
+
+    def next_command(self, task: TaskContext, history: list[CommandResult]) -> HarnessTurn:
+        bundle = self.prompt_builder.build(task, history, self._turn_context_for_task(task))
+        result = self.model.call(bundle.messages, bundle.tools)
+        tool_calls = self.router.tool_calls_from_result(result)
+        tool_calls = self.execution_policy.annotate_tool_calls(tool_calls)
+        assessments = self.execution_policy.assessments(tool_calls)
+        metadata = self.instrumentation.turn_metadata(result, bundle, tool_calls, assessments)
+        recovery = self.recovery.fallback_turn(result, history, metadata)
+        if recovery is not None:
+            return recovery
+        if tool_calls:
+            return HarnessTurn(
+                tool_calls=tuple(tool_calls),
+                assistant_content=self.completion.visible_text(result),
+                metadata=metadata,
+            )
+        return HarnessTurn(
+            done=self.completion.is_complete(result, tool_calls),
+            assistant_content=self.completion.visible_text(result),
+            metadata=metadata,
+        )
+
+    def _turn_context_for_task(self, task: TaskContext) -> TurnContext:
+        cwd = task.working_dir or "."
+        environment = TurnEnvironment(cwd=cwd)
+        return TurnContext(cwd=cwd, environment=environment)
+
+
+# === 15. Factory ===
 
 
 def create_agent() -> CandidateHarness:

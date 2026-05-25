@@ -436,6 +436,141 @@ def test_codex_full_seed_replays_parallel_raw_items_once(monkeypatch) -> None:
     assert len([item for item in input_items if item.get("type") == "function_call"]) == 2
 
 
+def test_codex_full_seed_declares_source_mapped_port_manifest() -> None:
+    module = _load_seed()
+
+    assert module.CODEX_UPSTREAM_COMMIT == "9f42c89c0112771dc29100a6f3fc904049b2655f"
+    manifest = module.PORT_PARITY_MANIFEST
+    assert any(
+        item["status"] == "included" and "ToolRouter" in item["upstream"] for item in manifest
+    )
+    assert any(
+        item["status"] == "simplified" and "ContextManager" in item["python"] for item in manifest
+    )
+    assert any(item["status"] == "omitted" and "MCP" in item["upstream"] for item in manifest)
+
+
+def test_codex_full_seed_normalizes_missing_and_orphan_tool_outputs() -> None:
+    module = _load_seed()
+    normalizer = module.ConversationNormalizer()
+    items = [
+        {"role": "user", "content": "task"},
+        {
+            "type": "function_call",
+            "call_id": "call_missing",
+            "name": "exec_command",
+            "arguments": '{"cmd":"pwd"}',
+        },
+        {
+            "type": "function_call_output",
+            "call_id": "orphan",
+            "output": "should be removed",
+        },
+    ]
+
+    normalized = normalizer.normalize(items)
+
+    assert normalized[2] == {
+        "type": "function_call_output",
+        "call_id": "call_missing",
+        "output": "aborted",
+    }
+    assert not any(item.get("call_id") == "orphan" for item in normalized)
+
+
+def test_codex_full_seed_context_manager_prunes_old_paired_items(monkeypatch) -> None:
+    module = _load_seed()
+    monkeypatch.setattr(module, "MAX_CONTEXT_HISTORY_ITEMS", 5)
+    manager = module.ContextManager()
+    items = [{"role": "user", "content": "task"}]
+    for index in range(5):
+        call_id = f"call_{index}"
+        items.extend(
+            [
+                {
+                    "type": "function_call",
+                    "call_id": call_id,
+                    "name": "exec_command",
+                    "arguments": '{"cmd":"pwd"}',
+                },
+                {
+                    "type": "function_call_output",
+                    "call_id": call_id,
+                    "output": f"output {index}",
+                },
+            ]
+        )
+
+    prepared, stats = manager.prepare(items)
+
+    assert prepared[0]["role"] == "user"
+    assert len(prepared) <= 5
+    assert stats.pruned_items > 0
+    call_ids = {item.get("call_id") for item in prepared if item.get("type") == "function_call"}
+    output_ids = {
+        item.get("call_id") for item in prepared if item.get("type") == "function_call_output"
+    }
+    assert call_ids == output_ids
+
+
+def test_codex_full_seed_command_assessment_stays_out_of_tool_arguments(monkeypatch) -> None:
+    monkeypatch.delenv("OPENAI_AUTH_MODE", raising=False)
+    module = _load_seed()
+    fake = RecordingToolOpenAI(
+        [
+            SimpleNamespace(
+                output_text="",
+                output=[
+                    SimpleNamespace(
+                        type="function_call",
+                        name="exec_command",
+                        arguments='{"cmd":"pytest -q"}',
+                        call_id="call_test",
+                    )
+                ],
+            )
+        ]
+    )
+    set_client_factory(lambda: fake)
+    try:
+        turn = module.create_agent().next_command(TaskContext("Run tests."), [])
+    finally:
+        set_client_factory(None)
+
+    assert turn.tool_calls[0].arguments == {"cmd": "pytest -q"}
+    assert turn.metadata["codex_command_assessments"][0]["assessment"]["kind"] == "test"
+
+
+def test_codex_full_seed_decodes_custom_tool_call_from_raw_response_items(monkeypatch) -> None:
+    monkeypatch.delenv("OPENAI_AUTH_MODE", raising=False)
+    module = _load_seed()
+    patch = "*** Begin Patch\n*** Add File: hi.txt\n+hi\n*** End Patch\n"
+    fake = RecordingToolOpenAI(
+        [
+            SimpleNamespace(
+                output_text="",
+                output=[
+                    SimpleNamespace(
+                        type="custom_tool_call",
+                        call_id="call_patch",
+                        name="apply_patch",
+                        input=patch,
+                    )
+                ],
+                id="response_1",
+            )
+        ]
+    )
+    set_client_factory(lambda: fake)
+    try:
+        turn = module.create_agent().next_command(TaskContext("Edit."), [])
+    finally:
+        set_client_factory(None)
+
+    assert turn.tool_calls[0].name == "apply_patch"
+    assert turn.tool_calls[0].arguments["patch"] == patch
+
+
 def _load_seed():
     name = "codex_full_seed_under_test"
     spec = importlib.util.spec_from_file_location(name, SEED_PATH)
