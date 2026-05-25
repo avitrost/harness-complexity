@@ -29,7 +29,7 @@ SLURM_ENVIRONMENT_BUILD_TIMEOUT_MULTIPLIER = "18"
 MAX_OBSERVATION_CHARS = 6000
 SOFT_AGENT_TIMEOUT_GRACE_SEC = 150
 TOOL_TIMEOUT_RESPONSE_GRACE_SEC = 15
-UNIFIED_EXEC_REQUEST_GRACE_SEC = 120
+EXEC_REQUEST_GRACE_SEC = 120
 SHELL_TOOL_NAMES = {
     "local_shell",
     "shell",
@@ -426,8 +426,8 @@ def _tool_wait_timeout_sec(
         if yield_time_ms is None:
             yield_time_ms = 250 if args.get("chars") else 5000
         request_timeout_sec = max(
-            UNIFIED_EXEC_REQUEST_GRACE_SEC,
-            int((yield_time_ms + 999) / 1000) + UNIFIED_EXEC_REQUEST_GRACE_SEC,
+            EXEC_REQUEST_GRACE_SEC,
+            int((yield_time_ms + 999) / 1000) + EXEC_REQUEST_GRACE_SEC,
         )
         return _cap_wait_timeout(request_timeout_sec, max_timeout_sec)
     if lowered in SHELL_TOOL_NAMES:
@@ -435,26 +435,35 @@ def _tool_wait_timeout_sec(
         command = _shell_command_text(args)
         if lowered in {"exec_command", "local_shell"} and hasattr(environment, "exec_command"):
             if _extract_apply_patch(command):
-                return _cap_wait_timeout(
+                return _cap_exec_request_wait_timeout(
                     _cap_timeout(_tool_timeout(args, default_timeout_sec) or 30, max_timeout_sec),
                     max_timeout_sec,
                 )
             yield_time_ms = _cap_yield_time_ms(_tool_int(args.get("yield_time_ms")), max_timeout_sec)
             wait_ms = yield_time_ms if yield_time_ms is not None else 10000
             request_timeout_sec = max(
-                UNIFIED_EXEC_REQUEST_GRACE_SEC,
-                int(wait_ms / 1000) + UNIFIED_EXEC_REQUEST_GRACE_SEC,
+                EXEC_REQUEST_GRACE_SEC,
+                int(wait_ms / 1000) + EXEC_REQUEST_GRACE_SEC,
             )
             return _cap_wait_timeout(request_timeout_sec, max_timeout_sec)
         timeout_sec = _cap_timeout(_tool_timeout(args, default_timeout_sec), max_timeout_sec)
-        return _cap_wait_timeout(timeout_sec, max_timeout_sec)
+        return _cap_exec_request_wait_timeout(timeout_sec, max_timeout_sec)
     if lowered in PATCH_TOOL_NAMES:
         timeout_sec = _cap_timeout(
             _tool_timeout(tool_call.arguments, default_timeout_sec) or 30,
             max_timeout_sec,
         )
-        return _cap_wait_timeout(timeout_sec, max_timeout_sec)
+        return _cap_exec_request_wait_timeout(timeout_sec, max_timeout_sec)
     return None
+
+
+def _cap_exec_request_wait_timeout(
+    timeout_sec: int | None,
+    max_timeout_sec: int | None,
+) -> int | None:
+    if timeout_sec is None:
+        return _cap_wait_timeout(timeout_sec, max_timeout_sec)
+    return _cap_wait_timeout(timeout_sec + EXEC_REQUEST_GRACE_SEC, max_timeout_sec)
 
 
 def _cap_wait_timeout(timeout_sec: int | None, max_timeout_sec: int | None) -> int | None:

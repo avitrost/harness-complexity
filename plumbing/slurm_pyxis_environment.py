@@ -774,7 +774,9 @@ class SlurmPyxisEnvironment(BaseEnvironment):
             "timeout_sec": timeout_sec,
         }
         request_timeout = (
-            timeout_sec + 10 if timeout_sec is not None else self._exec_request_timeout_sec
+            timeout_sec + DEFAULT_EXEC_REQUEST_GRACE_SEC
+            if timeout_sec is not None
+            else self._exec_request_timeout_sec
         )
         data = await self._post_while_srun_lives("/exec", payload, timeout=request_timeout)
         await self._settle_verifier_reward(command)

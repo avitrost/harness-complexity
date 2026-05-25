@@ -496,6 +496,7 @@ def test_harbor_agent_records_stuck_tool_timeout_as_observation(
     tmp_path: Path, monkeypatch
 ) -> None:
     monkeypatch.setattr(harbor_adapter, "TOOL_TIMEOUT_RESPONSE_GRACE_SEC", 0)
+    monkeypatch.setattr(harbor_adapter, "EXEC_REQUEST_GRACE_SEC", 0)
     workspace = tmp_path / "workspace"
     candidate = workspace / "candidate"
     candidate.mkdir(parents=True)

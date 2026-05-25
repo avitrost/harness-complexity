@@ -109,8 +109,8 @@ The adapter imposes no independent harness turn cap; it loops until the candidat
 returns `done`, returns an empty command, or reaches a mechanical soft deadline
 shortly before Harbor's task agent timeout. That guard lets the verifier run and
 records a normal failed attempt instead of letting Harbor cancel the agent mid-tool.
-Tool calls are also wrapped in a small adapter watchdog, while the Slurm unified
-exec transport keeps a longer request grace to avoid false timeouts under load.
+Tool calls are also wrapped in a small adapter watchdog, while the Slurm exec
+transport keeps a longer request grace to avoid false timeouts under load.
 It logs per-turn command observations plus `model-call-XX.json` prompt/response traces.
 
 ## Install
