@@ -126,6 +126,7 @@ _MIN_EMPTY_WRITE_STDIN_YIELD_TIME_MS = 5000
 _DEFAULT_MAX_OUTPUT_TOKENS = 10000
 _VERIFY_SETTLE_SEC = float(os.environ.get("HARBOR_SLURM_PYXIS_VERIFY_SETTLE_SEC", "90"))
 _VERIFY_SETTLE_MARKERS = ("/verifier/", "test-stdout", "reward.txt", "reward.json", "ctrf.json")
+_SERVER = None
 
 
 def _setup(workdir):
@@ -541,20 +542,36 @@ def _chunk_id():
 def _exit_later():
     _terminate_sessions()
     time.sleep(0.1)
-    os.kill(os.getpid(), signal.SIGTERM)
+    server = _SERVER
+    if server is None:
+        os._exit(0)
+    server.shutdown()
+
+
+def _exit_from_signal(signum, frame):
+    raise SystemExit(0)
 
 
 def main():
+    global _SERVER
+    signal.signal(signal.SIGINT, _exit_from_signal)
+    signal.signal(signal.SIGTERM, _exit_from_signal)
     parser = argparse.ArgumentParser()
     parser.add_argument("--port", type=int, required=True)
     parser.add_argument("--workdir", default="/app")
     args = parser.parse_args()
     _setup(args.workdir)
     server = ThreadingHTTPServer(("0.0.0.0", args.port), Handler)
+    _SERVER = server
     port = server.server_address[1]
-    print(f"__HARBOR_PYXIS_READY__{socket.gethostname()}:{port}", flush=True)
-    print(f"[harbor] stdlib exec server listening on {port}", flush=True)
-    server.serve_forever()
+    try:
+        print(f"__HARBOR_PYXIS_READY__{socket.gethostname()}:{port}", flush=True)
+        print(f"[harbor] stdlib exec server listening on {port}", flush=True)
+        server.serve_forever()
+    finally:
+        _SERVER = None
+        _terminate_sessions()
+        server.server_close()
 
 
 if __name__ == "__main__":
@@ -698,7 +715,13 @@ class SlurmPyxisEnvironment(BaseEnvironment):
                     await self._post("/shutdown", {}, timeout=DEFAULT_SHUTDOWN_TIMEOUT_SEC)
                 except Exception:
                     pass
-            await self._stop_srun()
+                else:
+                    with suppress(asyncio.TimeoutError):
+                        await asyncio.wait_for(
+                            self._process.wait(), timeout=DEFAULT_SHUTDOWN_TIMEOUT_SEC
+                        )
+            if self._process and self._process.returncode is None:
+                await self._stop_srun()
         elif self._process:
             with suppress(asyncio.TimeoutError):
                 await asyncio.wait_for(self._process.wait(), timeout=1)

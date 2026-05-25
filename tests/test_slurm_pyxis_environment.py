@@ -337,6 +337,12 @@ def test_stdlib_exec_server_runs_unified_session_smoke(tmp_path: Path) -> None:
         assert "got:hello" not in second["output"]
         assert second["output"].startswith("<omitted ")
         assert second["output"].endswith("llo\n")
+
+        _post_json(endpoint, "/shutdown", {})
+        endpoint = None
+        assert process.wait(timeout=5) == 0
+        remaining_output = process.stdout.read() if process.stdout is not None else ""
+        assert "Traceback" not in remaining_output
     finally:
         if endpoint is not None:
             try:
