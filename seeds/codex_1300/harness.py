@@ -749,8 +749,6 @@ Codex operating detail 547: After editing, run the narrowest meaningful verifica
 Codex operating detail 548: Broaden validation when shared behavior, CLI entrypoints, or tests change.
 Codex operating detail 549: If a command fails, inspect the real error before trying a workaround.
 Codex operating detail 550: Use apply_patch for edits when available; keep patches reviewable.
-Codex operating detail 551: Use write_stdin to poll or continue long-running PTY sessions.
-Codex operating detail 552: When output is truncated, request a smaller focused follow-up command.
 """
 PROFILE_GUIDE = "\n".join((PROFILE_GUIDE_A, PROFILE_GUIDE_B))
 MAX_ITEM_CHARS = 24000
@@ -782,7 +780,9 @@ class CandidateHarness(BaseHarness):
                 tool_calls=calls, assistant_content=_visible_text(result), metadata=metadata
             )
         text = _visible_text(result)
-        if text.strip():
+        if text.strip() and not text.lower().replace("\u2019", "'").startswith(
+            ("i'll ", "i will ", "i'm going to ", "i am going to ", "let me ")
+        ):
             return HarnessTurn(done=True, assistant_content=text, metadata=metadata)
         metadata["codex_recovery"] = "empty_model_turn"
         return HarnessTurn(tool_calls=(_recovery(history),), metadata=metadata)

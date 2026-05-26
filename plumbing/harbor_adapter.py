@@ -444,12 +444,13 @@ async def _execute_tool_call_with_timeout(
         default_timeout_sec,
         max_timeout_sec,
     )
+    runtime_timeout_sec = _runtime_timeout_cap(max_timeout_sec)
     try:
         operation = _execute_tool_call(
             environment,
             tool_call,
             default_timeout_sec,
-            max_timeout_sec=max_timeout_sec,
+            max_timeout_sec=runtime_timeout_sec,
         )
         if wait_timeout_sec is None:
             return await operation
@@ -519,10 +520,16 @@ def _cap_wait_timeout(timeout_sec: int | None, max_timeout_sec: int | None) -> i
         if timeout_sec is None:
             return None
         return max(1, timeout_sec + TOOL_TIMEOUT_RESPONSE_GRACE_SEC)
-    ceiling = max(1, max_timeout_sec + TOOL_TIMEOUT_RESPONSE_GRACE_SEC)
+    ceiling = max(1, max_timeout_sec)
     if timeout_sec is None:
         return ceiling
     return max(1, min(timeout_sec + TOOL_TIMEOUT_RESPONSE_GRACE_SEC, ceiling))
+
+
+def _runtime_timeout_cap(max_timeout_sec: int | None) -> int | None:
+    if max_timeout_sec is None:
+        return None
+    return max(1, max_timeout_sec - TOOL_TIMEOUT_RESPONSE_GRACE_SEC)
 
 
 def _tool_wait_timeout_result(

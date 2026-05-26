@@ -450,8 +450,6 @@ Codex operating detail 250: Summaries should preserve decisions, constraints, co
 Codex operating detail 251: A final response with no tool call means the task should be considered done.
 Codex operating detail 252: Use the same inspect-edit-verify cadence as Codex CLI.
 Codex operating detail 253: Start by discovering files, tests, and local conventions before editing.
-Codex operating detail 254: Prefer rg and targeted reads so the context stays useful.
-Codex operating detail 255: Batch independent shell reads when that reduces turn count.
 """
 MAX_ITEM_CHARS = 18000
 MAX_CONTEXT_CHARS = 90000
@@ -482,7 +480,9 @@ class CandidateHarness(BaseHarness):
                 tool_calls=calls, assistant_content=_visible_text(result), metadata=metadata
             )
         text = _visible_text(result)
-        if text.strip():
+        if text.strip() and not text.lower().replace("\u2019", "'").startswith(
+            ("i'll ", "i will ", "i'm going to ", "i am going to ", "let me ")
+        ):
             return HarnessTurn(done=True, assistant_content=text, metadata=metadata)
         metadata["codex_recovery"] = "empty_model_turn"
         return HarnessTurn(tool_calls=(_recovery(history),), metadata=metadata)

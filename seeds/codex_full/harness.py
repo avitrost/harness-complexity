@@ -2023,7 +2023,14 @@ class RecoveryPolicy:
     ) -> HarnessTurn | None:
         if not self.features.recovery_policy:
             return None
-        if result.tool_calls or result.content.strip():
+        text = result.content.strip()
+        lower = text.lower().replace("\u2019", "'")
+        if result.tool_calls or (
+            text
+            and not lower.startswith(
+                ("i'll ", "i will ", "i'm going to ", "i am going to ", "let me ")
+            )
+        ):
             return None
         if not history:
             metadata["codex_recovery"] = "empty_response_initial_reconnaissance"

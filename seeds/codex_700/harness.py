@@ -206,8 +206,6 @@ Codex operating detail 021: For TerminalBench, optimize for completing the task,
 Codex operating detail 022: Read AGENTS instructions as binding local developer guidance.
 Codex operating detail 023: Remember that harness history may contain outputs from previous turns.
 Codex operating detail 024: Prefer deterministic validation over screenshots or broad manual checks.
-Codex operating detail 025: When multiple tools are emitted, each should be independently useful.
-Codex operating detail 026: Do not use elevated sandbox arguments when approval policy is never.
 """
 MAX_ITEM_CHARS = 9000
 MAX_CONTEXT_CHARS = 65000
@@ -231,7 +229,9 @@ class CandidateHarness(BaseHarness):
                 tool_calls=calls, assistant_content=_visible_text(result), metadata=metadata
             )
         text = _visible_text(result)
-        if text.strip():
+        if text.strip() and not text.lower().replace("\u2019", "'").startswith(
+            ("i'll ", "i will ", "i'm going to ", "i am going to ", "let me ")
+        ):
             return HarnessTurn(done=True, assistant_content=text, metadata=metadata)
         metadata["codex_recovery"] = "empty_model_turn"
         return HarnessTurn(tool_calls=(_recovery(history),), metadata=metadata)

@@ -14,6 +14,7 @@ from plumbing.harbor_adapter import (
     build_harbor_command,
 )
 from plumbing.openai_client import set_client_factory
+from plumbing.types import HarnessToolCall
 
 
 def test_load_harness_from_candidate_workspace(tmp_path: Path) -> None:
@@ -642,7 +643,21 @@ def test_harbor_agent_caps_uncapped_tool_to_remaining_hard_timeout(
     asyncio.run(agent.run("instruction", env, SimpleNamespace(metadata=None)))
 
     assert env.commands == ["sleep maybe"]
-    assert env.timeouts == [259]
+    assert env.timeouts == [244]
+
+
+def test_tool_wait_timeout_does_not_exceed_remaining_deadline() -> None:
+    tool_call = HarnessToolCall("exec_command", {"cmd": "sleep maybe"})
+
+    assert (
+        harbor_adapter._tool_wait_timeout_sec(
+            SimpleNamespace(exec_command=lambda: None),
+            tool_call,
+            default_timeout_sec=None,
+            max_timeout_sec=190,
+        )
+        == 190
+    )
 
 
 def test_harbor_agent_soft_stops_before_tool_without_enough_runway(

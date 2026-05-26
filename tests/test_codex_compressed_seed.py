@@ -100,8 +100,33 @@ def test_codex_compressed_and_full_sanitize_parent_find(monkeypatch) -> None:
     )
 
 
+def test_codex_compressed_and_full_recover_on_preamble_without_tool(monkeypatch) -> None:
+    monkeypatch.delenv("OPENAI_AUTH_MODE", raising=False)
+    compressed = _load_module(COMPRESSED_PATH)
+    full = _load_module(FULL_PATH)
+
+    compressed_turn = _run_text_turn(compressed, "I'll inspect the repo first.")
+    full_turn = _run_text_turn(full, "I'll inspect the repo first.")
+
+    assert compressed_turn.done is False
+    assert full_turn.done is False
+    assert compressed_turn.tool_calls[0].name == "exec_command"
+    assert full_turn.tool_calls == compressed_turn.tool_calls
+
+
 def _run_single_turn(module):
     return _run_command_turn(module, "pwd", include_call=True)
+
+
+def _run_text_turn(module, text: str):
+    fake = RecordingToolOpenAI([SimpleNamespace(output_text=text, output=[])])
+    set_client_factory(lambda: fake)
+    try:
+        return module.create_agent().next_command(
+            TaskContext("List files.", working_dir="/app"), []
+        )
+    finally:
+        set_client_factory(None)
 
 
 def _run_command_turn(module, command: str, include_call: bool = False):

@@ -175,6 +175,22 @@ def test_codex_budget_seed_finishes_on_text(seed: str, monkeypatch) -> None:
 
 
 @pytest.mark.parametrize("seed", SEEDS)
+def test_codex_budget_seed_recovers_on_preamble_without_tool(seed: str, monkeypatch) -> None:
+    monkeypatch.delenv("OPENAI_AUTH_MODE", raising=False)
+    module = _load_seed(seed)
+    fake = RecordingToolOpenAI([SimpleNamespace(output_text="I'll inspect the repo.", output=[])])
+    set_client_factory(lambda: fake)
+    try:
+        turn = module.create_agent().next_command(TaskContext("Inspect project.", "/repo"), [])
+    finally:
+        set_client_factory(None)
+
+    assert turn.done is False
+    assert turn.tool_calls[0].name == "exec_command"
+    assert "find ." in turn.tool_calls[0].arguments["cmd"]
+
+
+@pytest.mark.parametrize("seed", SEEDS)
 def test_codex_budget_seed_recovers_on_empty_model_turn(seed: str, monkeypatch) -> None:
     monkeypatch.delenv("OPENAI_AUTH_MODE", raising=False)
     module = _load_seed(seed)

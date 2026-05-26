@@ -165,7 +165,6 @@ SUMMARY_PREFIX = _z(
     "Kqll9vWwLdukNslU3orJ7/fID7yWSCg==",
 )
 CODEX_UPSTREAM_COMMIT = "9f42c89c0112771dc29100a6f3fc904049b2655f"
-CODEX_UPSTREAM_DATE = "2026-05-24"
 MAX_OBSERVATION_CHARS = 20000
 MAX_FUNCTION_OUTPUT_CHARS = 24000
 MAX_CONTEXT_HISTORY_ITEMS = 96
@@ -1502,7 +1501,10 @@ class RecoveryPolicy:
     def fallback_turn(self, result, history, metadata):
         if not self.features.recovery_policy:
             return None
-        if result.tool_calls or result.content.strip():
+        text = result.content.strip()
+        lower = text.lower().replace("\u2019", "'")
+        preamble = lower.startswith(("i'll ", "i will ", "i'm going to ", "let me "))
+        if result.tool_calls or (text and not preamble):
             return None
         if not history:
             metadata["codex_recovery"] = "empty_response_initial_reconnaissance"
@@ -1580,7 +1582,7 @@ class Instrumentation:
     def turn_metadata(self, result, bundle, tool_calls, assessments=None):
         metadata: dict[str, Any] = {
             "codex_upstream_commit": CODEX_UPSTREAM_COMMIT,
-            "codex_upstream_date": CODEX_UPSTREAM_DATE,
+            "codex_upstream_date": "2026-05-24",
             "codex_port_stats": bundle.stats._asdict(),
             "codex_tool_count": len(bundle.tools),
             "codex_tool_names": [tool.get("name") for tool in bundle.tools],

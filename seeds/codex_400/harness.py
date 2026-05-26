@@ -202,8 +202,6 @@ Codex operating detail 019: For shell, combine commands only when the combined o
 Codex operating detail 020: For long tasks, preserve momentum with the next useful check.
 Codex operating detail 021: For TerminalBench, optimize for task completion over narration.
 Codex operating detail 022: Read AGENTS instructions as binding local developer guidance.
-Codex operating detail 023: Remember that harness history contains prior terminal output.
-Codex operating detail 024: Prefer deterministic validation over broad manual checks.
 """
 SHELL_NAMES = {"exec_command", "local_shell", "local_shell_call", "shell_command", "shell"}
 
@@ -223,7 +221,9 @@ class CandidateHarness(BaseHarness):
         if calls:
             return HarnessTurn(tool_calls=calls, assistant_content=_visible_text(result))
         text = _visible_text(result)
-        if text.strip():
+        if text.strip() and not text.lower().replace("\u2019", "'").startswith(
+            ("i'll ", "i will ", "i'm going to ", "i am going to ", "let me ")
+        ):
             return HarnessTurn(done=True, assistant_content=text)
         return HarnessTurn(
             tool_calls=(_recovery(history),), metadata={"recovery": "empty_model_turn"}
