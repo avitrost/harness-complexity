@@ -40,6 +40,7 @@ DEFAULT_SCANCEL_TIMEOUT_SEC = 5
 DEFAULT_POST_TIMEOUT_GRACE_SEC = 5
 DEFAULT_VERIFIER_REWARD_SETTLE_SEC = 90.0
 DEFAULT_IO_WORKERS = 512
+DEFAULT_SLURM_JOB_NAME_PREFIX = "hb"
 _TRANSIENT_STARTUP_ERRORS = (
     "node failure",
     "still not ready",
@@ -49,6 +50,13 @@ _IO_EXECUTOR = ThreadPoolExecutor(
     max_workers=int(os.environ.get("HARBOR_SLURM_PYXIS_IO_WORKERS", DEFAULT_IO_WORKERS)),
     thread_name_prefix="slurm-pyxis-io",
 )
+
+
+def _slurm_job_name_prefix() -> str:
+    raw = os.environ.get("HARBOR_SLURM_JOB_NAME_PREFIX", DEFAULT_SLURM_JOB_NAME_PREFIX)
+    prefix = "".join(char if char.isalnum() or char in "._-" else "-" for char in raw)
+    prefix = prefix.strip(".-_")[:48]
+    return prefix or DEFAULT_SLURM_JOB_NAME_PREFIX
 
 
 @dataclass(frozen=True)
@@ -633,7 +641,9 @@ class SlurmPyxisEnvironment(BaseEnvironment):
         self._stream_task: asyncio.Task | None = None
         self._node: str | None = None
         self._port = 0
-        self._slurm_job_name = f"hb-{os.getpid()}-{random.randint(100000, 999999)}"
+        self._slurm_job_name = (
+            f"{_slurm_job_name_prefix()}-{os.getpid()}-{random.randint(100000, 999999)}"
+        )
         self._staging_dir: Path | None = None
         self._enroot_sysconf_dir: Path | None = None
         self._recent_srun_output: list[str] = []

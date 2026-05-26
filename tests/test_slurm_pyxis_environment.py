@@ -113,6 +113,14 @@ def test_srun_command_uses_unique_job_name(tmp_path: Path) -> None:
     assert f"{tmp_path / 'host-python'}:/opt/harbor-python:ro" in mounts
 
 
+def test_srun_command_uses_configured_job_name_prefix(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("HARBOR_SLURM_JOB_NAME_PREFIX", "codex-80 fix")
+
+    env = _make_env(tmp_path)
+
+    assert env._slurm_job_name.startswith("codex-80-fix-")
+
+
 def test_default_exec_request_timeout_tracks_slurm_time(tmp_path: Path) -> None:
     env = _make_env(tmp_path)
 
