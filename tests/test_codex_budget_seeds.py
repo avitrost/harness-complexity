@@ -232,8 +232,11 @@ def test_codex_400_surfaces_repeated_command_history(monkeypatch) -> None:
     assert "STDERR:\nfailed" in outputs[-1]["output"]
 
 
-def test_codex_400_prefers_response_items_to_avoid_duplicate_tool_calls() -> None:
-    module = _load_seed("codex_400")
+@pytest.mark.parametrize("seed", SEEDS)
+def test_codex_budget_seed_prefers_response_items_to_avoid_duplicate_tool_calls(
+    seed: str,
+) -> None:
+    module = _load_seed(seed)
     response_items = [
         {
             "type": "function_call",

@@ -811,19 +811,19 @@ def _tool_calls(result):
 
 
 def _model_items(result):
-    items = []
-    for call in result.tool_calls:
-        items.append(
-            {
-                "type": "function_call",
-                "name": call.name,
-                "arguments": call.arguments,
-                "call_id": call.call_id,
-                "arguments_text": call.arguments_text,
-            }
-        )
-    items.extend(result.response_items)
-    return items
+    items = result.response_items
+    if any(_tool_call(item) for item in items):
+        return items
+    return [
+        {
+            "type": "function_call",
+            "name": call.name,
+            "arguments": call.arguments,
+            "call_id": call.call_id,
+            "arguments_text": call.arguments_text,
+        }
+        for call in result.tool_calls
+    ]
 
 
 def _tool_call(item):

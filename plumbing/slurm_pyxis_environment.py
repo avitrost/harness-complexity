@@ -438,6 +438,12 @@ def _collect_until(session, deadline):
         if session.process.poll() is not None:
             chunks.extend(_drain_fd(session.output_fd))
             break
+    if chunks and session.process.poll() is None:
+        try:
+            session.process.wait(timeout=0.05)
+        except subprocess.TimeoutExpired:
+            pass
+        chunks.extend(_drain_fd(session.output_fd))
     return b"".join(chunks).decode("utf-8", "replace")
 
 
