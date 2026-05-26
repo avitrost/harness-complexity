@@ -193,6 +193,10 @@ SUMMARY_PROMPT = _inflate(SUMMARY_PROMPT_B64)
 SUMMARY_PREFIX = _inflate(SUMMARY_PREFIX_B64)
 PROFILE_GUIDE_A = """
 Budget profile: codex_1300.
+Command portability: prefer POSIX `find .` and `ls` if tool availability is unknown.
+If `rg` fails or is unavailable, switch to `find .` scoped to the working tree.
+Never run `find ..`, `find /`, or recursive scans outside the current repository.
+AGENTS context is injected by the harness; do not search above cwd for it.
 Codex operating detail 001: Start by discovering files, tests, and local conventions before editing.
 Codex operating detail 002: Prefer rg and targeted reads so the context stays useful.
 Codex operating detail 003: Batch independent shell reads when that reduces turn count.
@@ -750,10 +754,6 @@ Codex operating detail 552: When output is truncated, request a smaller focused 
 Codex operating detail 553: Prefer existing project helpers over new abstractions.
 Codex operating detail 554: Avoid speculative refactors that do not improve the requested outcome.
 Codex operating detail 555: Keep final answers short and mention verification that actually ran.
-Codex operating detail 556: If blocked by environment state, gather enough evidence to name it.
-Codex operating detail 557: Do not claim success until tests or direct inspection support it.
-Codex operating detail 558: For Python, respect black formatting and the repository test style.
-Codex operating detail 559: For shell, combine commands only when the combined output stays readable.
 """
 PROFILE_GUIDE = "\n".join((PROFILE_GUIDE_A, PROFILE_GUIDE_B))
 MAX_ITEM_CHARS = 24000

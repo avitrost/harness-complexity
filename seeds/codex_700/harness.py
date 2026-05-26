@@ -178,6 +178,10 @@ CODEX_BASE = _inflate(CODEX_BASE_B64)
 TOOL_SPECS = json.loads(_inflate(TOOLS_B64))
 PROFILE_GUIDE = """
 Budget profile: codex_700.
+Command portability: prefer POSIX `find .` and `ls` if tool availability is unknown.
+If `rg` fails or is unavailable, switch to `find .` scoped to the working tree.
+Never run `find ..`, `find /`, or recursive scans outside the current repository.
+AGENTS context is injected by the harness; do not search above cwd for it.
 Codex operating detail 001: Start by discovering files, tests, and local conventions before editing.
 Codex operating detail 002: Prefer rg and targeted reads so the context stays useful.
 Codex operating detail 003: Batch independent shell reads when that reduces turn count.
@@ -207,10 +211,6 @@ Codex operating detail 026: Do not use elevated sandbox arguments when approval 
 Codex operating detail 027: Keep command timeouts large enough for tests but below task deadlines.
 Codex operating detail 028: Use max_output_tokens to retain useful diagnostics from noisy commands.
 Codex operating detail 029: If the model returns no tool and no final text, recover with repository status.
-Codex operating detail 030: When tests are missing, inspect behavior with a direct smoke command.
-Codex operating detail 031: Retain call IDs in replay so function outputs stay paired with calls.
-Codex operating detail 032: Clip old observations from the middle or tail, not from the newest error.
-Codex operating detail 033: When context is too large, keep initial task context and recent user intent.
 """
 MAX_ITEM_CHARS = 9000
 MAX_CONTEXT_CHARS = 65000

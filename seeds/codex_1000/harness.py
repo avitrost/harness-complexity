@@ -193,6 +193,10 @@ SUMMARY_PROMPT = _inflate(SUMMARY_PROMPT_B64)
 SUMMARY_PREFIX = _inflate(SUMMARY_PREFIX_B64)
 PROFILE_GUIDE = """
 Budget profile: codex_1000.
+Command portability: prefer POSIX `find .` and `ls` if tool availability is unknown.
+If `rg` fails or is unavailable, switch to `find .` scoped to the working tree.
+Never run `find ..`, `find /`, or recursive scans outside the current repository.
+AGENTS context is injected by the harness; do not search above cwd for it.
 Codex operating detail 001: Start by discovering files, tests, and local conventions before editing.
 Codex operating detail 002: Prefer rg and targeted reads so the context stays useful.
 Codex operating detail 003: Batch independent shell reads when that reduces turn count.
@@ -448,10 +452,6 @@ Codex operating detail 252: Use the same inspect-edit-verify cadence as Codex CL
 Codex operating detail 253: Start by discovering files, tests, and local conventions before editing.
 Codex operating detail 254: Prefer rg and targeted reads so the context stays useful.
 Codex operating detail 255: Batch independent shell reads when that reduces turn count.
-Codex operating detail 256: Treat terminal output as the source of truth for repository state.
-Codex operating detail 257: Never revert unrelated user changes or unrelated generated artifacts.
-Codex operating detail 258: Keep patches scoped to the task and the surrounding ownership boundary.
-Codex operating detail 259: After editing, run the narrowest meaningful verification first.
 """
 MAX_ITEM_CHARS = 18000
 MAX_CONTEXT_CHARS = 90000

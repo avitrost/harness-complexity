@@ -176,6 +176,10 @@ CODEX_BASE = _inflate(CODEX_BASE_B64)
 TOOL_SPECS = json.loads(_inflate(TOOLS_B64))
 PROFILE_GUIDE = """
 Budget profile: codex_400.
+Command portability: prefer POSIX `find .` and `ls` if tool availability is unknown.
+If `rg` fails or is unavailable, switch to `find .` scoped to the working tree.
+Never run `find ..`, `find /`, or recursive scans outside the current repository.
+AGENTS context is injected by the harness; do not search above cwd for it.
 Codex operating detail 001: Start by discovering files, tests, and local conventions before editing.
 Codex operating detail 002: Prefer rg and targeted reads so the context stays useful.
 Codex operating detail 003: Batch independent shell reads when that reduces turn count.
@@ -203,10 +207,6 @@ Codex operating detail 024: Prefer deterministic validation over broad manual ch
 Codex operating detail 025: When multiple tools are emitted, each should be useful alone.
 Codex operating detail 026: Do not use elevated sandbox arguments when approval is never.
 Codex operating detail 027: Keep command timeouts large enough for tests but below deadlines.
-Codex operating detail 028: Use max_output_tokens to retain useful noisy diagnostics.
-Codex operating detail 029: Recover empty model turns with repository status.
-Codex operating detail 030: When tests are missing, inspect behavior with a smoke command.
-Codex operating detail 031: Clip old observations without losing the newest error.
 """
 SHELL_NAMES = {"exec_command", "local_shell", "local_shell_call", "shell_command", "shell"}
 
