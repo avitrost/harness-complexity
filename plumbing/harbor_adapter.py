@@ -790,6 +790,7 @@ def _model_visible_tool_error(message: str) -> bool:
             "stdin is closed",
             "unknown session_id",
             "slurm/pyxis server request failed",
+            "slurm/pyxis srun exited",
             "connection reset by peer",
             "connection refused",
             "remote end closed connection",
