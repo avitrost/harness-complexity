@@ -617,6 +617,36 @@ def test_harbor_agent_soft_stops_before_harbor_timeout(tmp_path: Path, monkeypat
     assert context.metadata["termination_reason"] == "soft_agent_timeout_before_model"
 
 
+def test_harbor_agent_soft_stops_during_slow_model_call(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(harbor_adapter, "MODEL_CALL_RUNWAY_SEC", 0.05)
+    workspace = tmp_path / "workspace"
+    candidate = workspace / "candidate"
+    candidate.mkdir(parents=True)
+    (candidate / "harness.py").write_text(
+        "import time\n"
+        "from plumbing.base_agent import BaseHarness\n"
+        "from plumbing.types import HarnessTurn\n"
+        "class H(BaseHarness):\n"
+        "    def next_command(self, task, history):\n"
+        "        time.sleep(0.2)\n"
+        "        return HarnessTurn(command='echo too-late')\n"
+        "def create_agent():\n"
+        "    return H()\n",
+        encoding="utf-8",
+    )
+    env = TaskTimeoutEnvironment(tmp_path / "task", timeout_sec=0.1)
+    agent = HarborHarnessAgent(logs_dir=tmp_path / "logs", candidate_dir=workspace)
+    context = SimpleNamespace(metadata=None)
+
+    asyncio.run(agent.run("instruction", env, context))
+
+    payload = json.loads((tmp_path / "logs" / "harness-result.json").read_text())
+    assert env.commands == []
+    assert payload["turns"] == 0
+    assert payload["termination_reason"] == "soft_agent_timeout_during_model"
+    assert context.metadata["termination_reason"] == "soft_agent_timeout_during_model"
+
+
 def test_harbor_agent_caps_uncapped_tool_to_remaining_hard_timeout(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -693,6 +723,36 @@ def test_harbor_agent_soft_stops_before_tool_without_enough_runway(
     payload = json.loads((tmp_path / "logs" / "harness-result.json").read_text())
     assert env.commands == []
     assert payload["turns"] == 0
+    assert payload["termination_reason"] == "soft_agent_timeout_before_tools"
+    assert context.metadata["termination_reason"] == "soft_agent_timeout_before_tools"
+
+
+def test_harbor_agent_soft_stops_when_model_consumes_tool_runway(
+    tmp_path: Path, monkeypatch
+) -> None:
+    ticks = iter([0.0, 100.0, 550.0, 551.0])
+    monkeypatch.setattr(harbor_adapter, "_monotonic", lambda: next(ticks, 551.0))
+    workspace = tmp_path / "workspace"
+    candidate = workspace / "candidate"
+    candidate.mkdir(parents=True)
+    (candidate / "harness.py").write_text(
+        "from plumbing.base_agent import BaseHarness\n"
+        "from plumbing.types import HarnessTurn\n"
+        "class H(BaseHarness):\n"
+        "    def next_command(self, task, history):\n"
+        "        return HarnessTurn(command='echo should-not-run')\n"
+        "def create_agent():\n"
+        "    return H()\n",
+        encoding="utf-8",
+    )
+    env = TaskTimeoutEnvironment(tmp_path / "task", timeout_sec=600)
+    agent = HarborHarnessAgent(logs_dir=tmp_path / "logs", candidate_dir=workspace)
+    context = SimpleNamespace(metadata=None)
+
+    asyncio.run(agent.run("instruction", env, context))
+
+    payload = json.loads((tmp_path / "logs" / "harness-result.json").read_text())
+    assert env.commands == []
     assert payload["termination_reason"] == "soft_agent_timeout_before_tools"
     assert context.metadata["termination_reason"] == "soft_agent_timeout_before_tools"
 

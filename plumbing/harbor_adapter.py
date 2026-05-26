@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextvars
 import json
 import os
 import shlex
@@ -9,6 +10,7 @@ import shutil
 import subprocess
 import time
 import tomllib
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -28,6 +30,7 @@ SLURM_PYXIS_ENV_IMPORT_PATH = "plumbing.slurm_pyxis_environment:SlurmPyxisEnviro
 SLURM_ENVIRONMENT_BUILD_TIMEOUT_MULTIPLIER = "18"
 MAX_OBSERVATION_CHARS = 6000
 MODEL_CALL_RUNWAY_SEC = 60
+TOOL_START_RUNWAY_SEC = 60
 HARD_AGENT_TIMEOUT_GUARD_SEC = 20
 TOOL_TIMEOUT_RESPONSE_GRACE_SEC = 15
 EXEC_REQUEST_GRACE_SEC = 180
@@ -47,6 +50,10 @@ WRITE_STDIN_TOOL_NAMES = {"write_stdin"}
 PATCH_TOOL_NAMES = {"apply_patch", "patch"}
 PLAN_TOOL_NAMES = {"update_plan", "plan"}
 FUNCTION_HISTORY_TOOL_NAMES = {"exec_command", "write_stdin", "update_plan"}
+_MODEL_EXECUTOR = ThreadPoolExecutor(
+    max_workers=int(os.environ.get("HARBOR_MODEL_CALL_WORKERS", "512")),
+    thread_name_prefix="harness-model",
+)
 
 
 @dataclass(frozen=True)
@@ -112,11 +119,21 @@ class HarborHarnessAgent(HarborBaseAgent):
         token = set_trace_dir(self.logs_dir)
         try:
             while True:
-                if _insufficient_deadline_runway(agent_deadline, MODEL_CALL_RUNWAY_SEC):
+                model_timeout_sec = _model_call_timeout_sec(agent_deadline)
+                if model_timeout_sec is not None and model_timeout_sec <= 0:
                     termination_reason = "soft_agent_timeout_before_model"
                     break
                 turn_index += 1
-                turn = agent.next_command(task, history)
+                try:
+                    turn = await _next_turn_with_timeout(
+                        agent,
+                        task,
+                        history,
+                        timeout_sec=model_timeout_sec,
+                    )
+                except TimeoutError:
+                    termination_reason = "soft_agent_timeout_during_model"
+                    break
                 tool_calls = _turn_tool_calls(turn)
                 if turn.done or not tool_calls:
                     done = turn.done
@@ -311,23 +328,20 @@ def _remaining_seconds(deadline: float | None) -> float | None:
     return deadline - _monotonic()
 
 
-def _insufficient_deadline_runway(deadline: float | None, required_sec: int) -> bool:
-    remaining = _remaining_seconds(deadline)
-    if remaining is None:
-        return False
-    return remaining <= max(0, required_sec)
-
-
 def _insufficient_tool_runway(
     environment: Any,
     tool_calls: tuple[HarnessToolCall, ...],
     default_timeout_sec: int | None,
     agent_deadline: float | None,
 ) -> bool:
-    remaining = _remaining_seconds(_guarded_deadline(agent_deadline, HARD_AGENT_TIMEOUT_GUARD_SEC))
+    remaining = _remaining_seconds(agent_deadline)
     if remaining is None:
         return False
-    return remaining <= 1
+    return remaining <= TOOL_START_RUNWAY_SEC
+
+
+def _model_call_timeout_sec(agent_deadline: float | None) -> float | None:
+    return _remaining_seconds(_guarded_deadline(agent_deadline, MODEL_CALL_RUNWAY_SEC))
 
 
 def _remaining_timeout_sec(deadline: float | None) -> int | None:
@@ -341,6 +355,30 @@ def _remaining_timeout_sec(deadline: float | None) -> int | None:
 
 def _monotonic() -> float:
     return time.monotonic()
+
+
+async def _next_turn_with_timeout(
+    agent: Any,
+    task: TaskContext,
+    history: list[CommandResult],
+    timeout_sec: float | None,
+) -> HarnessTurn:
+    context = contextvars.copy_context()
+    loop = asyncio.get_running_loop()
+    future = loop.run_in_executor(
+        _MODEL_EXECUTOR,
+        context.run,
+        agent.next_command,
+        task,
+        history,
+    )
+    if timeout_sec is None:
+        return await future
+    try:
+        return await asyncio.wait_for(future, timeout=max(0.001, timeout_sec))
+    except TimeoutError:
+        future.cancel()
+        raise
 
 
 def _cap_timeout(timeout_sec: int | None, max_timeout_sec: int | None) -> int | None:
