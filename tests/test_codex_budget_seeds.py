@@ -221,11 +221,15 @@ def test_codex_400_surfaces_repeated_command_history(monkeypatch) -> None:
     finally:
         set_client_factory(None)
 
-    text = _input_text(fake.calls[0]["input"])
-    assert "Compacted transcript: 6 terminal observations." in text
-    assert "Repeated tool calls already observed:" in text
-    assert "5x last#5 $ sed -n '1,220p' app.py" in text
-    assert "Most recent tool results:" in text
+    items = fake.calls[0]["input"]
+    calls = [item for item in items if item.get("type") == "function_call"]
+    outputs = [item for item in items if item.get("type") == "function_call_output"]
+    assert len(calls) == 6
+    assert len(outputs) == 6
+    assert calls[0]["name"] == "exec_command"
+    assert json.loads(calls[0]["arguments"])["cmd"] == "sed -n '1,220p' app.py"
+    assert "out 4" in outputs[4]["output"]
+    assert "STDERR:\nfailed" in outputs[-1]["output"]
 
 
 def _seed_path(seed: str) -> Path:

@@ -174,14 +174,16 @@ KY0XnTgwgcuuD3HO9lbry2Ld/sLT+ucg8+0JKunedTzGlcinqP6vPRpMgvsjFP3r/wGFsvQE
 """
 CODEX_BASE = _inflate(CODEX_BASE_B64)
 TOOL_SPECS = json.loads(_inflate(TOOLS_B64))
-PROFILE_GUIDE = """
-If `rg` fails or is unavailable, switch to `find .` scoped to the working tree.
-Never run `find ..`, `find /`, or recursive scans outside the current repository.
-Prefer targeted reads; do not repeatedly inspect the same file or AGENTS context.
-If recent history shows repeated commands, switch strategy instead of looping.
-"""
+SUMMARY_PREFIX = (
+    "Another language model started to solve this problem and produced a summary "
+    "of its thinking process. You also have access to the state of the tools that were "
+    "used by that language model. Use this to build on the work that has already "
+    "been done and avoid duplicating work."
+    " Here is the summary produced by the other language model, use the information "
+    "in this summary to assist with your own analysis:"
+)
 SHELL_NAMES = {"exec_command", "local_shell", "local_shell_call", "shell_command", "shell"}
-IMP = ("apply_patch", "pytest", "test", "make ")
+HIST_TOOLS = {"exec_command", "write_stdin"}
 
 
 class CandidateHarness(BaseHarness):
@@ -203,41 +205,51 @@ class CandidateHarness(BaseHarness):
             ("i'll ", "i will ", "i'm going to ", "i am going to ", "let me ")
         ):
             return HarnessTurn(done=True, assistant_content=text)
-        return HarnessTurn(
-            tool_calls=(_recovery(history),), metadata={"recovery": "empty_model_turn"}
-        )
+        return HarnessTurn(tool_calls=(_recovery(history),))
 
 
 def _messages(task, history):
     return [
-        {"role": "system", "content": f"{CODEX_BASE}\n\n{PROFILE_GUIDE}"},
+        {"role": "system", "content": CODEX_BASE},
         {"role": "developer", "content": _permissions()},
-        {"role": "user", "content": _task_text(task, history)},
+        *_conversation(task, history),
     ]
 
 
 def _permissions():
-    return (
-        "<permissions instructions>\n"
-        "Filesystem sandboxing defines which files can be read or written. "
-        "`sandbox_mode` is `danger-full-access`: No filesystem sandboxing - all "
-        "commands are permitted. Network access is enabled.\n"
-        "Approval policy is currently never. Do not provide the `sandbox_permissions` "
-        "for any reason, commands will be rejected.\n"
-        "</permissions instructions>"
-    )
+    return """<permissions instructions>
+Filesystem sandboxing defines which files can be read or written. `sandbox_mode` is
+`danger-full-access`: No filesystem sandboxing - all commands are permitted. Network access is
+enabled. Approval policy is currently never. Do not provide the `sandbox_permissions` for any
+reason, commands will be rejected.
+</permissions instructions>"""
 
 
-def _task_text(task, history):
+def _conversation(task, history):
+    items = [{"role": "user", "content": _task_text(task)}]
+    if not history:
+        return items
+    recent = history[-12:]
+    old = len(history) - len(recent)
+    if old:
+        summary = f"{SUMMARY_PREFIX}\nCompacted transcript: {old} older terminal observations."
+        items.append({"role": "user", "content": summary})
+    start = len(history) - len(recent) + 1
+    for index, record in enumerate(recent, start):
+        items.extend(_record_items(index, record))
+    return items
+
+
+def _task_text(task):
     cwd = task.working_dir or "."
     parts = [
-        "<environment_context>",
-        f"  <cwd>{cwd}</cwd>",
-        "  <shell>bash</shell>",
-        "</environment_context>",
+        "<environment_context>\n"
+        f"  <cwd>{cwd}</cwd>\n"
+        "  <shell>bash</shell>\n"
+        "</environment_context>"
     ]
     parts.extend(_agents(task))
-    parts.extend(["Task:", str(task.instruction), "Recent terminal history:", _history(history)])
+    parts.extend(["Task:", str(task.instruction)])
     return "\n".join(parts)
 
 
@@ -255,46 +267,34 @@ def _agents(task):
     ]
 
 
-def _history(history):
-    if not history:
-        return "(none)"
-    rows = [f"Compacted transcript: {len(history)} terminal observations."]
-    repeats = _repeats(history[-120:])
-    if repeats:
-        rows.append("Repeated tool calls already observed:\n" + "\n".join(repeats))
-    older = history[-36:-6]
-    if older:
-        rows.append(
-            "Earlier calls (exit $ command):\n"
-            + "\n".join(f"{record.return_code} $ {_clip(record.command, 180)}" for record in older)
-        )
-    key = [record for record in history[:-6] if any(t in str(record.command) for t in IMP)][-4:]
-    if key:
-        rows.append("Earlier edit/test results:")
-        rows.extend(_result(record, 1000, 400) for record in key)
-    rows.append("Most recent tool results:")
-    rows.extend(_result(record, 3200, 1000) for record in history[-6:])
-    return "\n\n".join(rows)
+def _record_items(index, record):
+    cid = record.tool_call_id or f"call_{index}"
+    return [_call_history(record, cid), _output_history(record, cid)]
 
 
-def _result(record, out_limit, err_limit):
-    return (
-        f"$ {record.command}\nexit={record.return_code}\nstdout:\n"
-        f"{_clip(record.stdout, out_limit)}\nstderr:\n{_clip(record.stderr, err_limit)}"
-    )
+def _call_history(record, cid):
+    if record.tool_name == "apply_patch":
+        return dict(type="custom_tool_call", call_id=cid, name="apply_patch", input=record.command)
+    args = record.metadata.get("arguments") if isinstance(record.metadata, dict) else None
+    args = dict(args) if isinstance(args, dict) else {"cmd": record.command}
+    if "command" in args and "cmd" not in args:
+        args["cmd"] = args.pop("command")
+    name = record.tool_name if record.tool_name in HIST_TOOLS else "exec_command"
+    return dict(type="function_call", call_id=cid, name=name, arguments=json.dumps(args))
 
 
-def _repeats(history):
-    seen = {}
-    for index, record in enumerate(history, 1):
-        command = str(record.command or "").strip()
-        count, _ = seen.get(command, (0, 0))
-        seen[command] = (count + 1, index)
-    return [
-        f"{count}x last#{last} $ {_clip(command, 160)}"
-        for command, (count, last) in sorted(seen.items(), key=lambda item: item[1])
-        if count >= 3
-    ][-8:]
+def _output_history(record, cid):
+    typ = "custom_tool_call_output" if record.tool_name == "apply_patch" else "function_call_output"
+    rows = ["Wall time: 0.0000 seconds"]
+    if record.return_code is not None:
+        rows.append(f"Process exited with code {record.return_code}")
+    rows.extend(["Output:", _clip(_combined_output(record), 8000)])
+    return {"type": typ, "call_id": cid, "output": "\n".join(rows)}
+
+
+def _combined_output(record):
+    stderr = record.stderr or ""
+    return f"{record.stdout or ''}\nSTDERR:\n{stderr}".strip() if stderr else record.stdout or ""
 
 
 def _clip(text, limit):
