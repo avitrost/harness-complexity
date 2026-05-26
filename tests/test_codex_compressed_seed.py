@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -85,7 +86,25 @@ def test_codex_compressed_matches_codex_full_default_behavior(monkeypatch) -> No
     assert compressed_turn.done == full_turn.done
 
 
+def test_codex_compressed_and_full_sanitize_parent_find(monkeypatch) -> None:
+    monkeypatch.delenv("OPENAI_AUTH_MODE", raising=False)
+    compressed = _load_module(COMPRESSED_PATH)
+    full = _load_module(FULL_PATH)
+
+    compressed_turn = _run_command_turn(compressed, "pwd && find .. -name AGENTS.md -print")
+    full_turn = _run_command_turn(full, "pwd && find .. -name AGENTS.md -print")
+
+    assert compressed_turn.tool_calls[0].arguments["cmd"] == "pwd && find . -name AGENTS.md -print"
+    assert (
+        full_turn.tool_calls[0].arguments["cmd"] == compressed_turn.tool_calls[0].arguments["cmd"]
+    )
+
+
 def _run_single_turn(module):
+    return _run_command_turn(module, "pwd", include_call=True)
+
+
+def _run_command_turn(module, command: str, include_call: bool = False):
     fake = RecordingToolOpenAI(
         [
             SimpleNamespace(
@@ -94,7 +113,7 @@ def _run_single_turn(module):
                     SimpleNamespace(
                         type="function_call",
                         name="exec_command",
-                        arguments='{"cmd":"pwd","yield_time_ms":1000}',
+                        arguments=json.dumps({"cmd": command, "yield_time_ms": 1000}),
                         call_id="call_1",
                     )
                 ],
@@ -109,7 +128,9 @@ def _run_single_turn(module):
         )
     finally:
         set_client_factory(None)
-    return fake.calls[0], turn
+    if include_call:
+        return fake.calls[0], turn
+    return turn
 
 
 def _load_module(path: Path):

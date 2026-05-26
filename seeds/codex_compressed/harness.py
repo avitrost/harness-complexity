@@ -618,6 +618,8 @@ class ToolRouter:
             args["cmd"] = self._join_argv(command)
         if "cmd" not in args and "input" in args:
             args["cmd"] = str(args["input"])
+        if isinstance(args.get("cmd"), str):
+            args["cmd"] = args["cmd"].replace("find ..", "find .")
         return args
 
     def _write_stdin_arguments(self, arguments):
