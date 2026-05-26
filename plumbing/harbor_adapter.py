@@ -27,7 +27,7 @@ HARBOR_AGENT_IMPORT_PATH = "plumbing.harbor_adapter:HarborHarnessAgent"
 SLURM_PYXIS_ENV_IMPORT_PATH = "plumbing.slurm_pyxis_environment:SlurmPyxisEnvironment"
 SLURM_ENVIRONMENT_BUILD_TIMEOUT_MULTIPLIER = "18"
 MAX_OBSERVATION_CHARS = 6000
-MODEL_CALL_RUNWAY_SEC = 180
+MODEL_CALL_RUNWAY_SEC = 60
 HARD_AGENT_TIMEOUT_GUARD_SEC = 20
 TOOL_TIMEOUT_RESPONSE_GRACE_SEC = 15
 EXEC_REQUEST_GRACE_SEC = 180
@@ -327,18 +327,7 @@ def _insufficient_tool_runway(
     remaining = _remaining_seconds(_guarded_deadline(agent_deadline, HARD_AGENT_TIMEOUT_GUARD_SEC))
     if remaining is None:
         return False
-    if remaining <= 0:
-        return True
-    for tool_call in tool_calls:
-        wait_timeout = _tool_wait_timeout_sec(
-            environment,
-            tool_call,
-            default_timeout_sec,
-            max_timeout_sec=None,
-        )
-        if wait_timeout is not None and wait_timeout >= remaining:
-            return True
-    return False
+    return remaining <= 1
 
 
 def _remaining_timeout_sec(deadline: float | None) -> int | None:

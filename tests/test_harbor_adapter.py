@@ -665,7 +665,7 @@ def test_harbor_agent_soft_stops_before_tool_without_enough_runway(
 ) -> None:
     monkeypatch.setattr(harbor_adapter, "EXEC_REQUEST_GRACE_SEC", 120)
     monkeypatch.setattr(harbor_adapter, "TOOL_TIMEOUT_RESPONSE_GRACE_SEC", 15)
-    ticks = iter([0.0, 300.0, 430.0])
+    ticks = iter([0.0, 300.0, 581.0])
     monkeypatch.setattr(harbor_adapter, "_monotonic", lambda: next(ticks, 430.0))
     workspace = tmp_path / "workspace"
     candidate = workspace / "candidate"
@@ -695,6 +695,35 @@ def test_harbor_agent_soft_stops_before_tool_without_enough_runway(
     assert payload["turns"] == 0
     assert payload["termination_reason"] == "soft_agent_timeout_before_tools"
     assert context.metadata["termination_reason"] == "soft_agent_timeout_before_tools"
+
+
+def test_harbor_agent_runs_tool_when_capped_wait_fits_deadline(tmp_path: Path, monkeypatch) -> None:
+    ticks = iter([0.0, 300.0, 409.0, 410.0, 411.0, 412.0])
+    monkeypatch.setattr(harbor_adapter, "_monotonic", lambda: next(ticks, 412.0))
+    workspace = tmp_path / "workspace"
+    candidate = workspace / "candidate"
+    candidate.mkdir(parents=True)
+    (candidate / "harness.py").write_text(
+        "from plumbing.base_agent import BaseHarness\n"
+        "from plumbing.types import HarnessTurn\n"
+        "class H(BaseHarness):\n"
+        "    def next_command(self, task, history):\n"
+        "        if history:\n"
+        "            return HarnessTurn(done=True)\n"
+        "        return HarnessTurn(command='echo verify')\n"
+        "def create_agent():\n"
+        "    return H()\n",
+        encoding="utf-8",
+    )
+    env = TaskTimeoutEnvironment(tmp_path / "task", timeout_sec=600)
+    agent = HarborHarnessAgent(logs_dir=tmp_path / "logs", candidate_dir=workspace)
+    context = SimpleNamespace(metadata=None)
+
+    asyncio.run(agent.run("instruction", env, context))
+
+    assert env.commands == ["echo verify"]
+    assert env.timeouts == [155]
+    assert context.metadata["termination_reason"] is None
 
 
 def test_slurm_command_uses_longer_environment_start_multiplier() -> None:
