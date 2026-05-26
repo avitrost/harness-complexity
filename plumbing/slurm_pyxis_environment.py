@@ -67,6 +67,18 @@ async def _run_blocking(func, *args):
     return await loop.run_in_executor(_IO_EXECUTOR, partial(func, *args))
 
 
+def _consume_task_result(task: asyncio.Task[object]) -> None:
+    with suppress(BaseException):
+        task.result()
+
+
+def _cancel_task_without_waiting(task: asyncio.Task[object] | None) -> None:
+    if task is None or task.done():
+        return
+    task.add_done_callback(_consume_task_result)
+    task.cancel()
+
+
 SLURM_BOOTSTRAP = """#!/bin/bash
 export WORKDIR="${1:-/app}"; shift
 export HARBOR_STAGING="/staging/env_files"
@@ -1118,24 +1130,16 @@ class SlurmPyxisEnvironment(BaseEnvironment):
             )
         except BaseException:
             for task in tasks:
-                if not task.done():
-                    task.cancel()
-            for task in tasks:
-                with suppress(asyncio.CancelledError):
-                    await task
+                _cancel_task_without_waiting(task)
             raise
         for task in pending:
-            task.cancel()
+            _cancel_task_without_waiting(task)
         if not done:
-            request_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await request_task
+            _cancel_task_without_waiting(request_task)
             raise RuntimeError(f"Slurm/Pyxis request to {path} timed out after {timeout}s")
         if request_task in done:
             return await request_task
-        request_task.cancel()
-        with suppress(asyncio.CancelledError):
-            await request_task
+        _cancel_task_without_waiting(request_task)
         self._raise_if_srun_exited("during request")
         raise RuntimeError("Slurm/Pyxis srun exited during request")
 

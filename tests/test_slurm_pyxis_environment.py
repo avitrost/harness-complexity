@@ -211,6 +211,30 @@ def test_post_while_srun_lives_has_hard_timeout(tmp_path: Path, monkeypatch) -> 
         asyncio.run(env._post_while_srun_lives("/write_stdin", {}, timeout=0))
 
 
+def test_post_while_srun_lives_does_not_await_slow_cancellation(
+    tmp_path: Path, monkeypatch
+) -> None:
+    env = _make_env(tmp_path)
+    env._node = "node"
+    env._process = _RunningProcess()
+    monkeypatch.setattr(slurm_pyxis, "DEFAULT_POST_TIMEOUT_GRACE_SEC", 0)
+
+    async def stubborn_post(path, payload, timeout):
+        try:
+            await asyncio.sleep(30)
+        except asyncio.CancelledError:
+            await asyncio.sleep(0.2)
+            raise
+
+    monkeypatch.setattr(env, "_post", stubborn_post)
+
+    started_at = time.monotonic()
+    with pytest.raises(RuntimeError, match=r"request to /exec_command timed out"):
+        asyncio.run(env._post_while_srun_lives("/exec_command", {}, timeout=0))
+
+    assert time.monotonic() - started_at < 0.1
+
+
 def test_exec_command_uses_unified_session_route(tmp_path: Path, monkeypatch) -> None:
     env = _make_env(tmp_path)
     call = {}
