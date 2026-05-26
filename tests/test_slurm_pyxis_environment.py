@@ -349,6 +349,15 @@ def test_stdlib_exec_server_runs_unified_session_smoke(tmp_path: Path) -> None:
                 break
         assert endpoint is not None
 
+        quick = _post_json(
+            endpoint,
+            "/exec_command",
+            {"command": "printf quick", "yield_time_ms": 2000},
+        )
+        assert quick["exit_code"] == 0
+        assert quick["output"] == "quick"
+        assert quick["wall_time_seconds"] < 1.0
+
         first = _post_json(
             endpoint,
             "/exec_command",

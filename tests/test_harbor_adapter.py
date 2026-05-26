@@ -467,6 +467,51 @@ def test_harbor_agent_executes_candidate_apply_patch_tool(tmp_path: Path) -> Non
     assert payload["return_code"] == 0
 
 
+def test_harbor_agent_apply_patch_accepts_absolute_task_paths(tmp_path: Path) -> None:
+    workdir = tmp_path / "task"
+    workdir.mkdir()
+    target = workdir / "hello.txt"
+    target.write_text("old\n", encoding="utf-8")
+    workspace = tmp_path / "workspace"
+    candidate = workspace / "candidate"
+    candidate.mkdir(parents=True)
+    patch = (
+        "*** Begin Patch\n"
+        f"*** Update File: {target}\n"
+        "@@\n"
+        "-old\n"
+        "+new\n"
+        "*** End of File\n"
+        "*** End Patch\n"
+    )
+    (candidate / "harness.py").write_text(
+        "from plumbing.base_agent import BaseHarness\n"
+        "from plumbing.types import HarnessToolCall, HarnessTurn\n"
+        f"PATCH = {patch!r}\n"
+        "class H(BaseHarness):\n"
+        "    def next_command(self, task, history):\n"
+        "        if history:\n"
+        "            return HarnessTurn(done=True)\n"
+        "        return HarnessTurn(tool_calls=(HarnessToolCall('apply_patch', {'patch': PATCH}),))\n"
+        "def create_agent():\n"
+        "    return H()\n",
+        encoding="utf-8",
+    )
+    agent = HarborHarnessAgent(logs_dir=tmp_path / "logs", candidate_dir=workspace)
+    asyncio.run(agent.run("instruction", LocalEnvironment(workdir), SimpleNamespace(metadata=None)))
+
+    assert target.read_text(encoding="utf-8") == "new\n"
+    payload = json.loads((tmp_path / "logs" / "harness-turn-01.json").read_text())
+    assert payload["return_code"] == 0
+
+
+def test_apply_patch_command_has_host_python_fallback() -> None:
+    command = harbor_adapter._apply_patch_command("*** Begin Patch\n*** End Patch\n")
+
+    assert "/opt/harbor-python/bin/python" in command
+    assert "apply_patch failed: no Python runtime available" in command
+
+
 def test_harbor_agent_records_candidate_timeout_as_observation(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     candidate = workspace / "candidate"

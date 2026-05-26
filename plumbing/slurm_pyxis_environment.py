@@ -429,7 +429,11 @@ def _collect_until(session, deadline):
             break
         readable, _, _ = select.select([session.output_fd], [], [], min(remaining, 0.1))
         if readable:
-            chunks.extend(_drain_fd(session.output_fd))
+            drained = _drain_fd(session.output_fd)
+            chunks.extend(drained)
+            if session.process.poll() is not None or not drained:
+                chunks.extend(_drain_fd(session.output_fd))
+                break
             continue
         if session.process.poll() is not None:
             chunks.extend(_drain_fd(session.output_fd))

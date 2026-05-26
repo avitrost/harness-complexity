@@ -1075,14 +1075,27 @@ def _patch_display(patch: str) -> str:
 
 def _apply_patch_command(patch: str) -> str:
     encoded = base64.b64encode(patch.encode("utf-8")).decode("ascii")
-    return f"""PY=$(command -v python3 || command -v python); "$PY" - <<'PY'
+    return f"""PY=$(command -v python3 || command -v python || true)
+if [ -z "$PY" ]; then
+  for candidate in /opt/harbor-python/bin/python /opt/harbor-python/bin/python3; do
+    if [ -x "$candidate" ]; then
+      PY="$candidate"
+      break
+    fi
+  done
+fi
+if [ -z "$PY" ]; then
+  echo "apply_patch failed: no Python runtime available" >&2
+  exit 127
+fi
+"$PY" - <<'PY'
 import base64, os, pathlib, subprocess, sys, tempfile
 
 PATCH = base64.b64decode({encoded!r}).decode("utf-8")
 
 def safe_path(name):
     path = pathlib.PurePosixPath(name.strip())
-    if path.is_absolute() or ".." in path.parts or not str(path):
+    if ".." in path.parts or not str(path):
         raise SystemExit(f"unsafe patch path: {{name}}")
     return pathlib.Path(str(path))
 
