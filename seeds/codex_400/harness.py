@@ -175,33 +175,10 @@ KY0XnTgwgcuuD3HO9lbry2Ld/sLT+ucg8+0JKunedTzGlcinqP6vPRpMgvsjFP3r/wGFsvQE
 CODEX_BASE = _inflate(CODEX_BASE_B64)
 TOOL_SPECS = json.loads(_inflate(TOOLS_B64))
 PROFILE_GUIDE = """
-Budget profile: codex_400.
-Command portability: prefer POSIX `find .` and `ls` if tool availability is unknown.
 If `rg` fails or is unavailable, switch to `find .` scoped to the working tree.
 Never run `find ..`, `find /`, or recursive scans outside the current repository.
-AGENTS context is injected by the harness; do not search above cwd for it.
-Codex operating detail 001: Start by discovering files, tests, and local conventions before editing.
-Codex operating detail 002: Prefer rg and targeted reads so the context stays useful.
-Codex operating detail 003: Batch independent shell reads when that reduces turn count.
-Codex operating detail 004: Treat terminal output as the source of truth for repository state.
-Codex operating detail 005: Never revert unrelated user changes or unrelated generated artifacts.
-Codex operating detail 006: Keep patches scoped to the task and the surrounding ownership boundary.
-Codex operating detail 007: After editing, run the narrowest meaningful verification first.
-Codex operating detail 008: Broaden validation when shared behavior, CLI entrypoints, or tests change.
-Codex operating detail 009: If a command fails, inspect the real error before trying a workaround.
-Codex operating detail 010: Use apply_patch for edits when available; keep patches reviewable.
-Codex operating detail 011: Use write_stdin to poll or continue long-running PTY sessions.
-Codex operating detail 012: When output is truncated, request a smaller focused follow-up command.
-Codex operating detail 013: Prefer existing project helpers over new abstractions.
-Codex operating detail 014: Avoid speculative refactors that do not improve the requested outcome.
-Codex operating detail 015: Keep final answers short and mention verification that actually ran.
-Codex operating detail 016: If blocked by environment state, gather enough evidence to name it.
-Codex operating detail 017: Do not claim success until tests or direct inspection support it.
-Codex operating detail 018: For Python, respect black formatting and the repository test style.
-Codex operating detail 019: For shell, combine commands only when the combined output stays readable.
-Codex operating detail 020: For long tasks, preserve momentum with the next useful check.
-Codex operating detail 021: For TerminalBench, optimize for task completion over narration.
-Codex operating detail 022: Read AGENTS instructions as binding local developer guidance.
+Prefer targeted reads; do not repeatedly inspect the same file or AGENTS context.
+If recent history shows repeated commands, switch strategy instead of looping.
 """
 SHELL_NAMES = {"exec_command", "local_shell", "local_shell_call", "shell_command", "shell"}
 
@@ -282,11 +259,34 @@ def _history(history):
     if not history:
         return "(none)"
     rows = []
-    for record in history[-6:]:
+    rows.append(f"Total tool observations: {len(history)}")
+    repeats = _repeats(history[-80:])
+    if repeats:
+        rows.append("Repeated recent commands:\n" + "\n".join(repeats))
+    older = history[-24:-5]
+    if older:
         rows.append(
-            f"$ {record.command}\nexit={record.return_code}\nstdout:\n{_clip(record.stdout, 5000)}\nstderr:\n{_clip(record.stderr, 2000)}"
+            "Older command trail:\n"
+            + "\n".join(f"{record.return_code} $ {_clip(record.command, 220)}" for record in older)
+        )
+    rows.append("Recent terminal output:")
+    for record in history[-5:]:
+        rows.append(
+            f"$ {record.command}\nexit={record.return_code}\nstdout:\n{_clip(record.stdout, 4200)}\nstderr:\n{_clip(record.stderr, 1600)}"
         )
     return "\n\n".join(rows)
+
+
+def _repeats(history):
+    counts = {}
+    for record in history:
+        command = str(record.command or "").strip()
+        counts[command] = counts.get(command, 0) + 1
+    return [
+        f"{count}x $ {_clip(cmd, 180)}"
+        for cmd, count in sorted(counts.items(), key=lambda item: item[1])
+        if count >= 3
+    ][-8:]
 
 
 def _clip(text, limit):

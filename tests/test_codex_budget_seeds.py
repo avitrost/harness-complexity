@@ -206,6 +206,28 @@ def test_codex_budget_seed_recovers_on_empty_model_turn(seed: str, monkeypatch) 
     assert "find ." in turn.tool_calls[0].arguments["cmd"]
 
 
+def test_codex_400_surfaces_repeated_command_history(monkeypatch) -> None:
+    monkeypatch.delenv("OPENAI_AUTH_MODE", raising=False)
+    module = _load_seed("codex_400")
+    fake = RecordingToolOpenAI([SimpleNamespace(output_text="done", output=[])])
+    history = [
+        CommandResult(command="sed -n '1,220p' app.py", return_code=0, stdout=f"out {index}")
+        for index in range(5)
+    ]
+    history.append(CommandResult(command="pytest -q", return_code=1, stderr="failed"))
+    set_client_factory(lambda: fake)
+    try:
+        module.create_agent().next_command(TaskContext("Fix it.", "/repo"), history)
+    finally:
+        set_client_factory(None)
+
+    text = _input_text(fake.calls[0]["input"])
+    assert "Total tool observations: 6" in text
+    assert "Repeated recent commands:" in text
+    assert "5x $ sed -n '1,220p' app.py" in text
+    assert "Older command trail:" in text
+
+
 def _seed_path(seed: str) -> Path:
     return ROOT / "seeds" / seed / "harness.py"
 
