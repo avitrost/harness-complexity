@@ -179,8 +179,7 @@ SUMMARY_PREFIX = (
     "of its thinking process. You also have access to the state of the tools that were "
     "used by that language model. Use this to build on the work that has already "
     "been done and avoid duplicating work."
-    " Here is the summary produced by the other language model, use the information "
-    "in this summary to assist with your own analysis:"
+    " Here is the summary produced by the other language model; use it to assist your analysis:"
 )
 SHELL_NAMES = {"exec_command", "local_shell", "local_shell_call", "shell_command", "shell"}
 HIST_TOOLS = {"exec_command", "write_stdin"}
@@ -307,7 +306,9 @@ def _tools():
 
 
 def _model_items(result):
-    items = [
+    if any(_tool_call(item) for item in result.response_items):
+        return result.response_items
+    return [
         {
             "type": "function_call",
             "name": call.name,
@@ -317,7 +318,6 @@ def _model_items(result):
         }
         for call in result.tool_calls
     ]
-    return [*items, *result.response_items]
 
 
 def _tool_call(item):

@@ -232,6 +232,31 @@ def test_codex_400_surfaces_repeated_command_history(monkeypatch) -> None:
     assert "STDERR:\nfailed" in outputs[-1]["output"]
 
 
+def test_codex_400_prefers_response_items_to_avoid_duplicate_tool_calls() -> None:
+    module = _load_seed("codex_400")
+    response_items = [
+        {
+            "type": "function_call",
+            "name": "exec_command",
+            "arguments": '{"cmd":"pwd"}',
+            "call_id": "call_dup",
+        }
+    ]
+    result = SimpleNamespace(
+        response_items=response_items,
+        tool_calls=[
+            SimpleNamespace(
+                name="exec_command",
+                arguments={"cmd": "pwd"},
+                call_id="call_dup",
+                arguments_text='{"cmd":"pwd"}',
+            )
+        ],
+    )
+
+    assert module._model_items(result) == response_items
+
+
 def _seed_path(seed: str) -> Path:
     return ROOT / "seeds" / seed / "harness.py"
 
