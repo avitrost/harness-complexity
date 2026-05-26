@@ -181,6 +181,7 @@ Prefer targeted reads; do not repeatedly inspect the same file or AGENTS context
 If recent history shows repeated commands, switch strategy instead of looping.
 """
 SHELL_NAMES = {"exec_command", "local_shell", "local_shell_call", "shell_command", "shell"}
+IMP = ("apply_patch", "pytest", "test", "make ")
 
 
 class CandidateHarness(BaseHarness):
@@ -245,46 +246,53 @@ def _agents(task):
     agents = metadata.get("agents_md")
     if not isinstance(agents, list):
         return []
-    sections = []
-    for item in sorted((x for x in agents if isinstance(x, dict)), key=lambda x: x.get("path", "")):
-        content = str(item.get("content") or "").strip()
-        if content:
-            sections.append(
-                f"<agents_md path={json.dumps(str(item.get('path') or 'AGENTS.md'))}>\n{content}\n</agents_md>"
-            )
-    return sections
+    return [
+        f"<agents_md path='{str(item.get('path') or 'AGENTS.md')}'>\n{content}\n</agents_md>"
+        for item in sorted(
+            (x for x in agents if isinstance(x, dict)), key=lambda x: x.get("path", "")
+        )
+        if (content := str(item.get("content") or "").strip())
+    ]
 
 
 def _history(history):
     if not history:
         return "(none)"
-    rows = []
-    rows.append(f"Total tool observations: {len(history)}")
-    repeats = _repeats(history[-80:])
+    rows = [f"Compacted transcript: {len(history)} terminal observations."]
+    repeats = _repeats(history[-120:])
     if repeats:
-        rows.append("Repeated recent commands:\n" + "\n".join(repeats))
-    older = history[-24:-5]
+        rows.append("Repeated tool calls already observed:\n" + "\n".join(repeats))
+    older = history[-36:-6]
     if older:
         rows.append(
-            "Older command trail:\n"
-            + "\n".join(f"{record.return_code} $ {_clip(record.command, 220)}" for record in older)
+            "Earlier calls (exit $ command):\n"
+            + "\n".join(f"{record.return_code} $ {_clip(record.command, 180)}" for record in older)
         )
-    rows.append("Recent terminal output:")
-    for record in history[-5:]:
-        rows.append(
-            f"$ {record.command}\nexit={record.return_code}\nstdout:\n{_clip(record.stdout, 4200)}\nstderr:\n{_clip(record.stderr, 1600)}"
-        )
+    key = [record for record in history[:-6] if any(t in str(record.command) for t in IMP)][-4:]
+    if key:
+        rows.append("Earlier edit/test results:")
+        rows.extend(_result(record, 1000, 400) for record in key)
+    rows.append("Most recent tool results:")
+    rows.extend(_result(record, 3200, 1000) for record in history[-6:])
     return "\n\n".join(rows)
 
 
+def _result(record, out_limit, err_limit):
+    return (
+        f"$ {record.command}\nexit={record.return_code}\nstdout:\n"
+        f"{_clip(record.stdout, out_limit)}\nstderr:\n{_clip(record.stderr, err_limit)}"
+    )
+
+
 def _repeats(history):
-    counts = {}
-    for record in history:
+    seen = {}
+    for index, record in enumerate(history, 1):
         command = str(record.command or "").strip()
-        counts[command] = counts.get(command, 0) + 1
+        count, _ = seen.get(command, (0, 0))
+        seen[command] = (count + 1, index)
     return [
-        f"{count}x $ {_clip(cmd, 180)}"
-        for cmd, count in sorted(counts.items(), key=lambda item: item[1])
+        f"{count}x last#{last} $ {_clip(command, 160)}"
+        for command, (count, last) in sorted(seen.items(), key=lambda item: item[1])
         if count >= 3
     ][-8:]
 
@@ -299,19 +307,17 @@ def _tools():
 
 
 def _model_items(result):
-    items = []
-    for call in result.tool_calls:
-        items.append(
-            {
-                "type": "function_call",
-                "name": call.name,
-                "arguments": call.arguments,
-                "call_id": call.call_id,
-                "arguments_text": call.arguments_text,
-            }
-        )
-    items.extend(result.response_items)
-    return items
+    items = [
+        {
+            "type": "function_call",
+            "name": call.name,
+            "arguments": call.arguments,
+            "call_id": call.call_id,
+            "arguments_text": call.arguments_text,
+        }
+        for call in result.tool_calls
+    ]
+    return [*items, *result.response_items]
 
 
 def _tool_call(item):
@@ -335,7 +341,7 @@ def _tool_call(item):
         cmd = str(args.get("cmd") or args.get("input") or "").strip()
         if not cmd:
             return None
-        cmd = _sanitize_command(cmd)
+        cmd = cmd.replace("find ..", "find .")
         args["cmd"] = cmd
         return HarnessToolCall("exec_command", args, call_id)
     return None
@@ -365,10 +371,6 @@ def _patch(args, item):
     return str(item.get("arguments_text") or item.get("input") or "")
 
 
-def _sanitize_command(cmd):
-    return cmd.replace("find ..", "find .")
-
-
 def _visible_text(result):
     if result.content.strip():
         return result.content
@@ -386,9 +388,7 @@ def _visible_text(result):
 
 
 def _recovery(history):
-    cmd = "pwd && find . -maxdepth 2 -type f | sort | sed -n '1,200p'"
-    if history:
-        cmd = "pwd && git status --short 2>/dev/null || true && find . -maxdepth 2 -type f | sort | sed -n '1,160p'"
+    cmd = "pwd && find . -maxdepth 2 -type f | sort | sed -n '1,160p'"
     return HarnessToolCall(
         "exec_command",
         {"cmd": cmd, "yield_time_ms": 1000, "max_output_tokens": 12000},

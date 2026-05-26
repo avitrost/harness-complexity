@@ -222,10 +222,10 @@ def test_codex_400_surfaces_repeated_command_history(monkeypatch) -> None:
         set_client_factory(None)
 
     text = _input_text(fake.calls[0]["input"])
-    assert "Total tool observations: 6" in text
-    assert "Repeated recent commands:" in text
-    assert "5x $ sed -n '1,220p' app.py" in text
-    assert "Older command trail:" in text
+    assert "Compacted transcript: 6 terminal observations." in text
+    assert "Repeated tool calls already observed:" in text
+    assert "5x last#5 $ sed -n '1,220p' app.py" in text
+    assert "Most recent tool results:" in text
 
 
 def _seed_path(seed: str) -> Path:
