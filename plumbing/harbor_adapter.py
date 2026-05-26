@@ -743,11 +743,12 @@ async def _exec_observed(
     try:
         result = await environment.exec(command=command, timeout_sec=timeout_sec)
     except RuntimeError as exc:
-        if timeout_sec is None or "timed out" not in str(exc).lower():
+        if not _model_visible_tool_error(str(exc)):
             raise
+        return_code = 124 if "timed out" in str(exc).lower() and timeout_sec is not None else 1
         return CommandResult(
             command=display_command or command,
-            return_code=124,
+            return_code=return_code,
             stderr=str(exc),
             tool_name=tool_name,
             tool_call_id=tool_call_id,
@@ -788,6 +789,11 @@ def _model_visible_tool_error(message: str) -> bool:
             "write_stdin failed",
             "stdin is closed",
             "unknown session_id",
+            "slurm/pyxis server request failed",
+            "connection reset by peer",
+            "connection refused",
+            "remote end closed connection",
+            "broken pipe",
         )
     )
 

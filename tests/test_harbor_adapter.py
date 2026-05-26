@@ -531,6 +531,36 @@ def test_harbor_agent_records_stuck_tool_timeout_as_observation(
     assert context.metadata["done"] is True
 
 
+def test_harbor_agent_records_slurm_transport_reset_as_observation(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    candidate = workspace / "candidate"
+    candidate.mkdir(parents=True)
+    (candidate / "harness.py").write_text(
+        "from plumbing.base_agent import BaseHarness\n"
+        "from plumbing.types import HarnessToolCall, HarnessTurn\n"
+        "class H(BaseHarness):\n"
+        "    def next_command(self, task, history):\n"
+        "        if history:\n"
+        "            return HarnessTurn(done=True)\n"
+        "        return HarnessTurn(tool_calls=(\n"
+        "            HarnessToolCall('exec_command', {'cmd': 'echo hello'}),\n"
+        "        ))\n"
+        "def create_agent():\n"
+        "    return H()\n",
+        encoding="utf-8",
+    )
+    env = SlurmResetEnvironment()
+    agent = HarborHarnessAgent(logs_dir=tmp_path / "logs", candidate_dir=workspace)
+    context = SimpleNamespace(metadata=None)
+
+    asyncio.run(agent.run("instruction", env, context))
+
+    payload = json.loads((tmp_path / "logs" / "harness-turn-01.json").read_text())
+    assert payload["return_code"] == 1
+    assert "Connection reset by peer" in payload["stderr"]
+    assert context.metadata["done"] is True
+
+
 def test_harbor_agent_logs_model_call_traces(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.delenv("OPENAI_AUTH_MODE", raising=False)
     set_client_factory(lambda: FakeOpenAI("ok"))
@@ -973,6 +1003,13 @@ class HangingEnvironment:
         self.commands.append(command)
         self.timeouts.append(timeout_sec)
         await asyncio.Event().wait()
+
+
+class SlurmResetEnvironment:
+    async def exec_command(self, *args, **kwargs):
+        raise RuntimeError(
+            "Slurm/Pyxis server request failed: [Errno 104] Connection reset by peer"
+        )
 
 
 class FakeOpenAI:
