@@ -208,9 +208,6 @@ Codex operating detail 023: Remember that harness history may contain outputs fr
 Codex operating detail 024: Prefer deterministic validation over screenshots or broad manual checks.
 Codex operating detail 025: When multiple tools are emitted, each should be independently useful.
 Codex operating detail 026: Do not use elevated sandbox arguments when approval policy is never.
-Codex operating detail 027: Keep command timeouts large enough for tests but below task deadlines.
-Codex operating detail 028: Use max_output_tokens to retain useful diagnostics from noisy commands.
-Codex operating detail 029: If the model returns no tool and no final text, recover with repository status.
 """
 MAX_ITEM_CHARS = 9000
 MAX_CONTEXT_CHARS = 65000
@@ -576,6 +573,7 @@ def _tool_call(item):
         cmd = str(args.get("cmd") or args.get("input") or "").strip()
         if not cmd:
             return None
+        cmd = _sanitize_command(cmd)
         args["cmd"] = cmd
         return HarnessToolCall("exec_command", args, call_id)
     return None
@@ -603,6 +601,10 @@ def _patch_text(args, item):
         if key in args:
             return str(args[key])
     return str(item.get("arguments_text") or item.get("input") or "")
+
+
+def _sanitize_command(cmd):
+    return cmd.replace("find ..", "find .")
 
 
 def _visible_text(result):

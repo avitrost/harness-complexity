@@ -854,6 +854,7 @@ def _tool_call(item):
         cmd = str(args.get("cmd") or args.get("input") or "").strip()
         if not cmd:
             return None
+        cmd = _sanitize_command(cmd)
         args["cmd"] = cmd
         return HarnessToolCall("exec_command", args, call_id)
     return None
@@ -881,6 +882,10 @@ def _patch_text(args, item):
         if key in args:
             return str(args[key])
     return str(item.get("arguments_text") or item.get("input") or "")
+
+
+def _sanitize_command(cmd):
+    return cmd.replace("find ..", "find .")
 
 
 def _visible_text(result):

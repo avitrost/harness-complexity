@@ -751,9 +751,6 @@ Codex operating detail 549: If a command fails, inspect the real error before tr
 Codex operating detail 550: Use apply_patch for edits when available; keep patches reviewable.
 Codex operating detail 551: Use write_stdin to poll or continue long-running PTY sessions.
 Codex operating detail 552: When output is truncated, request a smaller focused follow-up command.
-Codex operating detail 553: Prefer existing project helpers over new abstractions.
-Codex operating detail 554: Avoid speculative refactors that do not improve the requested outcome.
-Codex operating detail 555: Keep final answers short and mention verification that actually ran.
 """
 PROFILE_GUIDE = "\n".join((PROFILE_GUIDE_A, PROFILE_GUIDE_B))
 MAX_ITEM_CHARS = 24000
@@ -1157,6 +1154,7 @@ def _tool_call(item):
         cmd = str(args.get("cmd") or args.get("input") or "").strip()
         if not cmd:
             return None
+        cmd = _sanitize_command(cmd)
         args["cmd"] = cmd
         return HarnessToolCall("exec_command", args, call_id)
     return None
@@ -1184,6 +1182,10 @@ def _patch_text(args, item):
         if key in args:
             return str(args[key])
     return str(item.get("arguments_text") or item.get("input") or "")
+
+
+def _sanitize_command(cmd):
+    return cmd.replace("find ..", "find .")
 
 
 def _visible_text(result):

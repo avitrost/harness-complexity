@@ -204,9 +204,6 @@ Codex operating detail 021: For TerminalBench, optimize for task completion over
 Codex operating detail 022: Read AGENTS instructions as binding local developer guidance.
 Codex operating detail 023: Remember that harness history contains prior terminal output.
 Codex operating detail 024: Prefer deterministic validation over broad manual checks.
-Codex operating detail 025: When multiple tools are emitted, each should be useful alone.
-Codex operating detail 026: Do not use elevated sandbox arguments when approval is never.
-Codex operating detail 027: Keep command timeouts large enough for tests but below deadlines.
 """
 SHELL_NAMES = {"exec_command", "local_shell", "local_shell_call", "shell_command", "shell"}
 
@@ -338,6 +335,7 @@ def _tool_call(item):
         cmd = str(args.get("cmd") or args.get("input") or "").strip()
         if not cmd:
             return None
+        cmd = _sanitize_command(cmd)
         args["cmd"] = cmd
         return HarnessToolCall("exec_command", args, call_id)
     return None
@@ -365,6 +363,10 @@ def _patch(args, item):
         if key in args:
             return str(args[key])
     return str(item.get("arguments_text") or item.get("input") or "")
+
+
+def _sanitize_command(cmd):
+    return cmd.replace("find ..", "find .")
 
 
 def _visible_text(result):
