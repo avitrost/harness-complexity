@@ -28,6 +28,9 @@ mechanics needed to run it.
   intended as a lower-LOC starting point with the same default behavior. Static
   prompt/schema/manifest data is packed inside this file rather than moved to
   uncounted plumbing.
+- `seeds/minimal_agent/harness.py` is the minimal tool-call baseline: a generic
+  one-tool `exec_command` agent with plain terminal-history prompting and no
+  Codex transcript, compaction, recovery, classifier, or instrumentation layers.
 - `experience/`, `final_test/`, and `results/` are artifact directories. Generated
   contents are ignored by git; only `.gitkeep` placeholders are tracked.
 - `tests/` contains local unit tests. They use mocks/fakes and do not run OpenAI calls
