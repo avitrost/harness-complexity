@@ -134,6 +134,13 @@ class HarborHarnessAgent(HarborBaseAgent):
                 except TimeoutError:
                     termination_reason = "soft_agent_timeout_during_model"
                     break
+                except RuntimeError as exc:
+                    if not _model_visible_model_error(exc):
+                        raise
+                    termination_reason = "model_call_error"
+                    history.append(_model_error_observed(exc))
+                    self._write_turn_log(turn_index, history[-1])
+                    break
                 tool_calls = _turn_tool_calls(turn)
                 if turn.done or not tool_calls:
                     done = turn.done
@@ -797,6 +804,41 @@ def _model_visible_tool_error(message: str) -> bool:
             "broken pipe",
         )
     )
+
+
+def _model_visible_model_error(exc: BaseException) -> bool:
+    lowered = _exception_chain_text(exc).lower()
+    return any(
+        phrase in lowered
+        for phrase in (
+            "terminal model call failed",
+            "terminal model tool call failed",
+            "codex backend call failed",
+            "rate limit exceeded",
+            "too many requests",
+        )
+    )
+
+
+def _model_error_observed(exc: BaseException) -> CommandResult:
+    return CommandResult(
+        command="<model call>",
+        return_code=1,
+        stderr=_exception_chain_text(exc),
+        tool_name="model",
+        metadata={"error_type": type(exc).__name__},
+    )
+
+
+def _exception_chain_text(exc: BaseException) -> str:
+    messages = []
+    current: BaseException | None = exc
+    while current is not None:
+        text = str(current)
+        if text:
+            messages.append(text)
+        current = current.__cause__
+    return "\ncaused by: ".join(messages) or type(exc).__name__
 
 
 def _turn_tool_calls(turn: HarnessTurn) -> list[HarnessToolCall]:

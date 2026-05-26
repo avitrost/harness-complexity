@@ -621,6 +621,35 @@ def test_harbor_agent_logs_model_call_traces(monkeypatch, tmp_path: Path) -> Non
     assert '"response": "ok"' in trace
 
 
+def test_harbor_agent_records_model_rate_limit_as_result(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    candidate = workspace / "candidate"
+    candidate.mkdir(parents=True)
+    (candidate / "harness.py").write_text(
+        "from plumbing.base_agent import BaseHarness\n"
+        "class H(BaseHarness):\n"
+        "    def next_command(self, task, history):\n"
+        "        cause = RuntimeError('codex backend call failed: 429 Rate limit exceeded')\n"
+        "        raise RuntimeError('terminal model tool call failed') from cause\n"
+        "def create_agent():\n"
+        "    return H()\n",
+        encoding="utf-8",
+    )
+    agent = HarborHarnessAgent(logs_dir=tmp_path / "logs", candidate_dir=workspace)
+    context = SimpleNamespace(metadata=None)
+
+    asyncio.run(agent.run("instruction", FakeEnvironment(), context))
+
+    result = json.loads((tmp_path / "logs" / "harness-result.json").read_text())
+    turn = json.loads((tmp_path / "logs" / "harness-turn-01.json").read_text())
+    assert result["done"] is False
+    assert result["termination_reason"] == "model_call_error"
+    assert turn["command"] == "<model call>"
+    assert turn["return_code"] == 1
+    assert "Rate limit exceeded" in turn["stderr"]
+    assert context.metadata["termination_reason"] == "model_call_error"
+
+
 def test_harbor_agent_writes_partial_result_on_exec_error(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     candidate = workspace / "candidate"

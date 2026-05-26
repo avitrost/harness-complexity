@@ -22,7 +22,7 @@ from plumbing.secrets import require_openai_api_key
 TERMINAL_MODEL = "gpt-5.4-mini"
 TERMINAL_REASONING_EFFORT = "none"
 TIMEOUT_SEC = 120.0
-MAX_RETRIES = 2
+DEFAULT_MAX_RETRIES = 2
 MAX_OUTPUT_TOKENS = 4096
 PREFLIGHT_OUTPUT_TOKENS = 16
 CODEX_BASE_URL = "https://chatgpt.com/backend-api/codex/responses"
@@ -94,7 +94,11 @@ def reset_trace_dir(token: object) -> None:
 def _make_client() -> OpenAI:
     if _client_factory is not None:
         return _client_factory()
-    return OpenAI(api_key=require_openai_api_key(), timeout=TIMEOUT_SEC, max_retries=MAX_RETRIES)
+    return OpenAI(
+        api_key=require_openai_api_key(),
+        timeout=TIMEOUT_SEC,
+        max_retries=_max_retries(),
+    )
 
 
 def using_codex_auth() -> bool:
@@ -111,7 +115,8 @@ def terminal_reasoning_effort() -> str:
 
 def call_terminal_model(messages: list[dict[str, Any]]) -> str:
     last_error: Exception | None = None
-    for attempt in range(MAX_RETRIES + 1):
+    max_retries = _max_retries()
+    for attempt in range(max_retries + 1):
         try:
             _throttle_if_requested()
             started_at = time.monotonic()
@@ -136,7 +141,7 @@ def call_terminal_model(messages: list[dict[str, Any]]) -> str:
             return text
         except Exception as exc:  # pragma: no cover - real API path
             last_error = exc
-            if attempt >= MAX_RETRIES:
+            if attempt >= max_retries:
                 _write_model_trace(messages, "", error=str(exc))
                 break
             time.sleep(_retry_delay(exc, attempt))
@@ -151,7 +156,8 @@ def call_terminal_model_with_tools(
     parallel_tool_calls: bool | None = None,
 ) -> ToolModelResult:
     last_error: Exception | None = None
-    for attempt in range(MAX_RETRIES + 1):
+    max_retries = _max_retries()
+    for attempt in range(max_retries + 1):
         try:
             _throttle_if_requested()
             started_at = time.monotonic()
@@ -193,7 +199,7 @@ def call_terminal_model_with_tools(
             return result
         except Exception as exc:  # pragma: no cover - real API path
             last_error = exc
-            if attempt >= MAX_RETRIES:
+            if attempt >= max_retries:
                 _write_model_trace(messages, "", error=str(exc))
                 break
             time.sleep(_retry_delay(exc, attempt))
@@ -226,8 +232,17 @@ def _throttle_if_requested() -> None:
     _last_request_at = time.monotonic()
 
 
+def _max_retries() -> int:
+    try:
+        return max(0, int(os.getenv("OPENAI_MAX_RETRIES", str(DEFAULT_MAX_RETRIES)) or 0))
+    except ValueError:
+        return DEFAULT_MAX_RETRIES
+
+
 def _retry_delay(exc: Exception, attempt: int) -> float:
-    headers = getattr(getattr(exc, "response", None), "headers", {}) or {}
+    headers = getattr(getattr(exc, "response", None), "headers", None)
+    if not headers:
+        headers = getattr(exc, "headers", {}) or {}
     retry_after = headers.get("retry-after") if hasattr(headers, "get") else None
     if retry_after:
         try:
@@ -237,6 +252,14 @@ def _retry_delay(exc: Exception, attempt: int) -> float:
     if "rate limit" in str(exc).lower() or "429" in str(exc):
         return 65.0
     return float(2**attempt)
+
+
+class CodexBackendError(RuntimeError):
+    def __init__(self, status_code: int, detail: str, headers: Any) -> None:
+        self.status_code = status_code
+        self.detail = detail
+        self.headers = headers
+        super().__init__(f"codex backend call failed: {status_code} {detail}")
 
 
 def _write_model_trace(
@@ -312,7 +335,7 @@ def _call_codex_backend_result(
             )
     except HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"codex backend call failed: {exc.code} {detail[:500]}") from exc
+        raise CodexBackendError(exc.code, detail[:500], exc.headers) from exc
 
 
 def _codex_body(

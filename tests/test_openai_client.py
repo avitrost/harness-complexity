@@ -4,10 +4,12 @@ import json
 from types import SimpleNamespace
 
 from plumbing.openai_client import (
+    CodexBackendError,
     _codex_body,
     _codex_headers,
     _extract_response_dict_result,
     _extract_sse_result,
+    _retry_delay,
     call_terminal_model_with_tools,
     call_terminal_model,
     check_terminal_model_available,
@@ -271,6 +273,12 @@ def test_model_trace_records_reasoning_effort(monkeypatch, tmp_path) -> None:
 
     trace = json.loads((tmp_path / "model-call-01.json").read_text(encoding="utf-8"))
     assert trace["reasoning_effort"] == "none"
+
+
+def test_codex_backend_retry_delay_uses_retry_after_header() -> None:
+    exc = CodexBackendError(429, '{"detail":"Rate limit exceeded"}', {"retry-after": "7"})
+
+    assert _retry_delay(exc, 0) == 7.0
 
 
 class RecordingOpenAI:
