@@ -24,10 +24,16 @@ from plumbing.openai_client import (
 )
 from scripts.make_workspace import make_workspace
 
-BUDGETS = (128, 256, 512, 1024, 2048, 4096, 8192)
+BUDGET_SEEDS = {
+    400: Path("seeds/codex_400"),
+    700: Path("seeds/codex_700"),
+    1000: Path("seeds/codex_1000"),
+    1300: Path("seeds/codex_1300"),
+    1660: Path("seeds/codex_compressed"),
+}
+BUDGETS = tuple(BUDGET_SEEDS)
 CODEX_REASONING_EFFORTS = ("low", "medium", "high", "xhigh")
 DEFAULT_K = 2
-SEED_ROOT = Path("seeds")
 
 
 def optimize_budget(
@@ -133,8 +139,8 @@ def optimize_budget(
                 _strip_workspace_history(workspace)
                 validation = validate_candidate(
                     workspace / "candidate" / "harness.py",
-                    min_sloc=_budget_min_lines(budget),
-                    max_sloc=budget,
+                    min_lines=_budget_min_lines(budget),
+                    max_lines=budget,
                 )
             _write_json(iter_dir / "validation.json", validation, sort_keys=True)
             if validation["ok"] and not dry_run and not proposal_only:
@@ -175,9 +181,9 @@ def build_codex_command(
 ) -> list[str]:
     min_lines = _budget_min_lines(budget)
     line_rule = (
-        f"Keep candidate/harness.py between {min_lines} and {budget} nonblank, non-comment source lines"
+        f"Keep candidate/harness.py between {min_lines} and {budget} physical lines"
         if min_lines > 1
-        else f"Keep candidate/harness.py at most {budget} nonblank, non-comment source lines"
+        else f"Keep candidate/harness.py at most {budget} physical lines"
     )
     iteration_label = str(iteration) if iteration is not None else "the next"
     horizon_line = (
@@ -187,59 +193,35 @@ def build_codex_command(
         if cycles is not None
         else ""
     )
-    large_budget_line = (
-        "\nFor budgets at or above 4096, use the space for distinct reachable "
-        "subsystems on the `next_command` path: action parsing, history/state "
-        "summaries, command policy, timeout policy, completion gating, recovery "
-        "planning, bounded verification, and prompt construction. Prefer compact "
-        "loops and data structures inside those subsystems over expanded cases. "
-        "Do not build signal farms, feature farms, or generated token scanners; "
-        "feature extraction should be small and loop-based. Do not create "
-        "prefix-family method grids such as hundreds of review_* helpers or "
-        "dispatcher calls. Large PolicyRule/list catalogs count as padding; keep "
-        "rule catalogs small and derive repeated checks with loops or code. Do "
-        "not create numbered SignalSpec/metric fields or generated dataclass "
-        "attributes; a few semantic fields are fine, hundreds are padding.\n"
-        if budget >= 4096
-        else ""
-    )
     prompt = (
-        f"Run iteration {iteration_label} of the scaffold evolution loop (harness track)."
-        f" Model: {terminal_model()}. Start from agents/baseline_kira.py "
-        "as the parent. Before editing, inspect references/terminus_kira.py "
-        "and references/open_source_harnesses.md as strong harness references. "
-        "Codex is the most important GPT reference; also consider "
-        "Terminus-KIRA, opencode, gemini-cli, and qwen-code. Prefer concrete "
-        "patterns when they fit, but do not force them.\n\n"
+        f"Run iteration {iteration_label} of the Codex-compression harness "
+        f"optimization loop. Model: {terminal_model()}. Start from "
+        "`agents/baseline_kira.py`; it is an editable alias for "
+        "`candidate/harness.py`, not a KIRA requirement.\n\n"
+        "The goal is to improve Terminal-Bench performance while preserving "
+        "Codex-like terminal-agent behavior under a strict physical line budget. "
+        "Treat `references/codex_full_harness.py` as the high-fidelity Codex "
+        "behavior reference. Also inspect `references/open_source_harnesses.md` "
+        "and `references/terminus_kira.py` for useful compact patterns. Adapt "
+        "ideas into the counted harness when they fit, but do not import or "
+        "delegate to any reference or prior run at runtime.\n\n"
         f"## Eval split: {len(get_val_tasks())} selected TB2 optimization tasks x "
         f"{VAL_TRIALS} trials\n\n"
         "This reference example uses the selected TB2 optimization tasks. Focus on "
         "scaffold changes that help the agent solve complex, long-horizon tasks.\n\n"
-        "## Line budget\n"
+        "## Physical LOC budget\n"
         f"{line_rule} after Black formatting.\n\n"
-        "Consider whether useful reference-harness patterns can be adapted into the "
-        "counted harness, with implementation depth scaled to the available line budget.\n"
-        "Do not optimize for the minimum line count; use the available budget for "
-        "concrete harness behavior, but do not pad or add unused abstractions.\n"
-        "Do not satisfy large budgets with near-duplicate numbered functions, "
-        "mechanically repeated tables, dead code, or unreachable policy variants.\n"
-        "Do not split the same logic into many tiny helpers; combine repeated "
-        "rules into one real subsystem.\n"
-        "Keep repeated command rules compact; do not expand rule tables or pattern "
-        "lists into thousands of counted lines.\n"
-        "No top-level rule catalog, knowledge base, or assignment should span "
-        "hundreds of lines.\n"
-        "No single function or method should contain hundreds of lines of similar "
-        "branches.\n"
-        "Do not use large fixture strings, synthetic examples, or bulk data blocks "
-        "to satisfy the lower bound.\n"
-        "Blank lines and comments do not count toward the line budget; use real "
-        "executable harness code.\n"
-        "For large budgets, prefer coherent reusable harness subsystems over many "
-        "independent heuristics.\n"
-        f"{large_budget_line}\n"
-        "Before finishing, remove unused imports; the final file must pass Ruff, "
-        "py_compile, audit, and the source-line budget.\n\n"
+        "Use nearly all of the available physical LOC for real reachable behavior "
+        "on the `next_command` path. Keep the harness modular and thinnable: "
+        "prefer compact subsystems for prompt construction, tool mapping, history "
+        "summarization, command policy, completion gating, and state recovery over "
+        "large one-off rule tables. Do not pad with dead code, comments, blank "
+        "lines, large fixture strings, synthetic examples, unreachable variants, "
+        "or benchmark-specific hacks. Do not optimize by deleting useful Codex-like "
+        "behavior merely to be smaller.\n\n"
+        "Before finishing, remove unused imports; the final file must pass Black "
+        "with line length 100, Ruff, py_compile, audit, and the physical line "
+        "budget.\n\n"
         "## Run directories\n"
         "All logs and results for this run are under `logs/`.\n"
         "- `logs/evolution_summary.jsonl` — past results\n"
@@ -327,7 +309,8 @@ def _ensure_seed_candidate(
     _write_meta(iter_dir, budget, 0, 0, "seed")
     validation = validate_candidate(
         workspace / "candidate" / "harness.py",
-        max_sloc=budget,
+        min_lines=_budget_min_lines(budget),
+        max_lines=budget,
     )
     _write_json(iter_dir / "validation.json", validation, sort_keys=True)
     if validation["ok"] and not dry_run and not proposal_only:
@@ -349,14 +332,16 @@ def _proposal_dir(budget_dir: Path, iteration: int, candidate_index: int) -> Pat
 
 
 def _budget_min_lines(budget: int) -> int:
-    ordered = sorted(BUDGETS)
-    index = ordered.index(budget)
-    return 1 if index == 0 else ordered[index - 1] + 1
+    if budget not in BUDGETS:
+        raise ValueError(f"unsupported budget: {budget}")
+    return max(1, (budget * 95 + 99) // 100)
 
 
 def _seed_source_for_budget(budget: int) -> Path:
-    seed = SEED_ROOT / f"B{budget:04d}"
-    return seed if (seed / "harness.py").exists() else Path("candidate")
+    try:
+        return BUDGET_SEEDS[budget]
+    except KeyError as exc:
+        raise ValueError(f"unsupported budget: {budget}") from exc
 
 
 def _new_run_dir(

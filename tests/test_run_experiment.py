@@ -12,9 +12,9 @@ def test_parallel_budgets_keep_per_budget_concurrency(monkeypatch) -> None:
         [
             "run_experiment",
             "--budgets",
-            "128,1024,8192",
+            "400,1000,1660",
             "--concurrency",
-            "160",
+            "16",
             "--parallel-budgets",
             "--dry-run",
         ],
@@ -24,5 +24,5 @@ def test_parallel_budgets_keep_per_budget_concurrency(monkeypatch) -> None:
     assert run_experiment.main() == 0
 
     by_budget = {int(call[call.index("--budget") + 1]): call for call in calls}
-    assert sorted(by_budget) == [128, 1024, 8192]
-    assert [int(call[call.index("--concurrency") + 1]) for call in calls] == [160] * 3
+    assert sorted(by_budget) == [400, 1000, 1660]
+    assert [int(call[call.index("--concurrency") + 1]) for call in calls] == [16] * 3

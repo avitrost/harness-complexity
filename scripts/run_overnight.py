@@ -6,13 +6,13 @@ import subprocess
 import sys
 from datetime import UTC, datetime
 
-DEFAULT_BUDGETS = "128,256,512,1024,2048"
+DEFAULT_BUDGETS = "400,700,1000,1300,1660"
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--run-id", default=datetime.now(UTC).strftime("overnight_%Y%m%d_%H%M%S"))
-    parser.add_argument("--iterations", "--cycles", type=int, default=10)
+    parser.add_argument("--iterations", "--cycles", type=int, default=3)
     parser.add_argument("--k", type=int, default=2)
     parser.add_argument("--budgets", default=DEFAULT_BUDGETS)
     parser.add_argument("--backend", choices=("docker", "slurm-pyxis"), default="slurm-pyxis")
@@ -20,8 +20,9 @@ def main() -> int:
     parser.add_argument("--terminal-model", default="gpt-5.4-mini")
     parser.add_argument("--codex-reasoning-effort", default="medium")
     parser.add_argument("--resume", action="store_true")
-    parser.add_argument("--concurrency", type=int)
-    parser.add_argument("--parallel-budgets", action="store_true")
+    parser.add_argument("--concurrency", type=int, default=16)
+    parser.add_argument("--parallel-budgets", action="store_true", default=True)
+    parser.add_argument("--sequential-budgets", action="store_false", dest="parallel_budgets")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--run-final-test", action="store_true")
     args = parser.parse_args()

@@ -109,12 +109,14 @@ def _backend_error(backend: str) -> str | None:
 def _terminal_model_error() -> str | None:
     if not using_codex_auth() and not os.getenv("OPENAI_API_KEY"):
         return "OPENAI_API_KEY is required for terminal model validation."
+    if os.getenv("HARBOR_TERMINAL_MODEL_PREFLIGHT", "0") != "1":
+        return None
     try:
         check_terminal_model_available()
-    except Exception:
+    except Exception as exc:
         return (
             "Terminal model preflight failed. Check OPENAI_API_KEY or Codex auth, "
-            "quota, and model access before running validation."
+            f"quota, and model access before running validation. ({type(exc).__name__}: {exc})"
         )
     return None
 

@@ -57,7 +57,7 @@ def _plot_complexity(selected_csv: Path, final_test_dir: Path, out_dir: Path) ->
     )
     for _, item in data.iterrows():
         plt.annotate(str(int(item["budget"])), (item["actual_loc"], item["estimated_full_score"]))
-    plt.xlabel("Formatted nonblank, non-comment SLOC")
+    plt.xlabel("Black-formatted physical LOC")
     plt.ylabel("Optimization score")
     plt.tight_layout()
     plt.savefig(path)
@@ -116,7 +116,7 @@ def _plot_cycle_metrics(
             data,
             out_dir / "actual_loc_vs_cycle.png",
             "actual_loc",
-            "Formatted nonblank, non-comment SLOC",
+            "Black-formatted physical LOC",
             cumulative=False,
         ),
         _invalid_rate_plot(data, out_dir / "invalid_rate_by_budget.png"),
@@ -185,7 +185,7 @@ def _loc_from_validation(validation: dict[str, Any]) -> int | None:
     for check in validation.get("checks", []):
         data = check.get("json") if isinstance(check, dict) else None
         if isinstance(data, dict) and "physical_loc" in data:
-            return int(data.get("nonblank_noncomment_sloc", data["physical_loc"]))
+            return int(data["physical_loc"])
     return None
 
 

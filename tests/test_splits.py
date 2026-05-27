@@ -54,3 +54,25 @@ def test_harbor_command_can_use_slurm_pyxis_environment() -> None:
     assert "--environment-build-timeout-multiplier" in plan.command
     assert "plumbing.slurm_pyxis_environment:SlurmPyxisEnvironment" in plan.command
     assert plan.command.count("--environment-kwarg") == 3
+
+
+def test_harbor_command_can_override_slurm_pyxis_partition(monkeypatch) -> None:
+    monkeypatch.setenv("HARBOR_SLURM_PYXIS_PARTITION", "m7i-cpu2")
+    spec = HarborRunSpec(Path("candidate"), Path("out"), ["a"], 1, 1, "val", "slurm-pyxis")
+    plan = build_harbor_command(
+        spec,
+        executable="harbor",
+        help_text="--dataset --include-task-name --n-attempts --n-concurrent",
+    )
+
+    assert plan.command.count("--environment-kwarg") == 4
+    assert "slurm_partition=m7i-cpu2" in plan.command
+
+
+def test_harbor_command_uses_known_flags_when_help_probe_times_out(monkeypatch) -> None:
+    monkeypatch.setattr("plumbing.harbor_adapter.harbor_help", lambda *args: None)
+    spec = HarborRunSpec(Path("candidate"), Path("out"), ["a"], 1, 1, "val")
+    plan = build_harbor_command(spec, executable="harbor")
+
+    assert plan.runnable is True
+    assert "timed out" in plan.note

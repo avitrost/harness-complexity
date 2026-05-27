@@ -11,7 +11,7 @@ from pathlib import Path
 
 from scripts.bootstrap_ci import bootstrap_ci
 
-DEFAULT_BUDGETS = (128, 256, 512, 1024, 2048)
+DEFAULT_BUDGETS = (400, 700, 1000, 1300, 1660)
 
 
 def main() -> int:

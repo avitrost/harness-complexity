@@ -322,7 +322,7 @@ def _extract_count(validation: dict[str, Any]) -> dict[str, Any]:
 
 
 def _actual_loc(count: dict[str, Any]) -> Any:
-    return count.get("nonblank_noncomment_sloc", count.get("physical_loc"))
+    return count.get("physical_loc")
 
 
 def _write_json(path: Path, payload: Any, sort_keys: bool = False) -> None:

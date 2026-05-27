@@ -43,9 +43,7 @@ def load_budget_rows(budget_dir: Path, run_id: str | None = None) -> list[dict[s
                 "candidate": candidate,
                 "candidate_dir": str(iter_dir / "workspace"),
                 "val_split_mean": float(summary.get("split_mean", 0) or 0),
-                "actual_loc": int(
-                    count.get("nonblank_noncomment_sloc", count.get("physical_loc", 10**9))
-                ),
+                "actual_loc": int(count.get("physical_loc", 10**9)),
                 "crash_rate": num_crashes / num_trials if num_trials else 1.0,
                 "mean_runtime": float(summary.get("mean_runtime") or 10**9),
                 "valid": bool(validation.get("ok", False)),

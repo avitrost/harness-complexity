@@ -1314,7 +1314,7 @@ def detect_harbor_executable() -> str | None:
     return None
 
 
-def harbor_help(executable: str, *args: str) -> str:
+def harbor_help(executable: str, *args: str) -> str | None:
     try:
         result = subprocess.run(
             [executable, *args, "--help"],
@@ -1323,6 +1323,8 @@ def harbor_help(executable: str, *args: str) -> str:
             text=True,
             timeout=20,
         )
+    except subprocess.TimeoutExpired:
+        return None
     except OSError:
         return ""
     return f"{result.stdout}\n{result.stderr}"
@@ -1340,6 +1342,8 @@ def build_harbor_command(
 ) -> HarborCommandPlan:
     exe = executable or detect_harbor_executable() or "harbor"
     help_blob = help_text if help_text is not None else harbor_help(exe, "run")
+    help_timed_out = help_blob is None
+    help_blob = help_blob or ""
     task_flag = "--include-task-name"
     command = [
         exe,
@@ -1362,25 +1366,35 @@ def build_harbor_command(
     for item in spec.agent_kwargs:
         command.extend(["--agent-kwarg", item])
     if spec.backend == "slurm-pyxis":
+        environment_kwargs = [
+            "sqsh_cache_dir=/wbl-fast/usrs/trost/tbench-sqsh-cache/images",
+            "docker_tar_cache_dir=/wbl-fast/usrs/ee/agent-collab/docker-image-cache",
+            "shared_dir=/wbl-fast/usrs/trost/harbor-slurm-pyxis",
+        ]
+        slurm_partition = os.getenv("HARBOR_SLURM_PYXIS_PARTITION")
+        if slurm_partition:
+            environment_kwargs.append(f"slurm_partition={slurm_partition}")
         command.extend(
             [
                 "--environment-build-timeout-multiplier",
                 SLURM_ENVIRONMENT_BUILD_TIMEOUT_MULTIPLIER,
                 "--environment-import-path",
                 SLURM_PYXIS_ENV_IMPORT_PATH,
-                "--environment-kwarg",
-                "sqsh_cache_dir=/wbl-fast/usrs/trost/tbench-sqsh-cache/images",
-                "--environment-kwarg",
-                "docker_tar_cache_dir=/wbl-fast/usrs/ee/agent-collab/docker-image-cache",
-                "--environment-kwarg",
-                "shared_dir=/wbl-fast/usrs/trost/harbor-slurm-pyxis",
             ]
         )
+        for item in environment_kwargs:
+            command.extend(["--environment-kwarg", item])
     for task in spec.tasks:
         command.extend([task_flag, task])
-    runnable = bool(detect_harbor_executable() or executable) and has_harbor_run_flags(help_blob)
+    harbor_exists = bool(detect_harbor_executable() or executable)
+    runnable = harbor_exists and (
+        has_harbor_run_flags(help_blob) or (help_timed_out and help_text is None)
+    )
     note = (
         "Using Harbor terminal-bench@2.0 dataset filters."
+        if runnable
+        and not help_timed_out
+        else "Harbor help probe timed out; using known terminal-bench@2.0 flags."
         if runnable
         else "Harbor CLI was not found or did not expose expected run flags."
     )

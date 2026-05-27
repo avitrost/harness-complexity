@@ -23,7 +23,7 @@ def test_build_codex_command_uses_resolved_exec_binary(tmp_path: Path) -> None:
     codex = tmp_path / "codex.cmd"
     codex.write_text("", encoding="utf-8")
     command = build_codex_command(
-        budget=128,
+        budget=400,
         codex_model="gpt-5.5",
         codex_reasoning_effort="medium",
         repair=False,
@@ -41,36 +41,20 @@ def test_build_codex_command_uses_resolved_exec_binary(tmp_path: Path) -> None:
     assert "--ignore-user-config" in command
     assert "--ephemeral" in command
     assert "--skip-git-repo-check" in command
-    assert "scaffold evolution loop (harness track)" in command[-1]
-    assert "Start from agents/baseline_kira.py" in command[-1]
+    assert "Codex-compression harness optimization loop" in command[-1]
+    assert "Start from `agents/baseline_kira.py`" in command[-1]
+    assert "not a KIRA requirement" in command[-1]
+    assert "references/codex_full_harness.py" in command[-1]
     assert "open_source_harnesses.md" in command[-1]
-    assert "Codex is the most important GPT reference" in command[-1]
-    assert "implementation depth scaled to the available line budget" in command[-1]
+    assert "high-fidelity Codex behavior reference" in command[-1]
+    assert "Codex-like terminal-agent behavior" in command[-1]
     assert "logs/frontier_val.json" in command[-1]
-    assert "Keep candidate/harness.py at most 128 nonblank, non-comment source lines" in command[-1]
-    assert "Blank lines and comments do not count" in command[-1]
-    assert "near-duplicate numbered functions" in command[-1]
-    assert "many tiny helpers" in command[-1]
-    assert "rule tables" in command[-1]
-    assert "top-level rule catalog" in command[-1]
-    assert "single function or method" in command[-1]
+    assert "Keep candidate/harness.py between 380 and 400 physical lines" in command[-1]
+    assert "Use nearly all of the available physical LOC" in command[-1]
+    assert "modular and thinnable" in command[-1]
     assert "large fixture strings" in command[-1]
-    assert "pass Ruff" in command[-1]
-
-    large_command = build_codex_command(
-        budget=8192,
-        codex_model="gpt-5.5",
-        codex_reasoning_effort="medium",
-        repair=False,
-        codex_bin=str(codex),
-        workspace=tmp_path,
-    )
-    assert "distinct reachable subsystems" in large_command[-1]
-    assert "Prefer compact loops and data structures" in large_command[-1]
-    assert "signal farms" in large_command[-1]
-    assert "prefix-family method grids" in large_command[-1]
-    assert "PolicyRule/list catalogs" in large_command[-1]
-    assert "SignalSpec/metric fields" in large_command[-1]
+    assert "benchmark-specific hacks" in command[-1]
+    assert "physical line budget" in command[-1]
 
 
 def test_resume_run_dir_requires_existing_run_id(tmp_path: Path) -> None:
@@ -103,7 +87,7 @@ def test_run_val_passes_concurrency(monkeypatch, tmp_path: Path) -> None:
         lambda command, **kwargs: calls.append((command, kwargs)),
     )
 
-    _run_val(tmp_path / "workspace", 128, tmp_path / "iter", "slurm-pyxis", concurrency=20)
+    _run_val(tmp_path / "workspace", 400, tmp_path / "iter", "slurm-pyxis", concurrency=20)
 
     command = calls[0][0]
     assert command[command.index("--concurrency") + 1] == "20"
@@ -118,8 +102,8 @@ def test_run_val_batch_splits_total_concurrency(monkeypatch, tmp_path: Path) -> 
 
     _run_val_batch(
         [
-            (tmp_path / "w1", 128, tmp_path / "i1", "slurm-pyxis"),
-            (tmp_path / "w2", 128, tmp_path / "i2", "slurm-pyxis"),
+            (tmp_path / "w1", 400, tmp_path / "i1", "slurm-pyxis"),
+            (tmp_path / "w2", 400, tmp_path / "i2", "slurm-pyxis"),
         ],
         total_concurrency=20,
     )
@@ -128,14 +112,17 @@ def test_run_val_batch_splits_total_concurrency(monkeypatch, tmp_path: Path) -> 
     assert _split_concurrency(21, 2) == [11, 10]
 
 
-def test_8192_budget_bucket_starts_after_4096() -> None:
-    assert _budget_min_lines(8192) == 4097
+def test_budget_min_lines_require_near_full_physical_loc() -> None:
+    assert _budget_min_lines(400) == 380
+    assert _budget_min_lines(1660) == 1577
 
 
 def test_budget_specific_seed_sources() -> None:
-    assert _seed_source_for_budget(128) == Path("candidate")
-    assert _seed_source_for_budget(1024) == Path("seeds/B1024")
-    assert _seed_source_for_budget(8192) == Path("seeds/B8192")
+    assert _seed_source_for_budget(400) == Path("seeds/codex_400")
+    assert _seed_source_for_budget(700) == Path("seeds/codex_700")
+    assert _seed_source_for_budget(1000) == Path("seeds/codex_1000")
+    assert _seed_source_for_budget(1300) == Path("seeds/codex_1300")
+    assert _seed_source_for_budget(1660) == Path("seeds/codex_compressed")
 
 
 def test_history_dirs_exclude_current_iteration(tmp_path: Path) -> None:
