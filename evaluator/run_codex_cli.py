@@ -11,7 +11,7 @@ from evaluator.parse_results import parse_records
 from evaluator.run_val import BACKENDS, _backend_error
 from evaluator.splits import VAL_CONCURRENCY, get_test_tasks, get_val_tasks
 from plumbing.codex_cli_agent import CODEX_CLI_AGENT_IMPORT_PATH, DEFAULT_TIMEOUT_SEC
-from plumbing.harbor_adapter import HarborRunSpec, build_harbor_command
+from plumbing.harbor_adapter import TERMINAL_BENCH_DATASET, HarborRunSpec, build_harbor_command
 from plumbing.openai_client import terminal_model, terminal_reasoning_effort
 
 
@@ -28,6 +28,12 @@ def run_codex_cli_split(
     dry_run: bool,
     harbor_bin: str | None = None,
     harbor_help_text: str | None = None,
+    dataset: str = TERMINAL_BENCH_DATASET,
+    dataset_path: Path | None = None,
+    max_retries: int = 0,
+    verifier_timeout_multiplier: float | None = None,
+    retry_include: tuple[str, ...] = (),
+    retry_exclude: tuple[str, ...] = (),
 ) -> dict[str, Any]:
     if backend not in BACKENDS:
         raise ValueError(f"unsupported backend: {backend}")
@@ -46,6 +52,12 @@ def run_codex_cli_split(
         concurrency=concurrency,
         split=split,
         backend=backend,
+        dataset=dataset,
+        dataset_path=dataset_path,
+        max_retries=max_retries,
+        verifier_timeout_multiplier=verifier_timeout_multiplier,
+        retry_include=retry_include,
+        retry_exclude=retry_exclude,
         agent_import_path=CODEX_CLI_AGENT_IMPORT_PATH,
         agent_kwargs=(
             f"codex_model={codex_model}",
@@ -57,8 +69,14 @@ def run_codex_cli_split(
     command_json = {
         "split": split,
         "backend": backend,
+        "dataset": dataset,
+        "dataset_path": str(dataset_path) if dataset_path is not None else None,
         "codex_model": codex_model,
         "codex_reasoning_effort": codex_reasoning_effort,
+        "max_retries": max_retries,
+        "verifier_timeout_multiplier": verifier_timeout_multiplier,
+        "retry_include": list(retry_include),
+        "retry_exclude": list(retry_exclude),
         "command": plan.command,
         "runnable": plan.runnable,
         "task_flag": plan.task_flag,
@@ -99,6 +117,12 @@ def main() -> int:
     parser.add_argument("--codex-reasoning-effort", default=terminal_reasoning_effort())
     parser.add_argument("--timeout-sec", type=int, default=DEFAULT_TIMEOUT_SEC)
     parser.add_argument("--harbor-bin")
+    parser.add_argument("--dataset", default=TERMINAL_BENCH_DATASET)
+    parser.add_argument("--dataset-path", type=Path)
+    parser.add_argument("--max-retries", type=int, default=0)
+    parser.add_argument("--verifier-timeout-multiplier", type=float)
+    parser.add_argument("--retry-include", action="append", default=[])
+    parser.add_argument("--retry-exclude", action="append", default=[])
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
     tasks = args.tasks or (get_val_tasks() if args.split == "val" else get_test_tasks())
@@ -114,6 +138,12 @@ def main() -> int:
         timeout_sec=args.timeout_sec,
         dry_run=args.dry_run,
         harbor_bin=args.harbor_bin,
+        dataset=args.dataset,
+        dataset_path=args.dataset_path,
+        max_retries=args.max_retries,
+        verifier_timeout_multiplier=args.verifier_timeout_multiplier,
+        retry_include=tuple(args.retry_include),
+        retry_exclude=tuple(args.retry_exclude),
     )
     print(json.dumps(summary, indent=2, sort_keys=True))
     return 0 if summary.get("ran", True) or args.dry_run else 1

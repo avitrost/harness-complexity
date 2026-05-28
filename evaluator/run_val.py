@@ -11,7 +11,7 @@ from typing import Any
 from evaluator.aggregate import aggregate_records, write_summary
 from evaluator.parse_results import parse_records
 from evaluator.splits import VAL_CONCURRENCY, VAL_TRIALS, get_val_tasks
-from plumbing.harbor_adapter import HarborRunSpec, build_harbor_command
+from plumbing.harbor_adapter import TERMINAL_BENCH_DATASET, HarborRunSpec, build_harbor_command
 from plumbing.openai_client import check_terminal_model_available, using_codex_auth
 
 BACKENDS = {"docker", "slurm-pyxis"}
@@ -29,6 +29,12 @@ def run_split(
     harbor_bin: str | None = None,
     harbor_help_text: str | None = None,
     backend: str = "docker",
+    dataset: str = TERMINAL_BENCH_DATASET,
+    dataset_path: Path | None = None,
+    max_retries: int = 0,
+    verifier_timeout_multiplier: float | None = None,
+    retry_include: tuple[str, ...] = (),
+    retry_exclude: tuple[str, ...] = (),
 ) -> dict[str, Any]:
     if backend not in BACKENDS:
         raise ValueError(f"unsupported backend: {backend}")
@@ -37,12 +43,32 @@ def run_split(
     if not tasks:
         raise ValueError(f"no tasks configured for {split} split")
     out_dir.mkdir(parents=True, exist_ok=True)
-    spec = HarborRunSpec(candidate_dir, out_dir, tasks, trials, concurrency, split, backend)
+    spec = HarborRunSpec(
+        candidate_dir=candidate_dir,
+        out_dir=out_dir,
+        tasks=tasks,
+        trials=trials,
+        concurrency=concurrency,
+        split=split,
+        backend=backend,
+        dataset=dataset,
+        dataset_path=dataset_path,
+        max_retries=max_retries,
+        verifier_timeout_multiplier=verifier_timeout_multiplier,
+        retry_include=retry_include,
+        retry_exclude=retry_exclude,
+    )
     plan = build_harbor_command(spec, executable=harbor_bin, help_text=harbor_help_text)
     command_json = {
         "split": split,
         "budget": budget,
         "backend": backend,
+        "dataset": dataset,
+        "dataset_path": str(dataset_path) if dataset_path is not None else None,
+        "max_retries": max_retries,
+        "verifier_timeout_multiplier": verifier_timeout_multiplier,
+        "retry_include": list(retry_include),
+        "retry_exclude": list(retry_exclude),
         "command": plan.command,
         "runnable": plan.runnable,
         "task_flag": plan.task_flag,
@@ -130,6 +156,12 @@ def main() -> int:
     parser.add_argument("--harbor-bin")
     parser.add_argument("--backend", choices=sorted(BACKENDS), default="docker")
     parser.add_argument("--concurrency", type=int, default=VAL_CONCURRENCY)
+    parser.add_argument("--dataset", default=TERMINAL_BENCH_DATASET)
+    parser.add_argument("--dataset-path", type=Path)
+    parser.add_argument("--max-retries", type=int, default=0)
+    parser.add_argument("--verifier-timeout-multiplier", type=float)
+    parser.add_argument("--retry-include", action="append", default=[])
+    parser.add_argument("--retry-exclude", action="append", default=[])
     args = parser.parse_args()
     summary = run_split(
         "val",
@@ -142,6 +174,12 @@ def main() -> int:
         args.dry_run,
         args.harbor_bin,
         backend=args.backend,
+        dataset=args.dataset,
+        dataset_path=args.dataset_path,
+        max_retries=args.max_retries,
+        verifier_timeout_multiplier=args.verifier_timeout_multiplier,
+        retry_include=tuple(args.retry_include),
+        retry_exclude=tuple(args.retry_exclude),
     )
     print(json.dumps(summary, indent=2, sort_keys=True))
     return 0 if summary.get("ran", True) or args.dry_run else 1

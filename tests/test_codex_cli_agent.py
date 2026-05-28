@@ -120,6 +120,32 @@ def test_run_codex_cli_split_includes_multiple_tasks(tmp_path: Path) -> None:
     assert command[command.index("--n-concurrent") + 1] == "3"
 
 
+def test_run_codex_cli_split_accepts_local_dataset_path(tmp_path: Path) -> None:
+    dataset_path = tmp_path / "OpenThoughts-TBLite"
+    summary = run_codex_cli_split(
+        split="tblite",
+        out_dir=tmp_path / "out",
+        tasks=["acl-permissions-inheritance"],
+        trials=5,
+        concurrency=7,
+        backend="slurm-pyxis",
+        codex_model="gpt-test",
+        codex_reasoning_effort="none",
+        timeout_sec=99,
+        dry_run=True,
+        harbor_bin="harbor",
+        harbor_help_text="--path --include-task-name --n-attempts --n-concurrent",
+        dataset="open-thoughts/OpenThoughts-TBLite",
+        dataset_path=dataset_path,
+    )
+
+    command = summary["command"]
+    assert "--path" in command
+    assert str(dataset_path) in command
+    assert "--dataset" not in command
+    assert summary["dataset_path"] == str(dataset_path)
+
+
 class FakeExecCall(SimpleNamespace):
     command: str
     env: dict[str, str]

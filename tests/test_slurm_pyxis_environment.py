@@ -75,9 +75,14 @@ def test_prepare_enroot_sysconf_removes_localtime_mount(tmp_path: Path) -> None:
     assert "/etc/localtime" not in extra
 
 
-def _make_env(tmp_path: Path) -> SlurmPyxisEnvironment:
+def _make_env(
+    tmp_path: Path,
+    docker_image: str | None = "ubuntu:latest",
+) -> SlurmPyxisEnvironment:
     environment_dir = tmp_path / "env"
     environment_dir.mkdir()
+    if docker_image is None:
+        (environment_dir / "Dockerfile").write_text("FROM scratch\n", encoding="utf-8")
     trial_dir = tmp_path / "trial"
     trial_dir.mkdir()
     env = SlurmPyxisEnvironment(
@@ -85,7 +90,7 @@ def _make_env(tmp_path: Path) -> SlurmPyxisEnvironment:
         environment_name="task",
         session_id="session",
         trial_paths=TrialPaths(trial_dir),
-        task_env_config=EnvironmentConfig(docker_image="ubuntu:latest"),
+        task_env_config=EnvironmentConfig(docker_image=docker_image),
         shared_dir=tmp_path / "shared",
         host_python_prefix=tmp_path / "host-python",
     )
@@ -154,6 +159,70 @@ def test_image_workdir_uses_cached_docker_config(tmp_path: Path) -> None:
     _write_image_tar(tar_path, "/image/workdir")
 
     assert env._image_workdir() == "/image/workdir"
+
+
+def test_resolve_sqsh_builds_dockerfile_archive_when_image_missing(
+    tmp_path: Path, monkeypatch
+) -> None:
+    env = _make_env(tmp_path, docker_image=None)
+    env._docker_tar_cache_dir = tmp_path / "docker-cache"
+    env._sqsh_cache_dir = tmp_path / "sqsh-cache"
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append(command)
+        if command[:2] == ["docker", "save"]:
+            _write_image_tar(Path(command[command.index("-o") + 1]), "/app", command[-1])
+        return subprocess.CompletedProcess(command, 0)
+
+    def fake_convert(tar_path, tag, out, enroot_dir):
+        calls.append(["convert", str(tar_path), tag, str(out), str(enroot_dir)])
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text("sqsh\n", encoding="utf-8")
+
+    monkeypatch.setattr(slurm_pyxis.shutil, "which", lambda name: "/usr/bin/docker")
+    monkeypatch.setattr(slurm_pyxis.subprocess, "run", fake_run)
+    monkeypatch.setattr(slurm_pyxis, "_convert_archive", fake_convert)
+
+    image = env._resolve_sqsh(force_build=False)
+
+    assert image.exists()
+    assert calls[0][:3] == ["docker", "build", "-t"]
+    assert calls[0][-1] == str(env.environment_dir)
+    assert calls[1][:3] == ["docker", "save", "-o"]
+    assert calls[2][:3] == ["docker", "image", "rm"]
+    assert calls[3][:3] == ["docker", "builder", "prune"]
+    assert calls[4][0] == "convert"
+    assert calls[4][2].startswith("harbor-local/")
+
+
+def test_convert_archive_uses_enroot_tmpdir_on_cache_volume(tmp_path: Path, monkeypatch) -> None:
+    tar_path = tmp_path / "image.tar"
+    out = tmp_path / "sqsh" / "image.sqsh"
+    enroot_dir = tmp_path / "enroot"
+    enroot_tmp = tmp_path / "enroot-tmp"
+    _write_image_tar(tar_path, "/app", "local/test:tag")
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append((command, kwargs["env"]))
+        if command[0] == "enroot":
+            tmp = Path(command[command.index("-o") + 1])
+            tmp.write_text("sqsh\n", encoding="utf-8")
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(slurm_pyxis.subprocess, "run", fake_run)
+    monkeypatch.setenv("HARBOR_ENROOT_TMPDIR", str(enroot_tmp))
+
+    slurm_pyxis._convert_archive(tar_path, "local/test:tag", out, enroot_dir)
+
+    assert out.read_text(encoding="utf-8") == "sqsh\n"
+    enroot_env = calls[-1][1]
+    assert enroot_env["ENROOT_CACHE_PATH"] == str(enroot_dir / "cache")
+    assert enroot_env["ENROOT_DATA_PATH"] == str(enroot_dir / "data")
+    assert enroot_env["ENROOT_RUNTIME_PATH"] == str(enroot_dir / "runtime")
+    assert enroot_env["ENROOT_TEMP_PATH"] == str(enroot_tmp)
+    assert enroot_env["TMPDIR"] == str(enroot_tmp)
 
 
 def test_exec_raises_like_harbor_on_command_timeout(tmp_path: Path, monkeypatch) -> None:
@@ -431,6 +500,9 @@ def test_transient_startup_error_detects_cloud_node_boot_failures() -> None:
     assert _is_transient_startup_error("srun: error: Node failure on m7i-cpu2-dy-0")
     assert _is_transient_startup_error("Nodes m7i-cpu2-dy-0 are still not ready")
     assert _is_transient_startup_error("Something is wrong with the boot of the nodes.")
+    assert _is_transient_startup_error(
+        "srun: error: slurm_receive_msgs: failed: Socket timed out on send/recv operation"
+    )
     assert not _is_transient_startup_error("FATAL: no Python runtime available")
 
 
@@ -452,9 +524,9 @@ def test_cancel_slurm_job_is_scoped_to_current_user(tmp_path: Path, monkeypatch)
     assert calls[0][0] == ["scancel", "--name", env._slurm_job_name, "--user", "trost"]
 
 
-def _write_image_tar(path: Path, workdir: str) -> None:
+def _write_image_tar(path: Path, workdir: str, tag: str = "ubuntu:latest") -> None:
     config = json.dumps({"config": {"WorkingDir": workdir}}).encode()
-    manifest = json.dumps([{"Config": "config.json", "RepoTags": ["ubuntu:latest"]}]).encode()
+    manifest = json.dumps([{"Config": "config.json", "RepoTags": [tag]}]).encode()
     with tarfile.open(path, "w") as tar:
         for name, payload in (("manifest.json", manifest), ("config.json", config)):
             info = tarfile.TarInfo(name)

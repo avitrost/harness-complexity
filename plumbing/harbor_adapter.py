@@ -65,6 +65,12 @@ class HarborRunSpec:
     concurrency: int
     split: str
     backend: str = "docker"
+    dataset: str = TERMINAL_BENCH_DATASET
+    dataset_path: Path | None = None
+    max_retries: int = 0
+    verifier_timeout_multiplier: float | None = None
+    retry_include: tuple[str, ...] = ()
+    retry_exclude: tuple[str, ...] = ()
     agent_import_path: str = HARBOR_AGENT_IMPORT_PATH
     agent_kwargs: tuple[str, ...] = ()
 
@@ -1330,8 +1336,9 @@ def harbor_help(executable: str, *args: str) -> str | None:
     return f"{result.stdout}\n{result.stderr}"
 
 
-def has_harbor_run_flags(help_text: str) -> bool:
-    required = ("--dataset", "--include-task-name", "--n-attempts", "--n-concurrent")
+def has_harbor_run_flags(help_text: str, *, uses_dataset_path: bool = False) -> bool:
+    dataset_flag = "--path" if uses_dataset_path else "--dataset"
+    required = (dataset_flag, "--include-task-name", "--n-attempts", "--n-concurrent")
     return all(flag in help_text for flag in required)
 
 
@@ -1345,24 +1352,39 @@ def build_harbor_command(
     help_timed_out = help_blob is None
     help_blob = help_blob or ""
     task_flag = "--include-task-name"
+    uses_dataset_path = spec.dataset_path is not None
     command = [
         exe,
         "run",
-        "--dataset",
-        TERMINAL_BENCH_DATASET,
-        "--jobs-dir",
-        str(spec.out_dir),
-        "--n-attempts",
-        str(spec.trials),
-        "--n-concurrent",
-        str(spec.concurrency),
-        "--agent-import-path",
-        spec.agent_import_path,
-        "--agent-kwarg",
-        f"candidate_dir={spec.candidate_dir}",
-        "--quiet",
-        "--yes",
     ]
+    if uses_dataset_path:
+        command.extend(["--path", str(spec.dataset_path)])
+    else:
+        command.extend(["--dataset", spec.dataset])
+    command.extend(
+        [
+            "--jobs-dir",
+            str(spec.out_dir),
+            "--n-attempts",
+            str(spec.trials),
+            "--n-concurrent",
+            str(spec.concurrency),
+            "--agent-import-path",
+            spec.agent_import_path,
+            "--agent-kwarg",
+            f"candidate_dir={spec.candidate_dir}",
+            "--quiet",
+            "--yes",
+        ]
+    )
+    if spec.max_retries:
+        command.extend(["--max-retries", str(spec.max_retries)])
+    if spec.verifier_timeout_multiplier is not None:
+        command.extend(["--verifier-timeout-multiplier", str(spec.verifier_timeout_multiplier)])
+    for item in spec.retry_include:
+        command.extend(["--retry-include", item])
+    for item in spec.retry_exclude:
+        command.extend(["--retry-exclude", item])
     for item in spec.agent_kwargs:
         command.extend(["--agent-kwarg", item])
     if spec.backend == "slurm-pyxis":
@@ -1388,14 +1410,21 @@ def build_harbor_command(
         command.extend([task_flag, task])
     harbor_exists = bool(detect_harbor_executable() or executable)
     runnable = harbor_exists and (
-        has_harbor_run_flags(help_blob) or (help_timed_out and help_text is None)
+        has_harbor_run_flags(help_blob, uses_dataset_path=uses_dataset_path)
+        or (help_timed_out and help_text is None)
+    )
+    dataset_note = (
+        f"local dataset path {spec.dataset_path}"
+        if uses_dataset_path
+        else f"Harbor dataset {spec.dataset}"
     )
     note = (
-        "Using Harbor terminal-bench@2.0 dataset filters."
-        if runnable
-        and not help_timed_out
-        else "Harbor help probe timed out; using known terminal-bench@2.0 flags."
-        if runnable
-        else "Harbor CLI was not found or did not expose expected run flags."
+        f"Using {dataset_note} filters."
+        if runnable and not help_timed_out
+        else (
+            f"Harbor help probe timed out; using known flags for {dataset_note}."
+            if runnable
+            else "Harbor CLI was not found or did not expose expected run flags."
+        )
     )
     return HarborCommandPlan(command=command, runnable=runnable, task_flag=task_flag, note=note)

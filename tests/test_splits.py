@@ -43,6 +43,52 @@ def test_harbor_command_dry_run_constructs_task_flags() -> None:
     assert "--model" not in plan.command
 
 
+def test_harbor_command_can_use_local_dataset_path() -> None:
+    spec = HarborRunSpec(
+        Path("candidate"),
+        Path("out"),
+        ["a", "b"],
+        4,
+        8,
+        "tblite",
+        dataset_path=Path("external_datasets/OpenThoughts-TBLite/revision"),
+    )
+    plan = build_harbor_command(
+        spec,
+        executable="harbor",
+        help_text="--path --include-task-name --n-attempts --n-concurrent",
+    )
+
+    assert plan.runnable is True
+    assert "--path" in plan.command
+    assert "--dataset" not in plan.command
+    assert "external_datasets/OpenThoughts-TBLite/revision" in plan.command
+    assert plan.command.count("--include-task-name") == 2
+
+
+def test_harbor_command_can_add_retry_and_verifier_timeout_flags() -> None:
+    spec = HarborRunSpec(
+        Path("candidate"),
+        Path("out"),
+        ["a"],
+        4,
+        8,
+        "tblite",
+        max_retries=2,
+        verifier_timeout_multiplier=3.0,
+        retry_exclude=("VerifierTimeoutError",),
+    )
+    plan = build_harbor_command(
+        spec,
+        executable="harbor",
+        help_text="--dataset --include-task-name --n-attempts --n-concurrent",
+    )
+
+    assert plan.command[plan.command.index("--max-retries") + 1] == "2"
+    assert plan.command[plan.command.index("--verifier-timeout-multiplier") + 1] == "3.0"
+    assert plan.command[plan.command.index("--retry-exclude") + 1] == "VerifierTimeoutError"
+
+
 def test_harbor_command_can_use_slurm_pyxis_environment() -> None:
     spec = HarborRunSpec(Path("candidate"), Path("out"), ["a"], 1, 1, "val", "slurm-pyxis")
     plan = build_harbor_command(

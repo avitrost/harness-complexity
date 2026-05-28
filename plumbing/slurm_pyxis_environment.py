@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 from contextlib import suppress
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -32,7 +33,7 @@ DEFAULT_HOST_PYTHON_PREFIX = Path(sys.prefix).resolve()
 HOST_PYTHON_MOUNT = "/opt/harbor-python"
 DEFAULT_STARTUP_TIMEOUT_SEC = 12 * 60 * 60
 DEFAULT_HEALTH_TIMEOUT_SEC = 20 * 60
-DEFAULT_STARTUP_RETRIES = 3
+DEFAULT_STARTUP_RETRIES = 5
 DEFAULT_STARTUP_RETRY_DELAY_SEC = 60
 DEFAULT_EXEC_REQUEST_GRACE_SEC = 180
 DEFAULT_SHUTDOWN_TIMEOUT_SEC = 5
@@ -44,6 +45,8 @@ DEFAULT_SLURM_JOB_NAME_PREFIX = "hb"
 _TRANSIENT_STARTUP_ERRORS = (
     "node failure",
     "still not ready",
+    "slurm_receive_msgs",
+    "socket timed out on send/recv operation",
     "something is wrong with the boot",
 )
 _IO_EXECUTOR = ThreadPoolExecutor(
@@ -673,8 +676,14 @@ class SlurmPyxisEnvironment(BaseEnvironment):
             raise RuntimeError("Slurm/Pyxis only supports Linux task containers")
         if (self.environment_dir / "docker-compose.yaml").exists():
             raise RuntimeError("Slurm/Pyxis backend currently supports one-container tasks only")
-        if not self.task_env_config.docker_image:
-            raise RuntimeError("Slurm/Pyxis backend requires [environment].docker_image")
+        if (
+            not self.task_env_config.docker_image
+            and not (self.environment_dir / "Dockerfile").exists()
+        ):
+            raise RuntimeError(
+                "Slurm/Pyxis backend requires [environment].docker_image or "
+                "environment/Dockerfile"
+            )
 
     @classmethod
     def preflight(cls) -> None:
@@ -1198,11 +1207,13 @@ class SlurmPyxisEnvironment(BaseEnvironment):
 
     def _resolve_sqsh(self, force_build: bool) -> Path:
         image = self.task_env_config.docker_image
-        assert image
-        image_path = Path(image)
-        if image_path.suffix == ".sqsh" and image_path.exists():
-            return image_path
-        tar_path = image_path if image_path.suffix == ".tar" else self._tar_for_image(image)
+        if image:
+            image_path = Path(image)
+            if image_path.suffix == ".sqsh" and image_path.exists():
+                return image_path
+            tar_path = image_path if image_path.suffix == ".tar" else self._tar_for_image(image)
+        else:
+            tar_path = self._tar_for_dockerfile(force_build)
         tag = _docker_archive_tag(tar_path)
         out = self._sqsh_cache_dir / f"{_safe_image_name(tag)}.sqsh"
         if out.exists() and not force_build:
@@ -1214,6 +1225,19 @@ class SlurmPyxisEnvironment(BaseEnvironment):
             )
         _convert_archive(tar_path, tag, out, self._sqsh_cache_dir.parent / "enroot")
         return out
+
+    def _tar_for_dockerfile(self, force_build: bool) -> Path:
+        dockerfile = self.environment_dir / "Dockerfile"
+        if not dockerfile.exists():
+            raise RuntimeError(
+                "Slurm/Pyxis backend requires [environment].docker_image or "
+                "environment/Dockerfile"
+            )
+        return prepare_dockerfile_archive(
+            self.environment_dir,
+            docker_tar_cache_dir=self._docker_tar_cache_dir,
+            force_build=force_build,
+        )
 
     def _tar_for_image(self, image: str) -> Path:
         candidates = [_safe_image_name(ref) for ref in _image_ref_candidates(image)]
@@ -1317,6 +1341,125 @@ def _safe_image_name(image: str) -> str:
     return image.replace("/", "_").replace(":", "_").replace("#", "_")
 
 
+def _dockerfile_image_tag(environment_dir: Path) -> str:
+    digest = _docker_context_digest(environment_dir)
+    raw_name = environment_dir.parent.name.lower()
+    safe_name = "".join(char if char.isalnum() else "-" for char in raw_name).strip("-")
+    safe_name = safe_name[:80] or "task"
+    return f"harbor-local/{safe_name}:{digest[:16]}"
+
+
+def prepare_dockerfile_archive(
+    environment_dir: Path,
+    docker_tar_cache_dir: Path = DEFAULT_TAR_CACHE,
+    force_build: bool = False,
+) -> Path:
+    dockerfile = environment_dir / "Dockerfile"
+    tag = _dockerfile_image_tag(environment_dir)
+    out = docker_tar_cache_dir / f"{_safe_image_name(tag)}.tar"
+    if out.exists() and not force_build:
+        return out
+    if shutil.which("docker") is None:
+        raise RuntimeError(
+            f"No cached Docker archive found at {out}. Docker is required to build {dockerfile}."
+        )
+    _build_dockerfile_archive(environment_dir, tag, out)
+    return out
+
+
+def prepare_dockerfile_sqsh(
+    environment_dir: Path,
+    sqsh_cache_dir: Path = DEFAULT_SQSH_CACHE,
+    docker_tar_cache_dir: Path = DEFAULT_TAR_CACHE,
+    force_build: bool = False,
+) -> Path:
+    tar_path = prepare_dockerfile_archive(
+        environment_dir,
+        docker_tar_cache_dir=docker_tar_cache_dir,
+        force_build=force_build,
+    )
+    tag = _docker_archive_tag(tar_path)
+    out = sqsh_cache_dir / f"{_safe_image_name(tag)}.sqsh"
+    if out.exists() and not force_build:
+        return out
+    _convert_archive(tar_path, tag, out, sqsh_cache_dir.parent / "enroot")
+    return out
+
+
+def _docker_context_digest(context: Path) -> str:
+    hasher = hashlib.sha256()
+    for path in sorted(context.rglob("*")):
+        relative = path.relative_to(context).as_posix()
+        if path.is_dir():
+            continue
+        hasher.update(relative.encode())
+        if path.is_symlink():
+            hasher.update(b"symlink")
+            hasher.update(os.readlink(path).encode())
+            continue
+        hasher.update(b"file")
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                hasher.update(chunk)
+    return hasher.hexdigest()
+
+
+def _build_dockerfile_archive(context: Path, tag: str, out: Path) -> None:
+    out.parent.mkdir(parents=True, exist_ok=True)
+    lock = out.with_suffix(out.suffix + ".lock")
+    if not _acquire_cache_lock(lock, out):
+        return
+    try:
+        if out.exists():
+            return
+        try:
+            subprocess.run(["docker", "build", "-t", tag, str(context)], check=True)
+            tmp = out.with_suffix(out.suffix + f".tmp.{os.getpid()}")
+            subprocess.run(["docker", "save", "-o", str(tmp), tag], check=True)
+            tmp.replace(out)
+        finally:
+            _remove_generated_docker_image(tag)
+            _prune_generated_docker_build_cache(tag)
+    finally:
+        _release_cache_lock(lock)
+
+
+def _acquire_cache_lock(lock: Path, out: Path) -> bool:
+    while True:
+        try:
+            lock.mkdir()
+            (lock / "pid").write_text(str(os.getpid()), encoding="utf-8")
+            return True
+        except FileExistsError:
+            if out.exists():
+                return False
+            if _cache_lock_is_stale(lock):
+                with suppress(FileNotFoundError):
+                    shutil.rmtree(lock)
+                continue
+            time.sleep(2)
+
+
+def _cache_lock_is_stale(lock: Path) -> bool:
+    pid_file = lock / "pid"
+    if pid_file.exists():
+        try:
+            pid = int(pid_file.read_text(encoding="utf-8").strip())
+        except ValueError:
+            return True
+        return not Path(f"/proc/{pid}").exists()
+    try:
+        age = time.time() - lock.stat().st_mtime
+    except FileNotFoundError:
+        return False
+    return age > 60
+
+
+def _release_cache_lock(lock: Path) -> None:
+    with suppress(FileNotFoundError):
+        shutil.rmtree(lock)
+
+
 def _prepare_enroot_sysconf(target: Path, source: Path = DEFAULT_ENROOT_SYSCONF) -> Path | None:
     if not source.exists():
         return None
@@ -1354,14 +1497,8 @@ def _convert_archive(tar_path: Path, tag: str, out: Path, enroot_dir: Path) -> N
     out.parent.mkdir(parents=True, exist_ok=True)
     enroot_dir.mkdir(parents=True, exist_ok=True)
     lock = out.with_suffix(out.suffix + ".lock")
-    while True:
-        try:
-            lock.mkdir()
-            break
-        except FileExistsError:
-            if out.exists():
-                return
-            time.sleep(2)
+    if not _acquire_cache_lock(lock, out):
+        return
     try:
         if out.exists():
             return
@@ -1370,11 +1507,55 @@ def _convert_archive(tar_path: Path, tag: str, out: Path, enroot_dir: Path) -> N
             path = enroot_dir / name
             path.mkdir(parents=True, exist_ok=True)
             env[f"ENROOT_{name.upper()}_PATH"] = str(path)
+        tmp_dir = _enroot_tmp_dir(enroot_dir)
+        tmp_dir.mkdir(parents=True, exist_ok=True)
+        env["ENROOT_TEMP_PATH"] = str(tmp_dir)
+        env["TMPDIR"] = str(tmp_dir)
         subprocess.run(["docker", "load", "-i", str(tar_path)], check=True, env=env)
         tmp = out.with_suffix(out.suffix + f".tmp.{os.getpid()}")
-        subprocess.run(
-            ["enroot", "import", "-o", str(tmp), f"dockerd://{tag}"], check=True, env=env
-        )
-        tmp.replace(out)
+        try:
+            subprocess.run(
+                ["enroot", "import", "-o", str(tmp), f"dockerd://{tag}"],
+                check=True,
+                env=env,
+            )
+            tmp.replace(out)
+        finally:
+            _remove_generated_docker_image(tag)
     finally:
-        lock.rmdir()
+        _release_cache_lock(lock)
+
+
+def _remove_generated_docker_image(tag: str) -> None:
+    if not tag.startswith("harbor-local/"):
+        return
+    subprocess.run(
+        ["docker", "image", "rm", "-f", tag],
+        check=False,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+
+def _prune_generated_docker_build_cache(tag: str) -> None:
+    if not tag.startswith("harbor-local/"):
+        return
+    max_used = os.environ.get("HARBOR_DOCKER_BUILD_CACHE_MAX_USED", "2GB")
+    if max_used.lower() in {"0", "off", "false", "none"}:
+        return
+    subprocess.run(
+        ["docker", "builder", "prune", "-f", "--max-used-space", max_used],
+        check=False,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+
+def _enroot_tmp_dir(enroot_dir: Path) -> Path:
+    configured = os.environ.get("HARBOR_ENROOT_TMPDIR")
+    if configured:
+        return Path(configured)
+    shm = Path("/dev/shm")
+    if shm.is_dir() and os.access(shm, os.W_OK):
+        return shm / f"harbor-enroot-{os.getuid()}"
+    return enroot_dir / "tmp"

@@ -10,6 +10,7 @@ dependencies = [
     "pandas",
     "pytest",
     "ruff",
+    "huggingface-hub",
 ]
 
 [build-system]
