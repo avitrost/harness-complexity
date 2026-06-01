@@ -26,6 +26,18 @@ BASE_TEST_TASKS = [
     "reshard-c4-data",
 ]
 
+TB2_CORE_TASKS = [
+    "bn-fit-modify",
+    "circuit-fibsqrt",
+    "polyglot-c-py",
+    "sparql-university",
+    "mteb-retrieve",
+    "cobol-modernization",
+    "password-recovery",
+    "model-extraction-relu-logits",
+    "large-scale-text-editing",
+]
+
 VAL_TASKS = [*BASE_VAL_TASKS, *BASE_TEST_TASKS]
 TEST_TASKS: list[str] = []
 HELDOUT_TASKS = [
@@ -101,6 +113,8 @@ HELDOUT_TASKS = [
 ]
 VAL_TRIALS = 4
 VAL_CONCURRENCY = 160
+TB2_CORE_TRIALS = 10
+TB2_CORE_CONCURRENCY = 90
 TEST_TRIALS = 4
 TEST_CONCURRENCY = 160
 HELDOUT_TRIALS = 2
@@ -113,6 +127,10 @@ def get_val_tasks() -> list[str]:
 
 def get_test_tasks() -> list[str]:
     return list(TEST_TASKS)
+
+
+def get_tb2_core_tasks() -> list[str]:
+    return list(TB2_CORE_TASKS)
 
 
 def get_heldout_tasks() -> list[str]:

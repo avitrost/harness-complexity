@@ -67,7 +67,7 @@ def _run(command: list[str]) -> dict[str, Any]:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("path", type=Path, nargs="?", default=Path("candidate/harness.py"))
+    parser.add_argument("path", type=Path, nargs="?", default=Path("seeds/codex_400/harness.py"))
     parser.add_argument("--min-lines", type=int)
     parser.add_argument("--max-lines", type=int)
     parser.add_argument("--min-sloc", type=int)

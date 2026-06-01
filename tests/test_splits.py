@@ -14,10 +14,23 @@ def test_split_definitions() -> None:
     ]
     assert len(splits.get_val_tasks()) == 20
     assert splits.get_test_tasks() == []
+    assert splits.get_tb2_core_tasks() == [
+        "bn-fit-modify",
+        "circuit-fibsqrt",
+        "polyglot-c-py",
+        "sparql-university",
+        "mteb-retrieve",
+        "cobol-modernization",
+        "password-recovery",
+        "model-extraction-relu-logits",
+        "large-scale-text-editing",
+    ]
     assert len(splits.get_heldout_tasks()) == 69
     assert set(splits.get_val_tasks()).isdisjoint(splits.get_heldout_tasks())
     assert splits.VAL_TRIALS == 4
     assert splits.VAL_CONCURRENCY == 160
+    assert splits.TB2_CORE_TRIALS == 10
+    assert splits.TB2_CORE_CONCURRENCY == 90
     assert splits.TEST_TRIALS == 4
     assert splits.TEST_CONCURRENCY == 160
     assert splits.HELDOUT_TRIALS == 2

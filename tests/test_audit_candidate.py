@@ -103,5 +103,5 @@ def test_audit_rejects_oversized_function_body(tmp_path: Path) -> None:
 
 
 def test_audit_accepts_seed_candidate() -> None:
-    result = audit_candidate(Path("candidate/harness.py"))
+    result = audit_candidate(Path("seeds/codex_400/harness.py"))
     assert result["ok"], result["errors"]

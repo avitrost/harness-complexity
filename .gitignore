@@ -7,11 +7,8 @@ __pycache__/
 logs/
 external_datasets/
 
-experience/B*/*
-!experience/B*/.gitkeep
+experience/
 final_test/*
-!final_test/B*/
-final_test/B*/*
-!final_test/B*/.gitkeep
+!final_test/.gitkeep
 results/*
 !results/.gitkeep

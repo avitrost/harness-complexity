@@ -88,9 +88,6 @@ def main() -> int:
     parser.add_argument("--prebuild-workers", type=int, default=4)
     parser.add_argument("--task", action="append", dest="tasks")
     parser.add_argument("--candidate", action="append", dest="candidate_names")
-    parser.add_argument(
-        "--selected-candidates", type=Path, default=Path("results/selected_candidates.json")
-    )
     parser.add_argument("--include-codex-cli", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--include-terminus-2", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--codex-model", default=terminal_model())
@@ -132,7 +129,6 @@ def main() -> int:
     )
     candidates = _select_candidates(
         _all_candidates(
-            args.selected_candidates,
             args.include_codex_cli,
             args.include_terminus_2,
         ),
@@ -212,37 +208,15 @@ def main() -> int:
 
 
 def _all_candidates(
-    selected_candidates_path: Path,
     include_codex_cli: bool,
     include_terminus_2: bool,
 ) -> list[EvalCandidate]:
-    candidates = [*SEED_CANDIDATES, *_improved_candidates(selected_candidates_path)]
+    candidates = list(SEED_CANDIDATES)
     if include_codex_cli:
         candidates.append(EvalCandidate("codex_cli", "baseline", "codex_cli", None))
     if include_terminus_2:
         candidates.append(EvalCandidate("terminus_2", "baseline", "terminus_2", None))
     return candidates
-
-
-def _improved_candidates(path: Path) -> list[EvalCandidate]:
-    records = json.loads(path.read_text(encoding="utf-8"))
-    result = []
-    for record in records:
-        if int(record.get("iteration", 0)) == 0 and int(record.get("candidate", 0)) == 0:
-            continue
-        budget = int(record["budget"])
-        iteration = int(record["iteration"])
-        candidate = int(record["candidate"])
-        result.append(
-            EvalCandidate(
-                name=f"improved_B{budget:04d}_iter_{iteration:03d}_cand_{candidate:02d}",
-                category="improved",
-                kind="harness",
-                budget=budget,
-                candidate_dir=Path(record["candidate_dir"]),
-            )
-        )
-    return result
 
 
 def _select_candidates(

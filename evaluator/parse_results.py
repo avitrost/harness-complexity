@@ -18,7 +18,7 @@ def parse_records(
         for path in out_dir.rglob("*.json"):
             if path.name in {"command.json", "records.json", "summary.json", "validation.json"}:
                 continue
-            for record in _records_from_payload(_read_json(path)):
+            for record in _records_from_payload(_read_json(path), path):
                 record["_source"] = str(path)
                 records.append(record)
     return _strip_internal_fields(_renumber_trials(_dedupe(records)))
@@ -31,20 +31,22 @@ def _read_json(path: Path) -> Any:
         return None
 
 
-def _records_from_payload(payload: Any) -> list[dict[str, Any]]:
+def _records_from_payload(payload: Any, source_path: Path | None = None) -> list[dict[str, Any]]:
     if isinstance(payload, list):
-        return [_normalize(item) for item in payload if _looks_like_record(item)]
+        return [_normalize(item, source_path) for item in payload if _looks_like_record(item)]
     if isinstance(payload, dict):
         if isinstance(payload.get("trial_results"), list):
             return [
-                _normalize(item) for item in payload["trial_results"] if _looks_like_record(item)
+                _normalize(item, source_path)
+                for item in payload["trial_results"]
+                if _looks_like_record(item)
             ]
         for key in ("records", "trials", "results"):
             value = payload.get(key)
             if isinstance(value, list):
-                return [_normalize(item) for item in value if _looks_like_record(item)]
+                return [_normalize(item, source_path) for item in value if _looks_like_record(item)]
         if _looks_like_record(payload):
-            return [_normalize(payload)]
+            return [_normalize(payload, source_path)]
     return []
 
 
@@ -58,7 +60,7 @@ def _looks_like_record(item: Any) -> bool:
     )
 
 
-def _normalize(item: dict[str, Any]) -> dict[str, Any]:
+def _normalize(item: dict[str, Any], source_path: Path | None = None) -> dict[str, Any]:
     reward = _extract_reward(item)
     status = item.get("status")
     if not status:
@@ -66,13 +68,15 @@ def _normalize(item: dict[str, Any]) -> dict[str, Any]:
             status = "crash"
         else:
             status = "success" if reward == 1 else "failure" if reward == 0 else "unknown"
-    return {
+    record = {
         "task": _task_name(item),
         "trial": _trial_number(item),
         "reward": 1 if float(reward or 0) >= 1 else 0,
         "status": status,
         "runtime_sec": _runtime_sec(item),
     }
+    record.update(_token_accounting(item, source_path))
+    return record
 
 
 def _extract_reward(item: dict[str, Any]) -> float | int | None:
@@ -117,6 +121,71 @@ def _runtime_sec(item: dict[str, Any]) -> float | None:
     if started and finished:
         return max(0.0, (finished - started).total_seconds())
     return None
+
+
+def _token_accounting(item: dict[str, Any], source_path: Path | None) -> dict[str, Any]:
+    accounting = _accounting_from_agent_result(item.get("agent_result"))
+    if not accounting:
+        accounting = _accounting_from_harness_result(source_path)
+    if not accounting:
+        return {}
+    input_tokens = _optional_int(accounting.get("input_tokens"))
+    output_tokens = _optional_int(accounting.get("output_tokens"))
+    cached_tokens = _optional_int(accounting.get("cached_tokens"))
+    total_tokens = _optional_int(accounting.get("total_tokens"))
+    if total_tokens is None and (input_tokens is not None or output_tokens is not None):
+        total_tokens = (input_tokens or 0) + (output_tokens or 0)
+    result: dict[str, Any] = {
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "cached_tokens": cached_tokens,
+        "total_tokens": total_tokens,
+        "cost_usd": _optional_float(accounting.get("cost_usd")),
+        "model_calls": _optional_int(accounting.get("model_calls")),
+    }
+    return {key: value for key, value in result.items() if value is not None}
+
+
+def _accounting_from_agent_result(agent_result: Any) -> dict[str, Any]:
+    if not isinstance(agent_result, dict):
+        return {}
+    return {
+        "input_tokens": agent_result.get("input_tokens", agent_result.get("n_input_tokens")),
+        "output_tokens": agent_result.get("output_tokens", agent_result.get("n_output_tokens")),
+        "cached_tokens": agent_result.get("cached_tokens", agent_result.get("n_cache_tokens")),
+        "total_tokens": agent_result.get("total_tokens", agent_result.get("n_total_tokens")),
+        "cost_usd": agent_result.get("cost_usd"),
+        "model_calls": agent_result.get("model_calls"),
+    }
+
+
+def _accounting_from_harness_result(source_path: Path | None) -> dict[str, Any]:
+    if source_path is None or source_path.name != "result.json":
+        return {}
+    harness_result = source_path.parent / "agent" / "harness-result.json"
+    payload = _read_json(harness_result) if harness_result.is_file() else None
+    if not isinstance(payload, dict):
+        return {}
+    accounting = payload.get("model_accounting")
+    return accounting if isinstance(accounting, dict) else {}
+
+
+def _optional_int(value: Any) -> int | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _optional_float(value: Any) -> float | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _parse_datetime(value: Any) -> datetime | None:

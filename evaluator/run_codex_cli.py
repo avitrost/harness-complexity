@@ -10,7 +10,14 @@ from typing import Any
 from evaluator.aggregate import aggregate_records, write_summary
 from evaluator.parse_results import parse_records
 from evaluator.run_val import BACKENDS, _backend_error
-from evaluator.splits import VAL_CONCURRENCY, get_test_tasks, get_val_tasks
+from evaluator.splits import (
+    TB2_CORE_CONCURRENCY,
+    TB2_CORE_TRIALS,
+    VAL_CONCURRENCY,
+    get_tb2_core_tasks,
+    get_test_tasks,
+    get_val_tasks,
+)
 from plumbing.harbor_adapter import TERMINAL_BENCH_DATASET, HarborRunSpec, build_harbor_command
 from plumbing.openai_client import terminal_model, terminal_reasoning_effort
 
@@ -64,9 +71,7 @@ def run_codex_cli_split(
         retry_exclude=retry_exclude,
         agent_name=OFFICIAL_CODEX_AGENT_NAME,
         agent_model_name=codex_model,
-        agent_kwargs=(
-            f"reasoning_effort={codex_reasoning_effort}",
-        ),
+        agent_kwargs=(f"reasoning_effort={codex_reasoning_effort}",),
         agent_env=_codex_agent_env(codex_auth_json_path),
         include_candidate_dir_kwarg=False,
     )
@@ -115,11 +120,11 @@ def run_codex_cli_split(
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--split", choices=("val", "test"), default="val")
+    parser.add_argument("--split", choices=("val", "test", "tb2-core"), default="tb2-core")
     parser.add_argument("--task", action="append", dest="tasks")
     parser.add_argument("--out-dir", type=Path, required=True)
-    parser.add_argument("--trials", type=int, default=1)
-    parser.add_argument("--concurrency", type=int, default=VAL_CONCURRENCY)
+    parser.add_argument("--trials", type=int)
+    parser.add_argument("--concurrency", type=int)
     parser.add_argument("--backend", choices=sorted(BACKENDS), default="slurm-pyxis")
     parser.add_argument("--codex-model", default=terminal_model())
     parser.add_argument("--codex-reasoning-effort", default=terminal_reasoning_effort())
@@ -134,13 +139,14 @@ def main() -> int:
     parser.add_argument("--retry-exclude", action="append", default=[])
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
-    tasks = args.tasks or (get_val_tasks() if args.split == "val" else get_test_tasks())
+    tasks = args.tasks or _default_tasks(args.split)
     summary = run_codex_cli_split(
         split=args.split,
         out_dir=args.out_dir,
         tasks=tasks,
-        trials=args.trials,
-        concurrency=args.concurrency,
+        trials=args.trials or (TB2_CORE_TRIALS if args.split == "tb2-core" else 1),
+        concurrency=args.concurrency
+        or (TB2_CORE_CONCURRENCY if args.split == "tb2-core" else VAL_CONCURRENCY),
         backend=args.backend,
         codex_model=args.codex_model,
         codex_reasoning_effort=args.codex_reasoning_effort,
@@ -157,6 +163,14 @@ def main() -> int:
     )
     print(json.dumps(summary, indent=2, sort_keys=True))
     return 0 if summary.get("ran", True) or args.dry_run else 1
+
+
+def _default_tasks(split: str) -> list[str]:
+    if split == "tb2-core":
+        return get_tb2_core_tasks()
+    if split == "val":
+        return get_val_tasks()
+    return get_test_tasks()
 
 
 def _codex_agent_env(codex_auth_json_path: Path | None = None) -> tuple[str, ...]:

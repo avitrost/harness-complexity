@@ -1,353 +1,191 @@
 # Harness Complexity
 
-Minimal scaffold for a controlled TerminalBench 2.0 experiment measuring how the
-maximum formatted physical line count of `candidate/harness.py` affects performance.
+Utilities and harness seeds for regular TerminalBench-style evaluation on Harbor,
+with Slurm/Pyxis support for running task attempts on the CPU cluster.
+
+The meta-harness optimization loop has been moved to the
+`legacy/meta-optimization` branch. `main` is now for evaluating fixed harnesses and
+official baselines, then aggregating score, runtime, crash, and token metrics.
 
 ## Codebase Map
 
-This repository separates the counted experimental artifact from the uncounted
-mechanics needed to run it.
+- `seeds/` contains the evaluated harnesses:
+  - `codex_full`: readable Codex-port baseline.
+  - `codex_compressed`: standalone compressed Codex port.
+  - `codex_1300`, `codex_1000`, `codex_700`, `codex_400`: line-budget Codex
+    compression seeds.
+  - `minimal_agent`: minimal one-tool shell baseline.
+  - `terminus_2_compressed`: standalone compressed Terminus2 port.
+- `plumbing/` contains mechanical adapter and transport code: OpenAI/Codex auth,
+  Harbor custom-agent glue, Slurm/Pyxis execution, tmux terminal support, and
+  result logging.
+- `evaluator/` contains split definitions, Harbor command construction, parsing,
+  aggregation, and official Codex/Terminus2 baseline wrappers.
+- `scripts/` contains runnable evaluation helpers. The primary helper is
+  `scripts/run_tb2_core.py`.
+- `final_test/`, `results/`, `experience/`, and `external_datasets/` are generated
+  artifact/cache locations and are ignored except for placeholders.
+- `tests/` contains local unit tests with fakes/mocks. They do not launch real
+  benchmark jobs.
 
-- `candidate/harness.py` is the only counted file. It contains the starter harness
-  and is the file future optimization cycles edit.
-- `plumbing/` is uncounted support code: OpenAI API calls, the Harbor custom-agent
-  adapter, candidate loading, small shared types, logging helpers, and secrets loading.
-- `evaluator/` is uncounted orchestration: split definitions, validation, Harbor
-  run wrappers, result parsing, aggregation, budget optimization, and full experiment
-  sequencing.
-- `scripts/` contains uncounted command-line helpers for line counting, static audit,
-  workspace creation, candidate selection, bootstrap confidence intervals, and plots.
-- `tree/main/candidate` is the canonical small-budget seed. Budget-specific seeds
-  live under `seeds/Bxxxx/` when a larger budget should start from a larger
-  validated harness.
-- `seeds/codex_full/harness.py` is the uncompressed Codex-port baseline for the
-  compression track. It embeds pinned Codex base instructions and tool grammar
-  from `references/codex_port/` and is tested for exact prompt/grammar fidelity.
-- `seeds/codex_compressed/harness.py` is a standalone compressed form of the same
-  Codex-port harness. It is black-formatted, does not import `codex_full`, and is
-  intended as a lower-LOC starting point with the same default behavior. Static
-  prompt/schema/manifest data is packed inside this file rather than moved to
-  uncounted plumbing.
-- `seeds/minimal_agent/harness.py` is the minimal tool-call baseline: a generic
-  one-tool `exec_command` agent with plain terminal-history prompting and no
-  Codex transcript, compaction, recovery, classifier, or instrumentation layers.
-- `seeds/terminus_2_compressed/harness.py` is a standalone compressed Terminus2
-  port. It keeps Harbor Terminus2's JSON prompt template and parser behavior in
-  the counted file, then opts into the adapter's tmux-backed persistent terminal
-  substrate so parsed keystroke batches run through one long-lived pane when the
-  environment supports it. Missing tmux support is treated as a hard failure.
-  It also carries a compact Terminus-style three-subagent context summarization
-  path; adapter metadata records model-call timing and token accounting.
-- `experience/`, `final_test/`, and `results/` are artifact directories. Generated
-  contents are ignored by git; only `.gitkeep` placeholders are tracked.
-- `tests/` contains local unit tests. They use mocks/fakes and do not run OpenAI calls
-  or TerminalBench jobs.
+## Primary Eval: TB2 Core
 
-## Counted Harness
+The default evaluation target is the fixed 9-task TB2 core proxy set, 10 trials per
+task:
 
-The barebones starter harness is intentionally small. It imports only allowed plumbing,
-formats recent terminal observations, calls `plumbing.openai_client.call_terminal_model(...)`,
-and returns a JSON action: `run` with the next command or `done` when complete.
-Budgets without an explicit seed start from this harness. B1024 starts from
-`seeds/B1024/harness.py`, and B8192 starts from `seeds/B8192/harness.py`.
+1. `bn-fit-modify`
+2. `circuit-fibsqrt`
+3. `polyglot-c-py`
+4. `sparql-university`
+5. `mteb-retrieve`
+6. `cobol-modernization`
+7. `password-recovery`
+8. `model-extraction-relu-logits`
+9. `large-scale-text-editing`
 
-The terminal-solving model and reasoning effort are not named in
-`candidate/harness.py`. They are frozen in `plumbing/openai_client.py`, outside the
-line-counted file. Future
-optimization cycles may change harness behavior only inside `candidate/harness.py`;
-prompt text in that file counts toward the budget.
-Counted harnesses may either call the text-only terminal model wrapper or define
-tool schemas and call the mechanical tool-call wrapper. In the latter case, the
-schema, action selection, completion policy, and command mediation remain counted
-harness code; plumbing only transports messages, schemas, and returned tool calls.
-
-Budget optimization follows the Meta-Harness loop: the budget seed is first
-validated and evaluated as `iter_000_seed`, then each iteration asks Codex for `k`
-new candidate harnesses. Codex runs in a temporary isolated workspace containing
-`candidate/harness.py`, `proposal.md`, local workspace instructions, and a
-`history/` snapshot of prior valid candidates from the same budget. After Codex
-returns, the candidate is copied into
-`experience/Bxxxx/run_YYYYMMDD_HHMMSS/iter_NNN_cand_KK/workspace` for validation,
-evaluation, and record keeping; the `history/` snapshot is stripped before validation
-so candidate runtime code cannot read prior traces.
-
-The proposer workspace treats `history/` as a queryable filesystem, not a prompt
-summary. It also exposes official-style `logs/` and `jobs/` aliases so the proposer
-sees the same shape as the Meta-Harness TerminalBench reference. In addition to the
-copied raw candidate directories, the optimizer writes:
-`history/index.json` for candidate-level scores, `history/frontier.json` for the
-best prior candidate overall and by task, `history/evolution_summary.jsonl` for an
-append-only compact run history, `history/trace_index.json` for machine-readable
-paths to raw trial logs, and `history/failures.md` as a short table of contents for
-failed/crashed traces worth inspecting first. The raw `trial.log`,
-`harness-turn-*.json`, `model-call-*.json`, `result.json`, and `exception.txt` files
-remain the source of truth.
-
-Proposer workspaces edit `agents/baseline_kira.py`, matching the official reference
-parent name. That file starts as the seed for the active budget. Before
-validation, the optimizer copies it back to `candidate/harness.py`, which remains
-the counted and evaluated artifact. Workspaces also include
-`references/terminus_kira.py` plus `references/open_source_harnesses.md` and
-small source snapshots for Codex, opencode, gemini-cli, and qwen-code. These
-alias/reference directories are excluded from copied-back candidate workspaces
-and cannot be imported at runtime.
-
-The Codex compression track can start from either the readable
-`seeds/codex_full/harness.py` baseline or the standalone
-`seeds/codex_compressed/harness.py` baseline, then remove or compress components
-while preserving behavior where possible. The full seed mirrors Codex's
-base-instruction prompt, `exec_command` function tool,
-`write_stdin` continuation tool, plan updates, freeform `apply_patch` grammar
-tool, prompt-building shape, AGENTS.md context injection, parallel tool-call
-execution, shell-style patch interception, relative workdir resolution, and
-response-item replay for prior assistant/tool calls/outputs. Its context manager
-uses Codex's pinned compact prompt and summary prefix for memento-style
-replacement history before falling back to deterministic budget trimming.
-
-The full Codex seed now exposes named thinning profiles through
-`CODEX_HARNESS_PROFILE` and `scripts/thin_codex_harness.py`. Profiles are meant
-to make LOC-axis ablations mechanical rather than hand-edited:
-
-- `codex_full` preserves the full port baseline.
-- `no_instrumentation`, `no_classifier`, `no_recovery`, and `no_compaction`
-  remove isolated behavior slices.
-- `exec_only_tools` keeps only the `exec_command` tool.
-- `minimal_loop` removes history replay, context management, compaction,
-  non-exec tools, recovery, classifier metadata, and instrumentation.
-
-To emit a counted single-file variant:
+Run one harness on Slurm/Pyxis:
 
 ```bash
-python scripts/thin_codex_harness.py --profile minimal_loop --output /tmp/harness.py --validate
-```
-
-For a real-Codex comparison point, run `python -m evaluator.run_codex_cli`.
-This routes Harbor tasks through Harbor's official installed `codex` agent,
-passing the selected model, `reasoning_effort`, and host Codex auth through
-normal Harbor agent configuration.
-
-For an official Terminus2 comparison point, run
-`python -m evaluator.run_terminus_2`. This routes Harbor tasks directly to
-`harbor.agents.terminus_2:Terminus2` with explicit model/parser kwargs.
-
-## Plumbing Boundary
-
-Uncounted plumbing must stay mechanical. It may load `OPENAI_API_KEY`, call the fixed
-terminal model, pass through tool schemas supplied by the counted harness, return
-tool-call records, adapt the harness to Harbor, validate line count and static
-constraints, parse Harbor outputs, aggregate scores, and plot results. It must not
-contain task-solving strategy that would change benchmark behavior.
-
-The Harbor adapter exposes `plumbing.harbor_adapter:HarborHarnessAgent`. Harbor calls
-that class, the adapter loads the candidate harness from the selected workspace, passes
-terminal history to the counted harness, executes the returned command, and records
-observations. The adapter does not choose the model and does not add task-specific
-behavior.
-
-The adapter imposes no independent harness turn cap; it loops until the candidate
-returns `done`, returns an empty command, or reaches a mechanical soft deadline
-shortly before Harbor's task agent timeout. That guard lets the verifier run and
-records a normal failed attempt instead of letting Harbor cancel the agent mid-tool.
-Tool calls are also wrapped in a small adapter watchdog, while the Slurm exec
-transport keeps a longer request grace to avoid false timeouts under load.
-It logs per-turn command observations plus `model-call-XX.json` prompt/response traces.
-
-## Install
-
-```bash
-python -m pip install -e .
-```
-
-Set the terminal model API key:
-
-```bash
-export OPENAI_API_KEY=...
-```
-
-PowerShell:
-
-```powershell
-$env:OPENAI_API_KEY = "..."
-```
-
-For local smoke runs, the plumbing can also use your existing Codex CLI ChatGPT
-login instead of a Platform API key:
-
-```powershell
-$env:OPENAI_AUTH_MODE = "codex"
-```
-
-This reads `~/.codex/auth.json` locally and calls the Codex backend directly. It is
-intended for local experimentation only; use the Platform API path for preregistered
-benchmark runs.
-
-Authenticate the Codex CLI separately using your local Codex setup.
-
-Install Harbor as a CLI tool. On this machine it was installed with `uv tool install harbor
---python 3.12`, which places `harbor.exe` in `C:\Users\trost\.local\bin`. That directory
-has been added to the user PATH. If a shell cannot find it yet, open a new shell or run:
-
-```powershell
-$env:PATH = "$HOME\.local\bin;$env:PATH"
-```
-
-## Common Commands
-
-Validate the starter harness:
-
-```bash
-python -m evaluator.validate_candidate candidate/harness.py --max-lines 128
-```
-
-Dry-run one budget:
-
-```bash
-python -m evaluator.optimize_budget --budget 128 --cycles 10 --k 2 --dry-run
-```
-
-Run one real budget:
-
-```bash
-python -m evaluator.optimize_budget --budget 128 --cycles 10 --k 2 --codex-model gpt-5.5 --codex-reasoning-effort medium
-```
-
-Resume an existing budget run and set Harbor concurrency explicitly:
-
-```bash
-python -m evaluator.optimize_budget \
-  --budget 128 \
-  --run-id overnight_YYYYMMDD \
-  --cycles 10 \
-  --resume \
-  --concurrency 160 \
+OPENAI_AUTH_MODE=codex python scripts/run_tb2_core.py \
+  --candidate seed_codex_400 \
+  --concurrency 90 \
   --backend slurm-pyxis
 ```
 
-During optimization, `--concurrency` is the per-iteration validation target. With
-`k=2` and the default `--concurrency 160`, both candidates in an iteration validate
-at the same time with Harbor concurrency 80 each, then the next optimizer iteration
-starts after both finish.
-
-Run the overnight budget set under one run id:
+Run official Codex CLI on the same subset:
 
 ```bash
-python scripts/run_overnight.py \
-  --run-id overnight_YYYYMMDD \
-  --iterations 10 \
-  --codex-model gpt-5.5 \
-  --terminal-model gpt-5.4-mini
+OPENAI_AUTH_MODE=codex python scripts/run_tb2_core.py \
+  --candidate codex_cli \
+  --codex-model gpt-5.4-mini \
+  --codex-reasoning-effort medium \
+  --concurrency 90 \
+  --backend slurm-pyxis
 ```
 
-On Windows the optimizer resolves `codex.cmd` explicitly. If Codex is installed in a
-non-standard location, pass:
+Run several candidates in parallel by raising `--max-candidate-workers`. The
+`--concurrency` value is per candidate, so the total Slurm fanout is approximately
+`concurrency * max_candidate_workers`.
 
-```powershell
-python -m evaluator.optimize_budget --budget 128 --cycles 10 --k 2 --codex-bin C:\path\to\codex.cmd
+```bash
+OPENAI_AUTH_MODE=codex python scripts/run_tb2_core.py \
+  --candidate seed_codex_compressed \
+  --candidate seed_terminus_2_compressed \
+  --candidate codex_cli \
+  --concurrency 90 \
+  --max-candidate-workers 3 \
+  --backend slurm-pyxis
 ```
 
-For ChatGPT-authenticated Codex CLI accounts, model names are slugs such as `gpt-5.5`;
-reasoning effort is separate.
+The run directory contains:
 
-## Slurm Container Runs
+- `manifest.json`: tasks, trials, candidates, backend, and concurrency policy.
+- one subdirectory per candidate.
+- each candidate subdirectory contains `command.json`, raw Harbor output,
+  `records.json`, `summary.json`, and `per_task.csv`.
 
-Local validation uses Harbor's Docker environment by default. CPU Slurm nodes do
-not run Docker directly, so use the explicit Slurm/Pyxis backend there:
+## Other Eval Modes
+
+Direct custom-harness eval:
 
 ```bash
 OPENAI_AUTH_MODE=codex python -m evaluator.run_val \
-  --candidate-dir . \
-  --budget 128 \
-  --out-dir experience/B0128/iter_001 \
+  --candidate-dir seeds/codex_compressed \
+  --budget 1660 \
+  --out-dir final_test/manual_codex_compressed \
   --backend slurm-pyxis
 ```
 
-The backend is a Harbor custom environment
-(`plumbing.slurm_pyxis_environment:SlurmPyxisEnvironment`). It keeps Harbor's
-task, agent, verifier, and result flow, but runs each task attempt as one
-persistent `srun --container-image=<task>.sqsh` job. Cached Docker archives are
-read from `/wbl-fast/usrs/ee/agent-collab/docker-image-cache`; converted images
-and Slurm staging live under `/wbl-fast/usrs/trost`. Direct
-`--container-image=<cached>.tar` fails with Enroot `Invalid image format`.
-
-The Slurm/Pyxis wrapper stages a small stdlib HTTP exec server instead of
-Harbor's FastAPI/uvicorn bootstrap, so compute nodes do not need pip, network
-package downloads, or `asciinema` setup just to start the control plane. It also
-uses a private Enroot config without the host `/etc/localtime` bind mount so
-`tzdata` package setup does not poison the container dpkg state. These changes
-are for Harbor's control server only; the TerminalBench task image, working
-directory, task files, verifier, and result flow stay under Harbor.
-
-The optimizer runs Codex inside a Bubblewrap filesystem namespace, rooted at a
-temporary workspace, and also passes Codex
-`--sandbox workspace-write --cd <workspace>`. The namespace mounts system tooling,
-DNS, the temp workspace, and only the Codex auth file needed for login; repo parent
-directories and prior experiment runs are not mounted. The optimizer then copies
-back only the explicit outputs: `candidate/harness.py`, `proposal.md`, and the
-workspace instructions for recordkeeping. Symlinked output paths are rejected before
-reading or copying. The only prior-run material exposed to Codex is the run-local
-`history/` snapshot created by the optimizer; test results, stale runs, and other
-budget histories are not included.
-
-Dry-run validation Harbor command construction:
+Official Codex CLI wrapper:
 
 ```bash
-python -m evaluator.run_val --candidate-dir . --budget 128 --out-dir experience/B0128/iter_001 --dry-run
+OPENAI_AUTH_MODE=codex python -m evaluator.run_codex_cli \
+  --split tb2-core \
+  --out-dir final_test/codex_cli_medium \
+  --codex-model gpt-5.4-mini \
+  --codex-reasoning-effort medium \
+  --backend slurm-pyxis
 ```
 
-The Harbor command shape is:
-
-```text
-harbor run --dataset terminal-bench@2.0 --include-task-name <task> --n-attempts <trials> --n-concurrent <concurrency> --jobs-dir <out-dir> --agent-import-path plumbing.harbor_adapter:HarborHarnessAgent --agent-kwarg candidate_dir=<candidate-dir>
-```
-
-Run final test for a selected candidate after a held-out task list has been configured:
+Official Terminus2 wrapper:
 
 ```bash
-python -m evaluator.run_test --candidate-dir path/to/workspace --budget 128 --out-dir final_test/B0128
+OPENAI_AUTH_MODE=codex python -m evaluator.run_terminus_2 \
+  --split tb2-core \
+  --out-dir final_test/terminus_2 \
+  --terminus-model gpt-5.4-mini \
+  --backend slurm-pyxis
 ```
 
-The default experiment command does not run a final test. Pass `--run-final-test`
-only when you intentionally want that extra manual evaluation.
-
-Regenerate plots:
+OpenThoughts-TBLite remains available as a secondary dataset:
 
 ```bash
-python scripts/plot_complexity_curve.py
+OPENAI_AUTH_MODE=codex python scripts/run_tblite.py \
+  --candidate seed_codex_compressed \
+  --candidate codex_cli \
+  --backend slurm-pyxis
 ```
 
-## Pre-Registered Design
+## Metrics
 
-- Meta-optimizer: Codex GPT-5.5 Medium.
-- Terminal-solving model: GPT-5.4 Mini with no reasoning, fixed in uncounted plumbing.
-- Counted file: `candidate/harness.py` only.
-- Independent variable: Black-formatted nonblank, non-comment source lines.
-- LOC buckets: 1-128, 129-256, 257-512, 513-1024, 1025-2048,
-  2049-4096, 4097-8192.
-- Optimization iterations: 10 per budget by default.
-- Default proposal batch size: `k=2` candidates per iteration, matching the explicit
-  candidate count reported for Meta-Harness search runs in the paper.
-- The budget seed is evaluated once as the initial population before proposals; only
-  proposed candidates must satisfy the bucket floor.
-- Each budget has independent search history.
-- No cross-budget sharing in the primary experiment.
-- Optimization split: the prior validation and test task lists are combined into
-  one 20-task set, N=4 trials per task.
-- There is no automatic held-out test set in this phase; final evaluation is run
-  manually later with a separate task set.
+`records.json` is the normalized trial table. `summary.json` and `per_task.csv`
+aggregate:
 
-Validation monitoring score:
+- reward score and successes
+- crashes
+- mean runtime
+- input, output, cached, and total tokens
+- mean total tokens per trial
+- cost when Harbor/provider data supplies it
+- model-call count for custom harnesses when available
 
-```text
-optimization_score = split_mean
+Token accounting is supported for both evaluation paths:
+
+- Official Harbor agents such as Codex CLI expose token fields in each trial's
+  `agent_result`.
+- Custom harnesses run through `plumbing.harbor_adapter:HarborHarnessAgent`, which
+  writes `agent/harness-result.json` with `model_accounting` derived from
+  `model-call-*.json` traces.
+
+If provider usage is unavailable for a custom trace, the adapter falls back to an
+approximate token count from logged prompt/response text. Missing accounting stays
+`null`; it is not silently counted as zero.
+
+## Slurm/Pyxis Backend
+
+Use `--backend slurm-pyxis` for cluster runs. The backend is
+`plumbing.slurm_pyxis_environment:SlurmPyxisEnvironment`. It runs each task attempt
+as a persistent `srun --container-image=<task>.sqsh` job, using cached Docker
+archives from `/wbl-fast/usrs/ee/agent-collab/docker-image-cache` and converted
+SQSH images under `/wbl-fast/usrs/trost`.
+
+The Slurm wrapper stages a small stdlib HTTP exec server inside the task container.
+This avoids needing package downloads or Harbor's normal FastAPI/uvicorn bootstrap
+on compute nodes, while preserving Harbor's task, agent, verifier, and result flow.
+
+Set `HARBOR_SLURM_PYXIS_PARTITION` to override the partition:
+
+```bash
+export HARBOR_SLURM_PYXIS_PARTITION=m7i-cpu2
 ```
 
-Keep `final_test/` and `results/` outside any candidate runtime path. Candidate selection writes both
-`results/selected_candidates.*` for the single representative per budget and
-`results/pareto_frontier.*` for the non-dominated validation frontier.
+## Validation
 
-## Harbor Integration
+Run local validation before pushing changes:
 
-This scaffold targets Harbor `0.6.6` and the remote dataset `terminal-bench@2.0`.
-The run wrappers use `--include-task-name` filters for the registered val/test tasks,
-`--n-attempts` for repeated trials, and `--n-concurrent` for concurrency. Use
-`--dry-run` first to inspect the exact command without launching benchmarks.
+```bash
+python -m pytest -q
+python -m ruff check .
+```
+
+Validate a single harness file:
+
+```bash
+python -m evaluator.validate_candidate seeds/codex_400/harness.py --max-lines 400 --min-lines 390
+```
+
+Dry-run the primary eval command without launching Harbor:
+
+```bash
+python scripts/run_tb2_core.py --candidate seed_codex_400 --dry-run
+```
