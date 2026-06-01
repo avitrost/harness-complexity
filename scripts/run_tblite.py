@@ -14,6 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from evaluator.run_codex_cli import run_codex_cli_split  # noqa: E402
+from evaluator.run_terminus_2 import run_terminus_2_split  # noqa: E402
 from evaluator.run_val import run_split  # noqa: E402
 from evaluator.tblite import (  # noqa: E402
     TBLITE_CONCURRENCY,
@@ -28,6 +29,7 @@ from evaluator.tblite import (  # noqa: E402
 from plumbing.codex_cli_agent import DEFAULT_TIMEOUT_SEC  # noqa: E402
 from plumbing.openai_client import terminal_model, terminal_reasoning_effort  # noqa: E402
 from plumbing.slurm_pyxis_environment import prepare_dockerfile_sqsh  # noqa: E402
+from plumbing.terminus_2_agent import DEFAULT_TERMINUS_2_PARSER_NAME  # noqa: E402
 
 DEFAULT_TBLITE_MAX_RETRIES = 2
 DEFAULT_TBLITE_RETRY_EXCLUDE = ("VerifierTimeoutError",)
@@ -57,6 +59,13 @@ SEED_CANDIDATES = (
         Path("seeds/codex_compressed"),
     ),
     EvalCandidate("seed_codex_full", "seed", "harness", None, Path("seeds/codex_full")),
+    EvalCandidate(
+        "seed_terminus_2_compressed",
+        "seed",
+        "harness",
+        None,
+        Path("seeds/terminus_2_compressed"),
+    ),
 )
 
 
@@ -83,8 +92,17 @@ def main() -> int:
         "--selected-candidates", type=Path, default=Path("results/selected_candidates.json")
     )
     parser.add_argument("--include-codex-cli", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--include-terminus-2", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--codex-model", default=terminal_model())
     parser.add_argument("--codex-reasoning-effort", default=terminal_reasoning_effort())
+    parser.add_argument("--terminus-model", default=terminal_model())
+    parser.add_argument("--terminus-parser-name", default=DEFAULT_TERMINUS_2_PARSER_NAME)
+    parser.add_argument("--terminus-reasoning-effort", default=terminal_reasoning_effort())
+    parser.add_argument(
+        "--terminus-record-terminal-session",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+    )
     parser.add_argument("--timeout-sec", type=int, default=DEFAULT_TIMEOUT_SEC)
     parser.add_argument("--max-retries", type=int, default=DEFAULT_TBLITE_MAX_RETRIES)
     parser.add_argument(
@@ -113,7 +131,11 @@ def main() -> int:
         else []
     )
     candidates = _select_candidates(
-        _all_candidates(args.selected_candidates, args.include_codex_cli),
+        _all_candidates(
+            args.selected_candidates,
+            args.include_codex_cli,
+            args.include_terminus_2,
+        ),
         args.candidate_names,
     )
     retry_include = tuple(args.retry_include or ())
@@ -142,6 +164,12 @@ def main() -> int:
         "verifier_timeout_multiplier": args.verifier_timeout_multiplier,
         "retry_include": list(retry_include),
         "retry_exclude": list(retry_exclude),
+        "codex_model": args.codex_model,
+        "codex_reasoning_effort": args.codex_reasoning_effort,
+        "terminus_model": args.terminus_model,
+        "terminus_parser_name": args.terminus_parser_name,
+        "terminus_reasoning_effort": args.terminus_reasoning_effort,
+        "terminus_record_terminal_session": args.terminus_record_terminal_session,
         "prebuild_slurm_images": args.prebuild_slurm_images,
         "prebuild_workers": args.prebuild_workers,
         "prebuilt_image_count": len(prebuilt_images),
@@ -165,6 +193,10 @@ def main() -> int:
                     args.harbor_bin,
                     args.codex_model,
                     args.codex_reasoning_effort,
+                    args.terminus_model,
+                    args.terminus_parser_name,
+                    args.terminus_reasoning_effort,
+                    args.terminus_record_terminal_session,
                     args.timeout_sec,
                     args.max_retries,
                     args.verifier_timeout_multiplier,
@@ -179,10 +211,16 @@ def main() -> int:
     return 0 if all(item.get("ran", True) or args.dry_run for item in summaries) else 1
 
 
-def _all_candidates(selected_candidates_path: Path, include_codex_cli: bool) -> list[EvalCandidate]:
+def _all_candidates(
+    selected_candidates_path: Path,
+    include_codex_cli: bool,
+    include_terminus_2: bool,
+) -> list[EvalCandidate]:
     candidates = [*SEED_CANDIDATES, *_improved_candidates(selected_candidates_path)]
     if include_codex_cli:
         candidates.append(EvalCandidate("codex_cli", "baseline", "codex_cli", None))
+    if include_terminus_2:
+        candidates.append(EvalCandidate("terminus_2", "baseline", "terminus_2", None))
     return candidates
 
 
@@ -260,6 +298,10 @@ def _run_candidate(
     harbor_bin: str | None,
     codex_model: str,
     codex_reasoning_effort: str,
+    terminus_model: str,
+    terminus_parser_name: str,
+    terminus_reasoning_effort: str | None,
+    terminus_record_terminal_session: bool,
     timeout_sec: int,
     max_retries: int,
     verifier_timeout_multiplier: float | None,
@@ -278,6 +320,27 @@ def _run_candidate(
             codex_model=codex_model,
             codex_reasoning_effort=codex_reasoning_effort,
             timeout_sec=timeout_sec,
+            dry_run=dry_run,
+            harbor_bin=harbor_bin,
+            dataset=TBLITE_DATASET_ID,
+            dataset_path=dataset_path,
+            max_retries=max_retries,
+            verifier_timeout_multiplier=verifier_timeout_multiplier,
+            retry_include=retry_include,
+            retry_exclude=retry_exclude,
+        )
+    if candidate.kind == "terminus_2":
+        return run_terminus_2_split(
+            split=TBLITE_SPLIT,
+            out_dir=out_dir,
+            tasks=tasks,
+            trials=trials,
+            concurrency=concurrency,
+            backend=backend,
+            terminus_model=terminus_model,
+            parser_name=terminus_parser_name,
+            reasoning_effort=terminus_reasoning_effort,
+            record_terminal_session=terminus_record_terminal_session,
             dry_run=dry_run,
             harbor_bin=harbor_bin,
             dataset=TBLITE_DATASET_ID,

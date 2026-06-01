@@ -275,6 +275,26 @@ def test_model_trace_records_reasoning_effort(monkeypatch, tmp_path) -> None:
     assert trace["reasoning_effort"] == "none"
 
 
+def test_model_trace_records_response_usage(monkeypatch, tmp_path) -> None:
+    monkeypatch.delenv("OPENAI_AUTH_MODE", raising=False)
+    fake = UsageOpenAI()
+    set_client_factory(lambda: fake)
+    token = set_trace_dir(tmp_path)
+    try:
+        call_terminal_model([{"role": "user", "content": "next?"}])
+    finally:
+        reset_trace_dir(token)
+        set_client_factory(None)
+
+    trace = json.loads((tmp_path / "model-call-01.json").read_text(encoding="utf-8"))
+    assert trace["request_metadata"]["usage"] == {
+        "input_tokens": 12,
+        "output_tokens": 3,
+        "total_tokens": 15,
+        "cached_tokens": 4,
+    }
+
+
 def test_codex_backend_retry_delay_uses_retry_after_header() -> None:
     exc = CodexBackendError(429, '{"detail":"Rate limit exceeded"}', {"retry-after": "7"})
 
@@ -290,6 +310,22 @@ class RecordingOpenAI:
     def _create(self, **kwargs):
         self.calls.append(kwargs)
         return SimpleNamespace(output_text=self.text)
+
+
+class UsageOpenAI:
+    def __init__(self) -> None:
+        self.responses = SimpleNamespace(create=self._create)
+
+    def _create(self, **kwargs):
+        return SimpleNamespace(
+            output_text="ok",
+            usage=SimpleNamespace(
+                input_tokens=12,
+                output_tokens=3,
+                total_tokens=15,
+                input_tokens_details=SimpleNamespace(cached_tokens=4),
+            ),
+        )
 
 
 class RecordingToolOpenAI:

@@ -1,0 +1,269 @@
+{
+  "roots": [
+    "final_test/tblite5x_fixed_20260528_201823",
+    "final_test/tblite4x_catchup_20260528_224933"
+  ],
+  "tb2_tasks": 69,
+  "tblite_tasks": 100,
+  "rows": [
+    {
+      "id": "minimal_agent",
+      "label": "Minimal 100",
+      "kind": "seed",
+      "loc": 100,
+      "plot_x": 100,
+      "tblite": {
+        "mean": 0.3325,
+        "lo": 0.265,
+        "hi": 0.4025,
+        "tasks": 100,
+        "min_attempts": 4,
+        "missing_attempts": 0,
+        "raw_trials": 400
+      },
+      "tb2": {
+        "mean": 0.13043478260869565,
+        "lo": 0.06521739130434782,
+        "hi": 0.2028985507246377,
+        "tasks": 69,
+        "attempts": 138,
+        "successes": 18,
+        "errors": 16,
+        "cancelled": 1,
+        "missing_file_as_failure": false,
+        "reconstructed_from_raw_trials": true
+      }
+    },
+    {
+      "id": "codex_400",
+      "label": "400 seed",
+      "kind": "seed",
+      "loc": 400,
+      "plot_x": 400,
+      "tblite": {
+        "mean": 0.3625,
+        "lo": 0.2925,
+        "hi": 0.435,
+        "tasks": 100,
+        "min_attempts": 4,
+        "missing_attempts": 0,
+        "raw_trials": 400
+      },
+      "tb2": {
+        "mean": 0.16666666666666666,
+        "lo": 0.08695652173913043,
+        "hi": 0.2536231884057971,
+        "tasks": 69,
+        "missing_file_as_failure": false
+      }
+    },
+    {
+      "id": "codex_700",
+      "label": "700 seed",
+      "kind": "seed",
+      "loc": 700,
+      "plot_x": 700,
+      "tblite": {
+        "mean": 0.385,
+        "lo": 0.3125,
+        "hi": 0.46,
+        "tasks": 100,
+        "min_attempts": 4,
+        "missing_attempts": 0,
+        "raw_trials": 400
+      },
+      "tb2": {
+        "mean": 0.17391304347826086,
+        "lo": 0.09420289855072464,
+        "hi": 0.2608695652173913,
+        "tasks": 69,
+        "missing_file_as_failure": false
+      }
+    },
+    {
+      "id": "codex_1000",
+      "label": "1000 seed",
+      "kind": "seed",
+      "loc": 1000,
+      "plot_x": 1000,
+      "tblite": {
+        "mean": 0.41,
+        "lo": 0.335,
+        "hi": 0.485,
+        "tasks": 100,
+        "min_attempts": 4,
+        "missing_attempts": 0,
+        "raw_trials": 400
+      },
+      "tb2": {
+        "mean": 0.2028985507246377,
+        "lo": 0.12318840579710146,
+        "hi": 0.2898550724637681,
+        "tasks": 69,
+        "missing_file_as_failure": false
+      }
+    },
+    {
+      "id": "codex_1300",
+      "label": "1300 seed",
+      "kind": "seed",
+      "loc": 1300,
+      "plot_x": 1300,
+      "tblite": {
+        "mean": 0.3975,
+        "lo": 0.325,
+        "hi": 0.4725,
+        "tasks": 100,
+        "min_attempts": 4,
+        "missing_attempts": 0,
+        "raw_trials": 400
+      },
+      "tb2": {
+        "mean": 0.1956521739130435,
+        "lo": 0.11594202898550725,
+        "hi": 0.2826086956521739,
+        "tasks": 69,
+        "missing_file_as_failure": false
+      }
+    },
+    {
+      "id": "codex_compressed",
+      "label": "Compressed",
+      "kind": "seed",
+      "loc": 1660,
+      "plot_x": 1660,
+      "tblite": {
+        "mean": 0.4,
+        "lo": 0.3275,
+        "hi": 0.475,
+        "tasks": 100,
+        "min_attempts": 4,
+        "missing_attempts": 0,
+        "raw_trials": 400
+      },
+      "tb2": {
+        "mean": 0.15942028985507245,
+        "lo": 0.09420289855072464,
+        "hi": 0.2318840579710145,
+        "tasks": 69,
+        "missing_file_as_failure": false
+      }
+    },
+    {
+      "id": "codex_full",
+      "label": "Full port",
+      "kind": "seed",
+      "loc": 2210,
+      "plot_x": 2210,
+      "tblite": {
+        "mean": 0.3975,
+        "lo": 0.325,
+        "hi": 0.4725,
+        "tasks": 100,
+        "min_attempts": 4,
+        "missing_attempts": 0,
+        "raw_trials": 400
+      },
+      "tb2": {
+        "mean": 0.18115942028985507,
+        "lo": 0.10869565217391304,
+        "hi": 0.2608695652173913,
+        "tasks": 69,
+        "missing_file_as_failure": false
+      }
+    },
+    {
+      "id": "improved_700",
+      "label": "700 adjusted",
+      "kind": "adjusted",
+      "loc": 695,
+      "plot_x": 695,
+      "tblite": {
+        "mean": 0.3975,
+        "lo": 0.3225,
+        "hi": 0.475,
+        "tasks": 100,
+        "min_attempts": 4,
+        "missing_attempts": 0,
+        "raw_trials": 400
+      },
+      "tb2": {
+        "mean": 0.14492753623188406,
+        "lo": 0.07246376811594203,
+        "hi": 0.2246376811594203,
+        "tasks": 69,
+        "missing_file_as_failure": false
+      }
+    },
+    {
+      "id": "improved_1300",
+      "label": "1300 adjusted",
+      "kind": "adjusted",
+      "loc": 1299,
+      "plot_x": 1299,
+      "tblite": {
+        "mean": 0.405,
+        "lo": 0.33,
+        "hi": 0.4825,
+        "tasks": 100,
+        "min_attempts": 4,
+        "missing_attempts": 0,
+        "raw_trials": 400
+      },
+      "tb2": {
+        "mean": 0.17391304347826086,
+        "lo": 0.09420289855072464,
+        "hi": 0.2608695652173913,
+        "tasks": 69,
+        "missing_file_as_failure": false
+      }
+    },
+    {
+      "id": "improved_1660",
+      "label": "1660 adjusted",
+      "kind": "adjusted",
+      "loc": 1653,
+      "plot_x": 1653,
+      "tblite": {
+        "mean": 0.445,
+        "lo": 0.37,
+        "hi": 0.5225,
+        "tasks": 100,
+        "min_attempts": 4,
+        "missing_attempts": 0,
+        "raw_trials": 400
+      },
+      "tb2": {
+        "mean": 0.17391304347826086,
+        "lo": 0.10144927536231885,
+        "hi": 0.2536231884057971,
+        "tasks": 69,
+        "missing_file_as_failure": false
+      }
+    },
+    {
+      "id": "codex_cli",
+      "label": "Codex CLI",
+      "kind": "cli",
+      "loc": null,
+      "plot_x": 2400,
+      "tblite": {
+        "mean": 0.3825,
+        "lo": 0.315,
+        "hi": 0.4525,
+        "tasks": 100,
+        "min_attempts": 4,
+        "missing_attempts": 0,
+        "raw_trials": 497
+      },
+      "tb2": {
+        "mean": 0.16666666666666666,
+        "lo": 0.09420289855072464,
+        "hi": 0.2463768115942029,
+        "tasks": 69,
+        "missing_file_as_failure": false
+      }
+    }
+  ],
+  "tblite_attempts": 4
+}

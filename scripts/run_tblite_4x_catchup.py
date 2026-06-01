@@ -4,7 +4,6 @@ import argparse
 import json
 import math
 import os
-import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
@@ -16,10 +15,12 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from evaluator.run_codex_cli import run_codex_cli_split  # noqa: E402
+from evaluator.run_terminus_2 import run_terminus_2_split  # noqa: E402
 from evaluator.run_val import run_split  # noqa: E402
 from evaluator.tblite import TBLITE_DATASET_ID, TBLITE_SPLIT  # noqa: E402
 from plumbing.codex_cli_agent import DEFAULT_TIMEOUT_SEC  # noqa: E402
 from plumbing.openai_client import terminal_model, terminal_reasoning_effort  # noqa: E402
+from plumbing.terminus_2_agent import DEFAULT_TERMINUS_2_PARSER_NAME  # noqa: E402
 
 DEFAULT_SOURCE_ROOT = Path("final_test/tblite5x_fixed_20260528_201823")
 DEFAULT_MINIMAL_CONCURRENCY = 112
@@ -57,6 +58,14 @@ def main() -> int:
     parser.add_argument("--candidate", action="append", dest="candidate_names")
     parser.add_argument("--codex-model", default=terminal_model())
     parser.add_argument("--codex-reasoning-effort", default=terminal_reasoning_effort())
+    parser.add_argument("--terminus-model", default=terminal_model())
+    parser.add_argument("--terminus-parser-name", default=DEFAULT_TERMINUS_2_PARSER_NAME)
+    parser.add_argument("--terminus-reasoning-effort", default=terminal_reasoning_effort())
+    parser.add_argument(
+        "--terminus-record-terminal-session",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+    )
     parser.add_argument("--timeout-sec", type=int, default=DEFAULT_TIMEOUT_SEC)
     parser.add_argument("--harbor-bin")
     parser.add_argument("--dry-run", action="store_true")
@@ -293,6 +302,19 @@ def _run_job(
             codex_model=args.codex_model,
             codex_reasoning_effort=args.codex_reasoning_effort,
             timeout_sec=args.timeout_sec,
+        )
+    elif job.candidate.kind == "terminus_2":
+        summary = run_terminus_2_split(
+            **common,
+            terminus_model=args.terminus_model or manifest.get("terminus_model", terminal_model()),
+            parser_name=args.terminus_parser_name
+            or manifest.get("terminus_parser_name", DEFAULT_TERMINUS_2_PARSER_NAME),
+            reasoning_effort=args.terminus_reasoning_effort
+            or manifest.get("terminus_reasoning_effort"),
+            record_terminal_session=bool(
+                args.terminus_record_terminal_session
+                or manifest.get("terminus_record_terminal_session", False)
+            ),
         )
     else:
         if job.candidate.candidate_dir is None:

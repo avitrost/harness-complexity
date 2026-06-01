@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -13,21 +12,23 @@ from evaluator.run_val import BACKENDS, _backend_error
 from evaluator.splits import VAL_CONCURRENCY, get_test_tasks, get_val_tasks
 from plumbing.harbor_adapter import TERMINAL_BENCH_DATASET, HarborRunSpec, build_harbor_command
 from plumbing.openai_client import terminal_model, terminal_reasoning_effort
+from plumbing.terminus_2_agent import (
+    DEFAULT_TERMINUS_2_PARSER_NAME,
+    DEFAULT_TERMINUS_2_REASONING_EFFORT,
+    terminus_2_agent_import_path,
+)
 
-OFFICIAL_CODEX_AGENT_NAME = "codex"
-LEGACY_TIMEOUT_SEC = 7200
 
-
-def run_codex_cli_split(
+def run_terminus_2_split(
     split: str,
     out_dir: Path,
     tasks: list[str],
     trials: int,
     concurrency: int,
     backend: str,
-    codex_model: str,
-    codex_reasoning_effort: str,
-    timeout_sec: int,
+    terminus_model: str,
+    parser_name: str,
+    reasoning_effort: str | None,
     dry_run: bool,
     harbor_bin: str | None = None,
     harbor_help_text: str | None = None,
@@ -37,7 +38,7 @@ def run_codex_cli_split(
     verifier_timeout_multiplier: float | None = None,
     retry_include: tuple[str, ...] = (),
     retry_exclude: tuple[str, ...] = (),
-    codex_auth_json_path: Path | None = None,
+    record_terminal_session: bool = False,
 ) -> dict[str, Any]:
     if backend not in BACKENDS:
         raise ValueError(f"unsupported backend: {backend}")
@@ -48,6 +49,12 @@ def run_codex_cli_split(
     if not tasks:
         raise ValueError(f"no tasks configured for {split} split")
     out_dir.mkdir(parents=True, exist_ok=True)
+    agent_kwargs = [
+        f"parser_name={parser_name}",
+        f"record_terminal_session={str(record_terminal_session).lower()}",
+    ]
+    if reasoning_effort:
+        agent_kwargs.append(f"reasoning_effort={reasoning_effort}")
     spec = HarborRunSpec(
         candidate_dir=Path("."),
         out_dir=out_dir,
@@ -62,13 +69,9 @@ def run_codex_cli_split(
         verifier_timeout_multiplier=verifier_timeout_multiplier,
         retry_include=retry_include,
         retry_exclude=retry_exclude,
-        agent_name=OFFICIAL_CODEX_AGENT_NAME,
-        agent_model_name=codex_model,
-        agent_kwargs=(
-            f"reasoning_effort={codex_reasoning_effort}",
-        ),
-        agent_env=_codex_agent_env(codex_auth_json_path),
-        include_candidate_dir_kwarg=False,
+        agent_import_path=terminus_2_agent_import_path(),
+        agent_model_name=terminus_model,
+        agent_kwargs=tuple(agent_kwargs),
     )
     plan = build_harbor_command(spec, executable=harbor_bin, help_text=harbor_help_text)
     command_json = {
@@ -76,11 +79,10 @@ def run_codex_cli_split(
         "backend": backend,
         "dataset": dataset,
         "dataset_path": str(dataset_path) if dataset_path is not None else None,
-        "codex_model": codex_model,
-        "codex_reasoning_effort": codex_reasoning_effort,
-        "codex_agent": OFFICIAL_CODEX_AGENT_NAME,
-        "codex_auth_json_path": str(_resolve_codex_auth_path(codex_auth_json_path) or ""),
-        "timeout_sec": timeout_sec,
+        "terminus_model": terminus_model,
+        "parser_name": parser_name,
+        "reasoning_effort": reasoning_effort,
+        "record_terminal_session": record_terminal_session,
         "max_retries": max_retries,
         "verifier_timeout_multiplier": verifier_timeout_multiplier,
         "retry_include": list(retry_include),
@@ -121,10 +123,17 @@ def main() -> int:
     parser.add_argument("--trials", type=int, default=1)
     parser.add_argument("--concurrency", type=int, default=VAL_CONCURRENCY)
     parser.add_argument("--backend", choices=sorted(BACKENDS), default="slurm-pyxis")
-    parser.add_argument("--codex-model", default=terminal_model())
-    parser.add_argument("--codex-reasoning-effort", default=terminal_reasoning_effort())
-    parser.add_argument("--timeout-sec", type=int, default=LEGACY_TIMEOUT_SEC)
-    parser.add_argument("--codex-auth-json-path", type=Path)
+    parser.add_argument("--terminus-model", default=terminal_model())
+    parser.add_argument("--parser-name", default=DEFAULT_TERMINUS_2_PARSER_NAME)
+    parser.add_argument(
+        "--reasoning-effort",
+        default=terminal_reasoning_effort() or DEFAULT_TERMINUS_2_REASONING_EFFORT,
+    )
+    parser.add_argument(
+        "--record-terminal-session",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+    )
     parser.add_argument("--harbor-bin")
     parser.add_argument("--dataset", default=TERMINAL_BENCH_DATASET)
     parser.add_argument("--dataset-path", type=Path)
@@ -135,16 +144,16 @@ def main() -> int:
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
     tasks = args.tasks or (get_val_tasks() if args.split == "val" else get_test_tasks())
-    summary = run_codex_cli_split(
+    summary = run_terminus_2_split(
         split=args.split,
         out_dir=args.out_dir,
         tasks=tasks,
         trials=args.trials,
         concurrency=args.concurrency,
         backend=args.backend,
-        codex_model=args.codex_model,
-        codex_reasoning_effort=args.codex_reasoning_effort,
-        timeout_sec=args.timeout_sec,
+        terminus_model=args.terminus_model,
+        parser_name=args.parser_name,
+        reasoning_effort=args.reasoning_effort,
         dry_run=args.dry_run,
         harbor_bin=args.harbor_bin,
         dataset=args.dataset,
@@ -153,29 +162,10 @@ def main() -> int:
         verifier_timeout_multiplier=args.verifier_timeout_multiplier,
         retry_include=tuple(args.retry_include),
         retry_exclude=tuple(args.retry_exclude),
-        codex_auth_json_path=args.codex_auth_json_path,
+        record_terminal_session=args.record_terminal_session,
     )
     print(json.dumps(summary, indent=2, sort_keys=True))
     return 0 if summary.get("ran", True) or args.dry_run else 1
-
-
-def _codex_agent_env(codex_auth_json_path: Path | None = None) -> tuple[str, ...]:
-    auth_path = _resolve_codex_auth_path(codex_auth_json_path)
-    if auth_path is None:
-        return ()
-    return (f"CODEX_AUTH_JSON_PATH={auth_path}",)
-
-
-def _resolve_codex_auth_path(codex_auth_json_path: Path | None = None) -> Path | None:
-    if codex_auth_json_path is not None:
-        return codex_auth_json_path.expanduser().resolve()
-    env_path = os.getenv("CODEX_AUTH_JSON_PATH")
-    if env_path:
-        return Path(env_path).expanduser().resolve()
-    default = Path.home() / ".codex" / "auth.json"
-    if default.is_file():
-        return default.resolve()
-    return None
 
 
 if __name__ == "__main__":

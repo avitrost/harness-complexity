@@ -6,6 +6,8 @@ import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 import plumbing.harbor_adapter as harbor_adapter
 from plumbing.base_agent import load_harness
 from plumbing.harbor_adapter import (
@@ -243,6 +245,118 @@ def test_harbor_agent_uses_unified_exec_command_when_available(tmp_path: Path) -
     payload = json.loads((tmp_path / "logs" / "harness-turn-01.json").read_text())
     assert payload["metadata"]["unified_exec"]["session_id"] == 9
     assert payload["return_code"] is None
+
+
+def test_harbor_agent_provides_persistent_terminal_context(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    candidate = workspace / "candidate"
+    candidate.mkdir(parents=True)
+    (candidate / "harness.py").write_text(
+        "from plumbing.base_agent import BaseHarness\n"
+        "from plumbing.types import HarnessToolCall, HarnessTurn\n"
+        "class H(BaseHarness):\n"
+        "    wants_persistent_terminal = True\n"
+        "    def next_command(self, task, history):\n"
+        "        term = task.metadata['persistent_terminal']\n"
+        "        if not history:\n"
+        "            assert term['available'] is True\n"
+        "            assert term['session_id'] == 9\n"
+        "            assert 'ready' in term['initial_output']\n"
+        "            return HarnessTurn(tool_calls=(HarnessToolCall('write_stdin', {\n"
+        "                'session_id': term['session_id'],\n"
+        "                'commands': [\n"
+        "                    {'chars': 'cd src\\n', 'yield_time_ms': 100},\n"
+        "                    {'chars': 'pwd\\n', 'yield_time_ms': 200},\n"
+        "                ],\n"
+        "            }, 'call_1'),))\n"
+        "        return HarnessTurn(done=True)\n"
+        "def create_agent():\n"
+        "    return H()\n",
+        encoding="utf-8",
+    )
+    env = PersistentUnifiedEnvironment()
+    env._workdir = "/app"
+    agent = HarborHarnessAgent(logs_dir=tmp_path / "logs", candidate_dir=workspace)
+    asyncio.run(agent.run("instruction", env, SimpleNamespace(metadata=None)))
+
+    assert env.exec_calls[0]["command"] == harbor_adapter.PERSISTENT_TERMINAL_COMMAND
+    assert env.exec_calls[0]["cwd"] == "/app"
+    assert env.exec_calls[0]["tty"] is True
+    assert [item["chars"] for item in env.stdin_calls[:2]] == ["cd src\n", "pwd\n"]
+    assert env.stdin_calls[0]["yield_time_ms"] == 100
+    assert env.stdin_calls[1]["yield_time_ms"] == 200
+    assert env.stdin_calls[-1]["chars"] == "exit\n"
+    payload = json.loads((tmp_path / "logs" / "harness-turn-01.json").read_text())
+    assert payload["command"] == "write_stdin(session_id=9, commands=2)"
+    assert payload["metadata"]["terminal_command_count"] == 2
+
+
+def test_harbor_agent_provides_tmux_persistent_terminal_context(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    candidate = workspace / "candidate"
+    candidate.mkdir(parents=True)
+    (candidate / "harness.py").write_text(
+        "from plumbing.base_agent import BaseHarness\n"
+        "from plumbing.types import HarnessToolCall, HarnessTurn\n"
+        "class H(BaseHarness):\n"
+        "    wants_persistent_terminal = 'tmux'\n"
+        "    def next_command(self, task, history):\n"
+        "        term = task.metadata['persistent_terminal']\n"
+        "        if not history:\n"
+        "            assert term['available'] is True\n"
+        "            assert term['backend'] == 'tmux'\n"
+        "            assert term['session_name'].startswith('harness-complexity-')\n"
+        "            assert 'Current Terminal Screen:' in term['initial_output']\n"
+        "            return HarnessTurn(tool_calls=(HarnessToolCall('write_stdin', {\n"
+        "                'session_name': term['session_name'],\n"
+        "                'commands': [\n"
+        "                    {'chars': 'cd src\\n', 'yield_time_ms': 100},\n"
+        "                    {'chars': 'pwd\\n', 'yield_time_ms': 200},\n"
+        "                ],\n"
+        "            }, 'call_1'),))\n"
+        "        return HarnessTurn(done=True)\n"
+        "def create_agent():\n"
+        "    return H()\n",
+        encoding="utf-8",
+    )
+    env = TmuxEnvironment()
+    env._workdir = "/app"
+    agent = HarborHarnessAgent(logs_dir=tmp_path / "logs", candidate_dir=workspace)
+    asyncio.run(agent.run("instruction", env, SimpleNamespace(metadata=None)))
+
+    assert any("tmux new-session" in call["command"] for call in env.exec_calls)
+    assert any("cd /app" in call["command"] for call in env.exec_calls)
+    send_commands = [
+        call["command"] for call in env.exec_calls if "tmux send-keys" in call["command"]
+    ]
+    assert len(send_commands) == 2
+    assert "cd src" in send_commands[0]
+    assert "pwd" in send_commands[1]
+    assert "tmux kill-session" in env.exec_calls[-1]["command"]
+    payload = json.loads((tmp_path / "logs" / "harness-turn-01.json").read_text())
+    assert payload["command"].startswith("write_stdin(tmux_session=harness-complexity-")
+    assert payload["metadata"]["backend"] == "tmux"
+    assert payload["metadata"]["terminal_command_count"] == 2
+    assert "New Terminal Output:" in payload["stdout"]
+
+
+def test_tmux_persistent_terminal_fails_loudly_without_fallback() -> None:
+    agent = SimpleNamespace(wants_persistent_terminal="tmux")
+
+    with pytest.raises(RuntimeError, match="tmux missing"):
+        asyncio.run(harbor_adapter._task_context("instruction", BrokenTmuxEnvironment(), agent))
+
+
+def test_tmux_persistent_terminal_installs_tmux_when_missing() -> None:
+    agent = SimpleNamespace(wants_persistent_terminal="tmux")
+    env = InstallingTmuxEnvironment()
+
+    task = asyncio.run(harbor_adapter._task_context("instruction", env, agent))
+
+    terminal = task.metadata["persistent_terminal"]
+    assert terminal["available"] is True
+    assert any("apt-get install -y tmux" in call["command"] for call in env.exec_calls)
+    assert any("tmux new-session" in call["command"] for call in env.exec_calls)
 
 
 def test_harbor_agent_uses_unified_exec_for_native_local_shell(tmp_path: Path) -> None:
@@ -658,12 +772,16 @@ def test_harbor_agent_logs_model_call_traces(monkeypatch, tmp_path: Path) -> Non
     )
     try:
         agent = HarborHarnessAgent(logs_dir=tmp_path / "logs", candidate_dir=workspace)
-        asyncio.run(agent.run("instruction", FakeEnvironment(), SimpleNamespace(metadata=None)))
+        context = SimpleNamespace(metadata=None)
+        asyncio.run(agent.run("instruction", FakeEnvironment(), context))
     finally:
         set_client_factory(None)
     trace = (tmp_path / "logs" / "model-call-01.json").read_text(encoding="utf-8")
     assert '"content": "next?"' in trace
     assert '"response": "ok"' in trace
+    assert context.metadata["model_accounting"]["model_calls"] == 1
+    assert context.metadata["model_accounting"]["input_tokens"] > 0
+    assert context.n_input_tokens == context.metadata["model_accounting"]["input_tokens"]
 
 
 def test_harbor_agent_records_model_rate_limit_as_result(tmp_path: Path) -> None:
@@ -1023,6 +1141,73 @@ class UnifiedEnvironment:
             session_id=None,
             original_token_count=1,
         )
+
+
+class PersistentUnifiedEnvironment(UnifiedEnvironment):
+    async def write_stdin(
+        self,
+        session_id: int,
+        chars: str = "",
+        yield_time_ms: int | None = None,
+        max_output_tokens: int | None = None,
+    ):
+        self.stdin_calls.append(
+            {
+                "session_id": session_id,
+                "chars": chars,
+                "yield_time_ms": yield_time_ms,
+                "max_output_tokens": max_output_tokens,
+            }
+        )
+        return SimpleNamespace(
+            stdout=f"{chars}ok\n",
+            stderr="",
+            return_code=None,
+            chunk_id="def456",
+            wall_time_seconds=0.1,
+            session_id=session_id,
+            original_token_count=1,
+        )
+
+
+class TmuxEnvironment:
+    def __init__(self) -> None:
+        self.exec_calls: list[dict[str, object]] = []
+        self.sent = False
+
+    async def exec(self, command: str, timeout_sec: int | None = None):
+        self.exec_calls.append({"command": command, "timeout_sec": timeout_sec})
+        if "tmux capture-pane" in command:
+            stdout = "$ cd src\n$ pwd\n/app/src\n$ " if self.sent else "$ "
+            return SimpleNamespace(stdout=stdout, stderr="", return_code=0)
+        if "tmux send-keys" in command:
+            self.sent = True
+        return SimpleNamespace(stdout="", stderr="", return_code=0)
+
+
+class BrokenTmuxEnvironment:
+    async def exec(self, command: str, timeout_sec: int | None = None):
+        return SimpleNamespace(stdout="", stderr="tmux missing", return_code=1)
+
+
+class InstallingTmuxEnvironment(TmuxEnvironment):
+    def __init__(self) -> None:
+        super().__init__()
+        self.installed = False
+
+    async def exec(self, command: str, timeout_sec: int | None = None, user=None):
+        self.exec_calls.append({"command": command, "timeout_sec": timeout_sec, "user": user})
+        if command == "tmux -V" and not self.installed:
+            return SimpleNamespace(stdout="", stderr="tmux missing", return_code=1)
+        if "apt-get install -y tmux" in command:
+            self.installed = True
+            return SimpleNamespace(stdout="tmux 3.4\n", stderr="", return_code=0)
+        if "tmux capture-pane" in command:
+            stdout = "$ cd src\n$ pwd\n/app/src\n$ " if self.sent else "$ "
+            return SimpleNamespace(stdout=stdout, stderr="", return_code=0)
+        if "tmux send-keys" in command:
+            self.sent = True
+        return SimpleNamespace(stdout="tmux 3.4\n", stderr="", return_code=0)
 
 
 class LocalUnifiedEnvironment:

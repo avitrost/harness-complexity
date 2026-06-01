@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from evaluator.run_codex_cli import run_codex_cli_split
-from plumbing.codex_cli_agent import CODEX_CLI_AGENT_IMPORT_PATH, CodexCliAgent
+from plumbing.codex_cli_agent import CodexCliAgent
 
 TASK_CASES = [
     ("fix-git", "Recover the lost git changes and make the tests pass."),
@@ -70,6 +70,8 @@ def test_codex_cli_agent_passes_task_prompt_verbatim(
 
 
 def test_run_codex_cli_split_builds_harbor_command(tmp_path: Path) -> None:
+    auth = tmp_path / "auth.json"
+    auth.write_text('{"tokens":{}}\n', encoding="utf-8")
     summary = run_codex_cli_split(
         split="val",
         out_dir=tmp_path / "out",
@@ -83,18 +85,29 @@ def test_run_codex_cli_split_builds_harbor_command(tmp_path: Path) -> None:
         dry_run=True,
         harbor_bin="harbor",
         harbor_help_text="--dataset --include-task-name --n-attempts --n-concurrent",
+        codex_auth_json_path=auth,
     )
 
     command = summary["command"]
-    assert CODEX_CLI_AGENT_IMPORT_PATH in command
-    assert "codex_model=gpt-test" in command
-    assert "codex_reasoning_effort=none" in command
-    assert "timeout_sec=99" in command
+    assert command[command.index("--agent") + 1] == "codex"
+    assert "--agent-import-path" not in command
+    assert command[command.index("--model") + 1] == "gpt-test"
+    assert "candidate_dir=." not in command
+    assert "reasoning_effort=none" in command
+    assert "codex_model=gpt-test" not in command
+    assert "codex_reasoning_effort=none" not in command
+    assert "timeout_sec=99" not in command
+    assert f"CODEX_AUTH_JSON_PATH={auth.resolve()}" in command
     assert "--environment-import-path" in command
-    assert json.loads((tmp_path / "out" / "summary.json").read_text())["dry_run"] is True
+    saved_summary = json.loads((tmp_path / "out" / "summary.json").read_text())
+    assert saved_summary["dry_run"] is True
+    assert saved_summary["codex_agent"] == "codex"
+    assert saved_summary["codex_auth_json_path"] == str(auth.resolve())
 
 
 def test_run_codex_cli_split_includes_multiple_tasks(tmp_path: Path) -> None:
+    auth = tmp_path / "auth.json"
+    auth.write_text('{"tokens":{}}\n', encoding="utf-8")
     tasks = [task for task, _ in TASK_CASES]
     summary = run_codex_cli_split(
         split="val",
@@ -109,6 +122,7 @@ def test_run_codex_cli_split_includes_multiple_tasks(tmp_path: Path) -> None:
         dry_run=True,
         harbor_bin="harbor",
         harbor_help_text="--dataset --include-task-name --n-attempts --n-concurrent",
+        codex_auth_json_path=auth,
     )
 
     command = summary["command"]
@@ -121,6 +135,8 @@ def test_run_codex_cli_split_includes_multiple_tasks(tmp_path: Path) -> None:
 
 
 def test_run_codex_cli_split_accepts_local_dataset_path(tmp_path: Path) -> None:
+    auth = tmp_path / "auth.json"
+    auth.write_text('{"tokens":{}}\n', encoding="utf-8")
     dataset_path = tmp_path / "OpenThoughts-TBLite"
     summary = run_codex_cli_split(
         split="tblite",
@@ -137,6 +153,7 @@ def test_run_codex_cli_split_accepts_local_dataset_path(tmp_path: Path) -> None:
         harbor_help_text="--path --include-task-name --n-attempts --n-concurrent",
         dataset="open-thoughts/OpenThoughts-TBLite",
         dataset_path=dataset_path,
+        codex_auth_json_path=auth,
     )
 
     command = summary["command"]

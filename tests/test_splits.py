@@ -66,6 +66,34 @@ def test_harbor_command_can_use_local_dataset_path() -> None:
     assert plan.command.count("--include-task-name") == 2
 
 
+def test_harbor_command_can_use_named_agent_model_kwargs_and_env() -> None:
+    spec = HarborRunSpec(
+        Path("."),
+        Path("out"),
+        ["a"],
+        1,
+        2,
+        "codex-cli",
+        agent_name="codex",
+        agent_model_name="gpt-test",
+        agent_kwargs=("reasoning_effort=none",),
+        agent_env=("CODEX_AUTH_JSON_PATH=/tmp/auth.json",),
+        include_candidate_dir_kwarg=False,
+    )
+    plan = build_harbor_command(
+        spec,
+        executable="harbor",
+        help_text="--dataset --include-task-name --n-attempts --n-concurrent",
+    )
+
+    assert plan.command[plan.command.index("--agent") + 1] == "codex"
+    assert "--agent-import-path" not in plan.command
+    assert "candidate_dir=." not in plan.command
+    assert plan.command[plan.command.index("--model") + 1] == "gpt-test"
+    assert "reasoning_effort=none" in plan.command
+    assert "CODEX_AUTH_JSON_PATH=/tmp/auth.json" in plan.command
+
+
 def test_harbor_command_can_add_retry_and_verifier_timeout_flags() -> None:
     spec = HarborRunSpec(
         Path("candidate"),

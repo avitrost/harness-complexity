@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import time
 import tomllib
+from contextlib import suppress
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
@@ -34,6 +35,12 @@ TOOL_START_RUNWAY_SEC = 60
 HARD_AGENT_TIMEOUT_GUARD_SEC = 20
 TOOL_TIMEOUT_RESPONSE_GRACE_SEC = 15
 EXEC_REQUEST_GRACE_SEC = 180
+PERSISTENT_TERMINAL_COMMAND = "TERM=xterm-256color PS1='$ ' PS2='> ' bash --noprofile --norc -i"
+PERSISTENT_TERMINAL_START_YIELD_MS = 250
+PERSISTENT_TMUX_HISTORY_LIMIT = 10_000_000
+PERSISTENT_TMUX_WIDTH = 160
+PERSISTENT_TMUX_HEIGHT = 40
+PERSISTENT_TMUX_SEND_KEYS_MAX_COMMAND_LENGTH = 16_000
 SHELL_TOOL_NAMES = {
     "local_shell",
     "shell",
@@ -54,6 +61,7 @@ _MODEL_EXECUTOR = ThreadPoolExecutor(
     max_workers=int(os.environ.get("HARBOR_MODEL_CALL_WORKERS", "512")),
     thread_name_prefix="harness-model",
 )
+_PERSISTENT_TMUX_BUFFERS: dict[str, str] = {}
 
 
 @dataclass(frozen=True)
@@ -71,8 +79,12 @@ class HarborRunSpec:
     verifier_timeout_multiplier: float | None = None
     retry_include: tuple[str, ...] = ()
     retry_exclude: tuple[str, ...] = ()
+    agent_name: str | None = None
     agent_import_path: str = HARBOR_AGENT_IMPORT_PATH
+    agent_model_name: str | None = None
     agent_kwargs: tuple[str, ...] = ()
+    agent_env: tuple[str, ...] = ()
+    include_candidate_dir_kwarg: bool = True
 
 
 @dataclass(frozen=True)
@@ -118,6 +130,7 @@ class HarborHarnessAgent(HarborBaseAgent):
         self.logs_dir.mkdir(parents=True, exist_ok=True)
         done = False
         termination_reason: str | None = None
+        final_turn_metadata: dict[str, Any] = {}
         started_at = _monotonic()
         agent_timeout_sec = _agent_timeout_seconds(self.logs_dir, environment)
         agent_deadline = _agent_deadline(started_at, agent_timeout_sec)
@@ -149,6 +162,8 @@ class HarborHarnessAgent(HarborBaseAgent):
                     break
                 tool_calls = _turn_tool_calls(turn)
                 if turn.done or not tool_calls:
+                    if isinstance(getattr(turn, "metadata", None), dict):
+                        final_turn_metadata = dict(turn.metadata)
                     done = turn.done
                     break
                 if _insufficient_tool_runway(
@@ -195,15 +210,24 @@ class HarborHarnessAgent(HarborBaseAgent):
                     turn_index += 1
                 turn_index -= 1
         finally:
-            reset_trace_dir(token)
+            await _close_persistent_terminal(environment, task)
             elapsed_sec = max(0.0, _monotonic() - started_at)
+            accounting = _model_accounting(self.logs_dir)
+            summarization_count = max(
+                _metadata_int(history, "terminus_summarization_count"),
+                _metadata_value_int(final_turn_metadata, "terminus_summarization_count"),
+            )
             self._write_result_logs(
                 history,
                 done,
                 termination_reason=termination_reason,
                 agent_timeout_sec=agent_timeout_sec,
                 elapsed_sec=elapsed_sec,
+                model_accounting=accounting,
+                summarization_count=summarization_count,
             )
+            reset_trace_dir(token)
+            _set_context_accounting(context, accounting)
             context.metadata = {
                 "candidate_dir": str(self.candidate_dir),
                 "done": done,
@@ -212,6 +236,9 @@ class HarborHarnessAgent(HarborBaseAgent):
                 "termination_reason": termination_reason,
                 "agent_timeout_sec": agent_timeout_sec,
                 "elapsed_sec": elapsed_sec,
+                "api_request_times_msec": accounting["api_request_times_msec"],
+                "model_accounting": accounting,
+                "summarization_count": summarization_count,
             }
 
     def _write_turn_log(self, turn_index: int, record: CommandResult) -> None:
@@ -227,6 +254,8 @@ class HarborHarnessAgent(HarborBaseAgent):
         termination_reason: str | None = None,
         agent_timeout_sec: float | None = None,
         elapsed_sec: float | None = None,
+        model_accounting: dict[str, Any] | None = None,
+        summarization_count: int = 0,
     ) -> None:
         payload = {
             "done": done,
@@ -240,6 +269,10 @@ class HarborHarnessAgent(HarborBaseAgent):
             payload["agent_timeout_sec"] = agent_timeout_sec
         if elapsed_sec is not None:
             payload["elapsed_sec"] = elapsed_sec
+        if model_accounting is not None:
+            payload["model_accounting"] = model_accounting
+        if summarization_count:
+            payload["summarization_count"] = summarization_count
         (self.logs_dir / "harness-result.json").write_text(
             json.dumps(payload, indent=2),
             encoding="utf-8",
@@ -260,14 +293,146 @@ def run_candidate(
 
 
 async def _task_context(instruction: str, environment: Any, agent: Any) -> TaskContext:
-    if not getattr(agent, "wants_environment_context", False):
+    persistent_request = getattr(agent, "wants_persistent_terminal", False)
+    wants_persistent = bool(persistent_request)
+    if not getattr(agent, "wants_environment_context", False) and not wants_persistent:
         return TaskContext(instruction=instruction)
     config = getattr(environment, "task_env_config", None)
     workdir = getattr(environment, "_workdir", None) or getattr(config, "workdir", None)
     metadata: dict[str, Any] = {}
+    if wants_persistent:
+        backend = "tmux" if persistent_request == "tmux" else "unified"
+        metadata["persistent_terminal"] = await _start_persistent_terminal(
+            environment,
+            workdir,
+            backend=backend,
+        )
     if getattr(agent, "wants_agents_context", False):
         metadata["agents_md"] = await _agents_context(environment, workdir)
     return TaskContext(instruction=instruction, working_dir=workdir, metadata=metadata)
+
+
+async def _start_persistent_terminal(
+    environment: Any,
+    workdir: str | None,
+    backend: str = "unified",
+) -> dict[str, Any]:
+    if backend == "tmux":
+        terminal = await _start_tmux_terminal(environment, workdir)
+        if terminal.get("available"):
+            return terminal
+        error = terminal.get("error") or "Failed to start tmux persistent terminal."
+        raise RuntimeError(str(error))
+    return await _start_unified_persistent_terminal(environment, workdir)
+
+
+async def _start_unified_persistent_terminal(
+    environment: Any,
+    workdir: str | None,
+) -> dict[str, Any]:
+    if not (hasattr(environment, "exec_command") and hasattr(environment, "write_stdin")):
+        return {
+            "available": False,
+            "error": "Environment does not support persistent terminal sessions.",
+        }
+    try:
+        result = await environment.exec_command(
+            command=PERSISTENT_TERMINAL_COMMAND,
+            cwd=workdir,
+            timeout_sec=None,
+            shell="/bin/bash",
+            login=True,
+            tty=True,
+            yield_time_ms=PERSISTENT_TERMINAL_START_YIELD_MS,
+            max_output_tokens=MAX_OBSERVATION_CHARS,
+        )
+    except RuntimeError as exc:
+        return {"available": False, "error": str(exc)}
+    metadata = _unified_exec_metadata(result)
+    session_id = metadata.get("session_id")
+    return {
+        "available": session_id is not None and metadata.get("exit_code") is None,
+        "backend": "unified",
+        "session_id": session_id,
+        "initial_output": _tail(getattr(result, "stdout", "") or ""),
+        "initial_stderr": _tail(getattr(result, "stderr", "") or ""),
+        "cwd": workdir,
+        "command": PERSISTENT_TERMINAL_COMMAND,
+        "unified_exec": metadata,
+    }
+
+
+async def _start_tmux_terminal(environment: Any, workdir: str | None) -> dict[str, Any]:
+    if not hasattr(environment, "exec"):
+        return {"available": False, "error": "Environment does not support tmux exec."}
+    tmux_ready = await _ensure_tmux(environment)
+    if not tmux_ready.get("available"):
+        return tmux_ready
+    session_name = f"harness-complexity-{os.getpid()}-{int(time.time() * 1000)}"
+    shell_command = "TERM=xterm-256color PS1='$ ' PS2='> ' bash --login"
+    if workdir:
+        shell_command = f"cd {shlex.quote(workdir)} && {shell_command}"
+    quoted_session = shlex.quote(session_name)
+    start_command = (
+        "export TERM=xterm-256color && "
+        "export SHELL=/bin/bash && "
+        f"tmux new-session -x {PERSISTENT_TMUX_WIDTH} -y {PERSISTENT_TMUX_HEIGHT} "
+        f"-d -s {quoted_session} {shlex.quote(shell_command)}"
+    )
+    try:
+        result = await _env_exec(environment, start_command, timeout_sec=30)
+    except RuntimeError as exc:
+        return {"available": False, "error": str(exc)}
+    if getattr(result, "return_code", 1) != 0:
+        error = (getattr(result, "stderr", "") or getattr(result, "stdout", "") or "").strip()
+        return {"available": False, "error": error or "Failed to start tmux session."}
+    await _tmux_exec(
+        environment,
+        f"tmux set-option -g history-limit {PERSISTENT_TMUX_HISTORY_LIMIT}",
+    )
+    full = await _capture_tmux_pane(environment, session_name, capture_entire=True)
+    visible = await _capture_tmux_pane(environment, session_name, capture_entire=False)
+    _PERSISTENT_TMUX_BUFFERS[session_name] = full
+    return {
+        "available": True,
+        "backend": "tmux",
+        "session_name": session_name,
+        "initial_output": _tail(f"Current Terminal Screen:\n{visible}"),
+        "cwd": workdir,
+        "command": start_command,
+    }
+
+
+async def _close_persistent_terminal(environment: Any, task: TaskContext) -> None:
+    metadata = task.metadata if isinstance(task.metadata, dict) else {}
+    terminal = metadata.get("persistent_terminal")
+    if not isinstance(terminal, dict) or not terminal.get("available"):
+        return
+    if terminal.get("backend") == "tmux":
+        session_name = _tool_string(terminal.get("session_name"))
+        if session_name and hasattr(environment, "exec"):
+            _PERSISTENT_TMUX_BUFFERS.pop(session_name, None)
+            try:
+                await _env_exec(
+                    environment,
+                    f"tmux kill-session -t {shlex.quote(session_name)}",
+                    timeout_sec=10,
+                )
+            except Exception:
+                return
+        return
+    session_id = terminal.get("session_id")
+    if not isinstance(session_id, int) or not hasattr(environment, "write_stdin"):
+        return
+    try:
+        await environment.write_stdin(
+            session_id=session_id,
+            chars="exit\n",
+            yield_time_ms=100,
+            max_output_tokens=1000,
+        )
+    except Exception:
+        return
 
 
 def _agent_timeout_seconds(logs_dir: Path, environment: Any) -> float | None:
@@ -509,6 +674,14 @@ def _tool_wait_timeout_sec(
     lowered = name.lower()
     if lowered in WRITE_STDIN_TOOL_NAMES:
         args = tool_call.arguments
+        commands = _stdin_commands(args)
+        if commands:
+            total_ms = sum(_stdin_yield_time_ms(item) for item in commands)
+            request_timeout_sec = max(
+                EXEC_REQUEST_GRACE_SEC,
+                int((total_ms + 999) / 1000) + EXEC_REQUEST_GRACE_SEC,
+            )
+            return _cap_wait_timeout(request_timeout_sec, max_timeout_sec)
         yield_time_ms = _cap_yield_time_ms(_tool_int(args.get("yield_time_ms")), max_timeout_sec)
         if yield_time_ms is None:
             yield_time_ms = 250 if args.get("chars") else 5000
@@ -676,6 +849,15 @@ async def _write_stdin_observed(
     tool_name: str,
     max_timeout_sec: int | None = None,
 ) -> CommandResult:
+    args = tool_call.arguments
+    session_name = _tool_string(args.get("session_name") or args.get("tmux_session"))
+    if session_name:
+        return await _write_tmux_stdin_observed(
+            environment,
+            tool_call,
+            session_name,
+            tool_name,
+        )
     if not hasattr(environment, "write_stdin"):
         return CommandResult(
             command="<unsupported tool write_stdin>",
@@ -685,7 +867,6 @@ async def _write_stdin_observed(
             tool_call_id=tool_call.call_id,
             metadata={"arguments": tool_call.arguments},
         )
-    args = tool_call.arguments
     session_id = _tool_int(args.get("session_id"))
     if session_id is None:
         return CommandResult(
@@ -695,6 +876,16 @@ async def _write_stdin_observed(
             tool_name=tool_name,
             tool_call_id=tool_call.call_id,
             metadata={"arguments": args},
+        )
+    commands = _stdin_commands(args)
+    if commands:
+        return await _write_stdin_commands_observed(
+            environment,
+            tool_call,
+            session_id,
+            commands,
+            tool_name,
+            max_timeout_sec,
         )
     chars = str(args.get("chars") or "")
     try:
@@ -731,6 +922,265 @@ async def _write_stdin_observed(
         tool_call_id=tool_call.call_id,
         metadata=metadata,
     )
+
+
+async def _write_stdin_commands_observed(
+    environment: Any,
+    tool_call: HarnessToolCall,
+    session_id: int,
+    commands: list[dict[str, Any]],
+    tool_name: str,
+    max_timeout_sec: int | None = None,
+) -> CommandResult:
+    stdout: list[str] = []
+    stderr: list[str] = []
+    current_session_id: int | None = session_id
+    last_result: Any = None
+    for item in commands:
+        if current_session_id is None:
+            break
+        try:
+            last_result = await environment.write_stdin(
+                session_id=current_session_id,
+                chars=str(item.get("chars") or item.get("keystrokes") or ""),
+                yield_time_ms=_cap_yield_time_ms(
+                    _stdin_yield_time_ms(item),
+                    max_timeout_sec,
+                ),
+                max_output_tokens=_tool_int(item.get("max_output_tokens"))
+                or _tool_int(tool_call.arguments.get("max_output_tokens")),
+            )
+        except RuntimeError as exc:
+            if not _model_visible_tool_error(str(exc)):
+                raise
+            return CommandResult(
+                command=f"write_stdin(session_id={session_id}, commands={len(commands)})",
+                return_code=1,
+                stderr=str(exc),
+                tool_name=tool_name,
+                tool_call_id=tool_call.call_id,
+                metadata={"arguments": tool_call.arguments},
+            )
+        stdout.append(getattr(last_result, "stdout", "") or "")
+        stderr.append(getattr(last_result, "stderr", "") or "")
+        current_session_id = getattr(last_result, "session_id", None)
+    metadata = {
+        "arguments": tool_call.arguments,
+        "unified_exec": _unified_exec_metadata(last_result) if last_result is not None else {},
+        "terminal_command_count": len(commands),
+    }
+    return CommandResult(
+        command=f"write_stdin(session_id={session_id}, commands={len(commands)})",
+        return_code=getattr(last_result, "return_code", None),
+        stdout=_tail("".join(stdout)),
+        stderr=_tail("".join(stderr)),
+        tool_name=tool_name,
+        tool_call_id=tool_call.call_id,
+        metadata=metadata,
+    )
+
+
+async def _write_tmux_stdin_observed(
+    environment: Any,
+    tool_call: HarnessToolCall,
+    session_name: str,
+    tool_name: str,
+) -> CommandResult:
+    if not hasattr(environment, "exec"):
+        return CommandResult(
+            command="<unsupported tmux write_stdin>",
+            return_code=2,
+            stderr="Environment does not support tmux exec",
+            tool_name=tool_name,
+            tool_call_id=tool_call.call_id,
+            metadata={"arguments": tool_call.arguments},
+        )
+    commands = _stdin_commands(tool_call.arguments)
+    if not commands:
+        commands = [
+            {
+                "chars": str(tool_call.arguments.get("chars") or ""),
+                "yield_time_ms": _tool_int(tool_call.arguments.get("yield_time_ms")) or 250,
+            }
+        ]
+    for item in commands:
+        chars = str(item.get("chars") or item.get("keystrokes") or "")
+        try:
+            for command in _tmux_send_keys_commands(session_name, [chars]):
+                result = await _tmux_exec(environment, command)
+                if getattr(result, "return_code", 1) != 0:
+                    error = getattr(result, "stderr", "") or getattr(result, "stdout", "")
+                    return CommandResult(
+                        command=f"write_stdin(tmux_session={session_name}, commands={len(commands)})",
+                        return_code=1,
+                        stderr=error,
+                        tool_name=tool_name,
+                        tool_call_id=tool_call.call_id,
+                        metadata={"arguments": tool_call.arguments},
+                    )
+            await asyncio.sleep(max(0, _stdin_yield_time_ms(item)) / 1000)
+        except RuntimeError as exc:
+            if not _model_visible_tool_error(str(exc)):
+                raise
+            return CommandResult(
+                command=f"write_stdin(tmux_session={session_name}, commands={len(commands)})",
+                return_code=1,
+                stderr=str(exc),
+                tool_name=tool_name,
+                tool_call_id=tool_call.call_id,
+                metadata={"arguments": tool_call.arguments},
+            )
+    full = await _capture_tmux_pane(environment, session_name, capture_entire=True)
+    visible = await _capture_tmux_pane(environment, session_name, capture_entire=False)
+    output = _tmux_incremental_output(session_name, full, visible)
+    metadata = {
+        "arguments": tool_call.arguments,
+        "backend": "tmux",
+        "terminal_command_count": len(commands),
+    }
+    return CommandResult(
+        command=f"write_stdin(tmux_session={session_name}, commands={len(commands)})",
+        return_code=None,
+        stdout=_tail(output),
+        stderr="",
+        tool_name=tool_name,
+        tool_call_id=tool_call.call_id,
+        metadata=metadata,
+    )
+
+
+async def _tmux_exec(environment: Any, command: str) -> Any:
+    return await _env_exec(environment, command, timeout_sec=30)
+
+
+async def _env_exec(
+    environment: Any,
+    command: str,
+    timeout_sec: int | None = None,
+    user: str | int | None = None,
+) -> Any:
+    try:
+        if user is None:
+            return await environment.exec(command, timeout_sec=timeout_sec)
+        return await environment.exec(command, timeout_sec=timeout_sec, user=user)
+    except TypeError:
+        return await environment.exec(command, timeout_sec=timeout_sec)
+
+
+async def _ensure_tmux(environment: Any) -> dict[str, Any]:
+    check = await _env_exec(environment, "tmux -V", timeout_sec=10)
+    if getattr(check, "return_code", 1) == 0:
+        return {"available": True}
+    command = (
+        "set -e; "
+        "if command -v apt-get >/dev/null 2>&1; then "
+        "DEBIAN_FRONTEND=noninteractive apt-get update && "
+        "DEBIAN_FRONTEND=noninteractive apt-get install -y tmux; "
+        "elif command -v dnf >/dev/null 2>&1; then dnf install -y tmux; "
+        "elif command -v yum >/dev/null 2>&1; then yum install -y tmux; "
+        "elif command -v apk >/dev/null 2>&1; then apk add --no-cache tmux; "
+        "elif command -v pacman >/dev/null 2>&1; then pacman -S --noconfirm tmux; "
+        "else echo 'No supported package manager for tmux installation' >&2; exit 127; fi; "
+        "tmux -V"
+    )
+    try:
+        result = await _env_exec(environment, command, timeout_sec=180, user="root")
+    except RuntimeError as exc:
+        return {"available": False, "error": str(exc)}
+    if getattr(result, "return_code", 1) == 0:
+        return {"available": True, "installed": True}
+    error = (getattr(result, "stderr", "") or getattr(result, "stdout", "") or "").strip()
+    return {"available": False, "error": error or "Failed to install tmux."}
+
+
+async def _capture_tmux_pane(
+    environment: Any,
+    session_name: str,
+    capture_entire: bool,
+) -> str:
+    extra = " -S -" if capture_entire else ""
+    result = await _tmux_exec(
+        environment,
+        f"tmux capture-pane -p{extra} -t {shlex.quote(session_name)}",
+    )
+    return getattr(result, "stdout", "") or ""
+
+
+def _tmux_incremental_output(session_name: str, current: str, visible: str) -> str:
+    previous = _PERSISTENT_TMUX_BUFFERS.get(session_name)
+    _PERSISTENT_TMUX_BUFFERS[session_name] = current
+    if previous is None:
+        return f"Current Terminal Screen:\n{visible}"
+    content = _tmux_find_new_content(previous, current)
+    if content is not None and content.strip():
+        return f"New Terminal Output:\n{content}"
+    return f"Current Terminal Screen:\n{visible}"
+
+
+def _tmux_find_new_content(previous: str, current: str) -> str | None:
+    previous = previous.strip()
+    if previous in current:
+        index = current.index(previous)
+        if "\n" in previous:
+            index = previous.rfind("\n")
+        return current[index:]
+    return None
+
+
+def _tmux_send_keys_commands(session_name: str, keys: list[str]) -> list[str]:
+    prefix = "tmux send-keys -t " + shlex.quote(session_name)
+    commands: list[str] = []
+    current: list[str] = []
+    current_len = len(prefix)
+    for key in keys:
+        for chunk in _tmux_key_chunks(key):
+            addition = 1 + len(chunk)
+            if current and current_len + addition > PERSISTENT_TMUX_SEND_KEYS_MAX_COMMAND_LENGTH:
+                commands.append(prefix + " " + " ".join(current))
+                current = []
+                current_len = len(prefix)
+            current.append(chunk)
+            current_len += addition
+    if current:
+        commands.append(prefix + " " + " ".join(current))
+    return commands
+
+
+def _tmux_key_chunks(key: str) -> list[str]:
+    max_escaped = PERSISTENT_TMUX_SEND_KEYS_MAX_COMMAND_LENGTH - 128
+    if len(shlex.quote(key)) <= max_escaped:
+        return [shlex.quote(key)]
+    chunks: list[str] = []
+    remaining = key
+    while remaining:
+        lo, hi, best = 1, len(remaining), 1
+        while lo <= hi:
+            mid = (lo + hi) // 2
+            if len(shlex.quote(remaining[:mid])) <= max_escaped:
+                best = mid
+                lo = mid + 1
+            else:
+                hi = mid - 1
+        chunks.append(shlex.quote(remaining[:best]))
+        remaining = remaining[best:]
+    return chunks
+
+
+def _stdin_commands(args: dict[str, Any]) -> list[dict[str, Any]]:
+    commands = args.get("commands")
+    if not isinstance(commands, list):
+        return []
+    return [item for item in commands if isinstance(item, dict)]
+
+
+def _stdin_yield_time_ms(args: dict[str, Any]) -> int:
+    value = _tool_int(args.get("yield_time_ms"))
+    if value is not None:
+        return max(1, value)
+    duration = _float_or_none(args.get("duration"))
+    if duration is not None:
+        return max(1, int(duration * 1000))
+    return 250 if args.get("chars") or args.get("keystrokes") else 5000
 
 
 def _plan_observed(tool_call: HarnessToolCall, tool_name: str) -> CommandResult:
@@ -897,7 +1347,23 @@ def _display_tool_call(tool_call: HarnessToolCall) -> str:
     if lowered in SHELL_TOOL_NAMES:
         return _shell_command(tool_call, None)[0]
     if lowered in WRITE_STDIN_TOOL_NAMES:
+        session_name = _tool_string(
+            tool_call.arguments.get("session_name") or tool_call.arguments.get("tmux_session")
+        )
+        if session_name:
+            if _stdin_commands(tool_call.arguments):
+                return (
+                    f"write_stdin(tmux_session={session_name}, "
+                    f"commands={len(_stdin_commands(tool_call.arguments))})"
+                )
+            chars = str(tool_call.arguments.get("chars") or "")
+            return f"write_stdin(tmux_session={session_name}, chars={len(chars)} chars)"
         session_id = _tool_int(tool_call.arguments.get("session_id"))
+        if _stdin_commands(tool_call.arguments):
+            return (
+                f"write_stdin(session_id={session_id}, "
+                f"commands={len(_stdin_commands(tool_call.arguments))})"
+            )
         chars = str(tool_call.arguments.get("chars") or "")
         return f"write_stdin(session_id={session_id}, chars={len(chars)} chars)"
     if lowered in PATCH_TOOL_NAMES:
@@ -1047,6 +1513,93 @@ def _unified_exec_metadata(result: Any) -> dict[str, Any]:
         "session_id": getattr(result, "session_id", None),
         "original_token_count": getattr(result, "original_token_count", None),
     }
+
+
+def _model_accounting(logs_dir: Path) -> dict[str, Any]:
+    totals = {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cached_tokens": 0,
+        "total_tokens": 0,
+        "cost_usd": None,
+        "model_calls": 0,
+        "api_request_times_msec": [],
+    }
+    for path in sorted(logs_dir.glob("model-call-*.json")):
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        totals["model_calls"] += 1
+        if isinstance(payload.get("duration_sec"), (int, float)):
+            totals["api_request_times_msec"].append(float(payload["duration_sec"]) * 1000)
+        usage = _trace_usage(payload)
+        totals["input_tokens"] += usage.get("input_tokens") or 0
+        totals["output_tokens"] += usage.get("output_tokens") or 0
+        totals["cached_tokens"] += usage.get("cached_tokens") or 0
+        totals["total_tokens"] += usage.get("total_tokens") or (
+            (usage.get("input_tokens") or 0) + (usage.get("output_tokens") or 0)
+        )
+    return totals
+
+
+def _trace_usage(payload: dict[str, Any]) -> dict[str, int]:
+    metadata = payload.get("request_metadata")
+    usage = metadata.get("usage") if isinstance(metadata, dict) else None
+    if not isinstance(usage, dict) or not usage:
+        usage = _approx_trace_usage(payload)
+    cleaned: dict[str, int] = {}
+    for key in ("input_tokens", "output_tokens", "cached_tokens", "total_tokens"):
+        value = usage.get(key)
+        if isinstance(value, bool) or value is None:
+            continue
+        try:
+            cleaned[key] = max(0, int(value))
+        except (TypeError, ValueError):
+            continue
+    return cleaned
+
+
+def _approx_trace_usage(payload: dict[str, Any]) -> dict[str, int]:
+    messages = payload.get("messages")
+    prompt = json.dumps(messages, ensure_ascii=False) if isinstance(messages, list) else ""
+    response = str(payload.get("response") or "")
+    input_tokens = max(0, len(prompt) // 4)
+    output_tokens = max(0, len(response) // 4)
+    return {
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "total_tokens": input_tokens + output_tokens,
+    }
+
+
+def _set_context_accounting(context: Any, accounting: dict[str, Any]) -> None:
+    for attr, key in (
+        ("n_input_tokens", "input_tokens"),
+        ("n_output_tokens", "output_tokens"),
+        ("n_cache_tokens", "cached_tokens"),
+    ):
+        with suppress(Exception):
+            setattr(context, attr, accounting.get(key) or 0)
+    with suppress(Exception):
+        setattr(context, "cost_usd", accounting.get("cost_usd"))
+
+
+def _metadata_int(history: list[CommandResult], key: str) -> int:
+    value = 0
+    for record in history:
+        value = max(value, _metadata_value_int(record.metadata, key))
+    return value
+
+
+def _metadata_value_int(metadata: dict[str, Any], key: str) -> int:
+    item = metadata.get(key)
+    if isinstance(item, bool) or item is None:
+        return 0
+    try:
+        return max(0, int(item))
+    except (TypeError, ValueError):
+        return 0
 
 
 def _patch_text(args: dict[str, Any]) -> str:
@@ -1369,14 +1922,18 @@ def build_harbor_command(
             str(spec.trials),
             "--n-concurrent",
             str(spec.concurrency),
-            "--agent-import-path",
-            spec.agent_import_path,
-            "--agent-kwarg",
-            f"candidate_dir={spec.candidate_dir}",
             "--quiet",
             "--yes",
         ]
     )
+    if spec.agent_name:
+        command.extend(["--agent", spec.agent_name])
+    else:
+        command.extend(["--agent-import-path", spec.agent_import_path])
+    if spec.include_candidate_dir_kwarg:
+        command.extend(["--agent-kwarg", f"candidate_dir={spec.candidate_dir}"])
+    if spec.agent_model_name:
+        command.extend(["--model", spec.agent_model_name])
     if spec.max_retries:
         command.extend(["--max-retries", str(spec.max_retries)])
     if spec.verifier_timeout_multiplier is not None:
@@ -1387,6 +1944,8 @@ def build_harbor_command(
         command.extend(["--retry-exclude", item])
     for item in spec.agent_kwargs:
         command.extend(["--agent-kwarg", item])
+    for item in spec.agent_env:
+        command.extend(["--agent-env", item])
     if spec.backend == "slurm-pyxis":
         environment_kwargs = [
             "sqsh_cache_dir=/wbl-fast/usrs/trost/tbench-sqsh-cache/images",

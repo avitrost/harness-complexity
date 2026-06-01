@@ -54,6 +54,7 @@ class ToolModelResult:
     request_metadata: dict[str, Any] | None = None
     response_items: list[dict[str, Any]] = field(default_factory=list)
     response_id: str = ""
+    usage: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -136,8 +137,14 @@ def call_terminal_model(messages: list[dict[str, Any]]) -> str:
                 max_output_tokens=MAX_OUTPUT_TOKENS,
                 timeout=TIMEOUT_SEC,
             )
-            text = _extract_text(response)
-            _write_model_trace(messages, text, duration_sec=time.monotonic() - started_at)
+            result = _extract_result(response)
+            _write_model_trace(
+                messages,
+                result.content,
+                duration_sec=time.monotonic() - started_at,
+                request_metadata={"usage": result.usage} if result.usage else None,
+            )
+            text = result.content
             return text
         except Exception as exc:  # pragma: no cover - real API path
             last_error = exc
@@ -195,6 +202,7 @@ def call_terminal_model_with_tools(
                 result.content,
                 tool_calls=result.tool_calls,
                 duration_sec=time.monotonic() - started_at,
+                request_metadata={"usage": result.usage} if result.usage else None,
             )
             return result
         except Exception as exc:  # pragma: no cover - real API path
@@ -436,6 +444,8 @@ def _codex_request_metadata(
     if result is not None:
         metadata["response_id"] = result.response_id
         metadata["response_item_count"] = len(result.response_items)
+        if result.usage:
+            metadata["usage"] = result.usage
     return metadata
 
 
@@ -637,6 +647,7 @@ def _extract_sse_result(text: str) -> ToolModelResult:
             calls,
             response_items=response_items,
             response_id=_response_id_from_response(completed),
+            usage=_usage_from_response_dict(completed),
         )
     if completed:
         result = _extract_response_dict_result(completed)
@@ -645,6 +656,7 @@ def _extract_sse_result(text: str) -> ToolModelResult:
             _merge_tool_calls(streamed_calls, result.tool_calls),
             response_items=result.response_items,
             response_id=result.response_id,
+            usage=result.usage,
         )
     return ToolModelResult("", _merge_tool_calls(streamed_calls), response_items=streamed_items)
 
@@ -665,6 +677,7 @@ def _extract_response_dict_result(response: dict[str, Any]) -> ToolModelResult:
         _extract_response_dict_tool_calls(response),
         response_items=_response_items_from_response(response),
         response_id=_response_id_from_response(response),
+        usage=_usage_from_response_dict(response),
     )
 
 
@@ -688,6 +701,7 @@ def _extract_result(response: Any) -> ToolModelResult:
         _extract_tool_calls(response),
         response_items=_response_items_from_obj(response),
         response_id=str(getattr(response, "id", "") or ""),
+        usage=_usage_from_response_obj(response),
     )
 
 
@@ -696,6 +710,63 @@ def _response_id_from_response(response: dict[str, Any] | None) -> str:
         return ""
     response_id = response.get("id") or response.get("response_id")
     return str(response_id) if response_id else ""
+
+
+def _usage_from_response_dict(response: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(response, dict):
+        return {}
+    usage = response.get("usage")
+    if not isinstance(usage, dict):
+        return {}
+    input_details = usage.get("input_tokens_details")
+    if not isinstance(input_details, dict):
+        input_details = {}
+    return _clean_usage(
+        input_tokens=usage.get("input_tokens") or usage.get("prompt_tokens"),
+        output_tokens=usage.get("output_tokens") or usage.get("completion_tokens"),
+        total_tokens=usage.get("total_tokens"),
+        cached_tokens=input_details.get("cached_tokens") or usage.get("cached_tokens"),
+    )
+
+
+def _usage_from_response_obj(response: Any) -> dict[str, Any]:
+    usage = getattr(response, "usage", None)
+    if usage is None:
+        return {}
+    input_details = getattr(usage, "input_tokens_details", None)
+    return _clean_usage(
+        input_tokens=getattr(usage, "input_tokens", None) or getattr(usage, "prompt_tokens", None),
+        output_tokens=getattr(usage, "output_tokens", None)
+        or getattr(usage, "completion_tokens", None),
+        total_tokens=getattr(usage, "total_tokens", None),
+        cached_tokens=(
+            getattr(input_details, "cached_tokens", None)
+            if input_details is not None
+            else getattr(usage, "cached_tokens", None)
+        ),
+    )
+
+
+def _clean_usage(
+    input_tokens: Any = None,
+    output_tokens: Any = None,
+    total_tokens: Any = None,
+    cached_tokens: Any = None,
+) -> dict[str, Any]:
+    usage: dict[str, Any] = {}
+    for key, value in (
+        ("input_tokens", input_tokens),
+        ("output_tokens", output_tokens),
+        ("total_tokens", total_tokens),
+        ("cached_tokens", cached_tokens),
+    ):
+        if isinstance(value, bool) or value is None:
+            continue
+        try:
+            usage[key] = int(value)
+        except (TypeError, ValueError):
+            continue
+    return usage
 
 
 def _response_items_from_response(response: dict[str, Any] | None) -> list[dict[str, Any]]:

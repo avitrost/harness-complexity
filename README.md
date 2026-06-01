@@ -31,6 +31,13 @@ mechanics needed to run it.
 - `seeds/minimal_agent/harness.py` is the minimal tool-call baseline: a generic
   one-tool `exec_command` agent with plain terminal-history prompting and no
   Codex transcript, compaction, recovery, classifier, or instrumentation layers.
+- `seeds/terminus_2_compressed/harness.py` is a standalone compressed Terminus2
+  port. It keeps Harbor Terminus2's JSON prompt template and parser behavior in
+  the counted file, then opts into the adapter's tmux-backed persistent terminal
+  substrate so parsed keystroke batches run through one long-lived pane when the
+  environment supports it. Missing tmux support is treated as a hard failure.
+  It also carries a compact Terminus-style three-subagent context summarization
+  path; adapter metadata records model-call timing and token accounting.
 - `experience/`, `final_test/`, and `results/` are artifact directories. Generated
   contents are ignored by git; only `.gitkeep` placeholders are tracked.
 - `tests/` contains local unit tests. They use mocks/fakes and do not run OpenAI calls
@@ -115,8 +122,13 @@ python scripts/thin_codex_harness.py --profile minimal_loop --output /tmp/harnes
 ```
 
 For a real-Codex comparison point, run `python -m evaluator.run_codex_cli`.
-This routes Harbor tasks to `codex exec` inside the same Slurm/Pyxis task
-container using the mounted host Codex CLI and workspace-local auth.
+This routes Harbor tasks through Harbor's official installed `codex` agent,
+passing the selected model, `reasoning_effort`, and host Codex auth through
+normal Harbor agent configuration.
+
+For an official Terminus2 comparison point, run
+`python -m evaluator.run_terminus_2`. This routes Harbor tasks directly to
+`harbor.agents.terminus_2:Terminus2` with explicit model/parser kwargs.
 
 ## Plumbing Boundary
 
