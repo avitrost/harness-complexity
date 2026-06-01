@@ -48,7 +48,7 @@ Run one harness on Slurm/Pyxis:
 ```bash
 OPENAI_AUTH_MODE=codex python scripts/run_tb2_core.py \
   --candidate seed_codex_400 \
-  --concurrency 90 \
+  --concurrency 45 \
   --backend slurm-pyxis
 ```
 
@@ -59,7 +59,7 @@ OPENAI_AUTH_MODE=codex python scripts/run_tb2_core.py \
   --candidate codex_cli \
   --codex-model gpt-5.4-mini \
   --codex-reasoning-effort medium \
-  --concurrency 90 \
+  --concurrency 45 \
   --backend slurm-pyxis
 ```
 
@@ -72,13 +72,15 @@ OPENAI_AUTH_MODE=codex python scripts/run_tb2_core.py \
   --candidate seed_codex_compressed \
   --candidate seed_terminus_2_compressed \
   --candidate codex_cli \
-  --concurrency 90 \
+  --concurrency 45 \
   --max-candidate-workers 3 \
   --backend slurm-pyxis
 ```
 
 Run the default Codex-backend model sweep over seed harnesses only. This excludes
 `gpt-5.4-nano` because the Codex/ChatGPT backend rejects it for this account.
+The sweep uses a global attempt pool, so `--concurrency` is the approximate total
+Slurm fanout across models, harnesses, tasks, and trials.
 
 ```bash
 OPENAI_AUTH_MODE=codex python scripts/run_tb2_model_sweep.py \
@@ -88,9 +90,11 @@ OPENAI_AUTH_MODE=codex python scripts/run_tb2_model_sweep.py \
 The run directory contains:
 
 - `manifest.json`: tasks, trials, candidates, backend, and concurrency policy.
-- one subdirectory per candidate.
-- each candidate subdirectory contains `command.json`, raw Harbor output,
-  `records.json`, `summary.json`, and `per_task.csv`.
+- `run_tb2_core.py` writes one subdirectory per candidate.
+- `run_tb2_model_sweep.py` writes one subdirectory per model, then candidate,
+  task, and attempt.
+- candidate subdirectories contain `records.json`, `summary.json`, and
+  `per_task.csv`; attempt subdirectories contain the raw Harbor command/output.
 
 ## Other Eval Modes
 

@@ -30,7 +30,7 @@ def test_split_definitions() -> None:
     assert splits.VAL_TRIALS == 4
     assert splits.VAL_CONCURRENCY == 160
     assert splits.TB2_CORE_TRIALS == 10
-    assert splits.TB2_CORE_CONCURRENCY == 90
+    assert splits.TB2_CORE_CONCURRENCY == 45
     assert splits.TEST_TRIALS == 4
     assert splits.TEST_CONCURRENCY == 160
     assert splits.HELDOUT_TRIALS == 2
@@ -130,7 +130,8 @@ def test_harbor_command_can_add_retry_and_verifier_timeout_flags() -> None:
     assert plan.command[plan.command.index("--retry-exclude") + 1] == "VerifierTimeoutError"
 
 
-def test_harbor_command_can_use_slurm_pyxis_environment() -> None:
+def test_harbor_command_can_use_slurm_pyxis_environment(monkeypatch) -> None:
+    monkeypatch.delenv("HARBOR_SLURM_PYXIS_PARTITION", raising=False)
     spec = HarborRunSpec(Path("candidate"), Path("out"), ["a"], 1, 1, "val", "slurm-pyxis")
     plan = build_harbor_command(
         spec,

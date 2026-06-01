@@ -16,7 +16,9 @@ from plumbing.terminus_2_agent import (
 TASKS = ["fix-git", "sqlite-db-truncate", "pytorch-model-cli"]
 
 
-def test_run_terminus_2_split_builds_harbor_command(tmp_path: Path) -> None:
+def test_run_terminus_2_split_builds_harbor_command(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.delenv("OPENAI_AUTH_MODE", raising=False)
+    monkeypatch.delenv("HARBOR_SLURM_PYXIS_PARTITION", raising=False)
     summary = run_terminus_2_split(
         split="val",
         out_dir=tmp_path / "out",

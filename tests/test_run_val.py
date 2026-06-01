@@ -30,6 +30,7 @@ def test_run_split_fails_before_harbor_without_docker(monkeypatch, tmp_path: Pat
 
 def test_run_split_fails_before_harbor_without_openai_key(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_AUTH_MODE", raising=False)
     monkeypatch.setattr("evaluator.run_val.shutil.which", lambda name: "docker")
     summary = run_split(
         split="val",

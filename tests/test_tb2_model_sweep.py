@@ -1,18 +1,27 @@
 import json
 import sys
-from types import SimpleNamespace
 
 from scripts import run_tb2_model_sweep
 
 
 def test_tb2_model_sweep_defaults_to_supported_codex_backend_models(monkeypatch, tmp_path) -> None:
     calls = []
+    monkeypatch.delenv("OPENAI_AUTH_MODE", raising=False)
+    monkeypatch.delenv("HARBOR_SLURM_PYXIS_PARTITION", raising=False)
 
-    def fake_run(command, **kwargs):
-        calls.append((command, kwargs))
-        return SimpleNamespace(stdout="{}", stderr="", returncode=0)
+    def fake_run_attempt(root, spec, args):
+        calls.append((root, spec, args))
+        return {
+            "model": spec.model,
+            "candidate": spec.candidate.name,
+            "task": spec.task,
+            "attempt": spec.attempt,
+            "returncode": 0,
+            "ran": False,
+            "dry_run": True,
+        }
 
-    monkeypatch.setattr(run_tb2_model_sweep.subprocess, "run", fake_run)
+    monkeypatch.setattr(run_tb2_model_sweep, "_run_attempt", fake_run_attempt)
     monkeypatch.setattr(
         sys,
         "argv",
@@ -32,33 +41,38 @@ def test_tb2_model_sweep_defaults_to_supported_codex_backend_models(monkeypatch,
     assert "gpt-5.4-nano" not in manifest["models"]
     assert manifest["reasoning_effort"] == "medium"
     assert manifest["trials"] == 10
-    assert manifest["concurrency_per_candidate"] == 45
-    assert manifest["max_candidate_workers"] == 2
-    assert manifest["effective_max_in_flight"] == 90
+    assert manifest["scheduler"] == "global_attempt_pool"
+    assert manifest["global_concurrency"] == 45
+    assert manifest["attempt_concurrency"] == 1
+    assert manifest["effective_max_in_flight"] == 45
+    assert manifest["attempt_cells"] == 3 * 8 * 9 * 10
     assert manifest["include_codex_cli"] is False
     assert manifest["include_terminus_2"] is False
 
-    models = [call[0][call[0].index("--codex-model") + 1] for call in calls]
-    assert models == ["gpt-5.4-mini", "gpt-5.4", "gpt-5.5"]
-    for command, kwargs in calls:
-        assert "--no-include-codex-cli" in command
-        assert "--no-include-terminus-2" in command
-        assert command[command.index("--trials") + 1] == "10"
-        assert command[command.index("--concurrency") + 1] == "45"
-        assert command[command.index("--max-candidate-workers") + 1] == "2"
-        assert command[command.index("--codex-reasoning-effort") + 1] == "medium"
-        assert kwargs["env"]["OPENAI_AUTH_MODE"] == "codex"
-        assert kwargs["env"]["HARBOR_SLURM_PYXIS_PARTITION"] == "m7i-cpu2"
+    assert len(calls) == 3 * 8 * 9 * 10
+    models = {call[1].model for call in calls}
+    assert models == {"gpt-5.4-mini", "gpt-5.4", "gpt-5.5"}
+    assert {call[2].concurrency for call in calls} == {45}
+    assert run_tb2_model_sweep.os.environ["OPENAI_AUTH_MODE"] == "codex"
+    assert run_tb2_model_sweep.os.environ["HARBOR_SLURM_PYXIS_PARTITION"] == "m7i-cpu2"
 
 
 def test_tb2_model_sweep_can_select_models_and_candidates(monkeypatch, tmp_path) -> None:
     calls = []
+    monkeypatch.delenv("OPENAI_AUTH_MODE", raising=False)
+    monkeypatch.delenv("HARBOR_SLURM_PYXIS_PARTITION", raising=False)
 
-    def fake_run(command, **kwargs):
-        calls.append(command)
-        return SimpleNamespace(stdout="", stderr="", returncode=0)
+    def fake_run_attempt(root, spec, args):
+        calls.append(spec)
+        return {
+            "model": spec.model,
+            "candidate": spec.candidate.name,
+            "task": spec.task,
+            "attempt": spec.attempt,
+            "returncode": 0,
+        }
 
-    monkeypatch.setattr(run_tb2_model_sweep.subprocess, "run", fake_run)
+    monkeypatch.setattr(run_tb2_model_sweep, "_run_attempt", fake_run_attempt)
     monkeypatch.setattr(
         sys,
         "argv",
@@ -74,14 +88,27 @@ def test_tb2_model_sweep_can_select_models_and_candidates(monkeypatch, tmp_path)
             "seed_codex_full",
             "--candidate",
             "seed_terminus_2_compressed",
+            "--task",
+            "bn-fit-modify",
+            "--trials",
+            "2",
+            "--concurrency",
+            "1",
         ],
     )
 
     assert run_tb2_model_sweep.main() == 0
     manifest = json.loads((tmp_path / "custom" / "manifest.json").read_text())
     assert manifest["models"] == ["gpt-5.5"]
-    assert manifest["candidates"] == ["seed_codex_full", "seed_terminus_2_compressed"]
-    command = calls[0]
-    assert command.count("--candidate") == 2
-    assert "seed_codex_full" in command
-    assert "seed_terminus_2_compressed" in command
+    assert [item["name"] for item in manifest["candidates"]] == [
+        "seed_codex_full",
+        "seed_terminus_2_compressed",
+    ]
+    assert manifest["tasks"] == ["bn-fit-modify"]
+    assert manifest["attempt_cells"] == 4
+    assert [(spec.candidate.name, spec.task, spec.attempt) for spec in calls] == [
+        ("seed_codex_full", "bn-fit-modify", 1),
+        ("seed_codex_full", "bn-fit-modify", 2),
+        ("seed_terminus_2_compressed", "bn-fit-modify", 1),
+        ("seed_terminus_2_compressed", "bn-fit-modify", 2),
+    ]
