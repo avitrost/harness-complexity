@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from types import SimpleNamespace
 
+import pytest
+
 from plumbing.openai_client import (
     CodexBackendError,
     _codex_body,
@@ -16,7 +18,13 @@ from plumbing.openai_client import (
     reset_trace_dir,
     set_client_factory,
     set_trace_dir,
+    terminal_reasoning_effort,
 )
+
+
+@pytest.fixture(autouse=True)
+def clear_terminal_reasoning_env(monkeypatch) -> None:
+    monkeypatch.delenv("OPENAI_TERMINAL_REASONING_EFFORT", raising=False)
 
 
 def test_terminal_model_calls_use_no_reasoning(monkeypatch) -> None:
@@ -48,6 +56,21 @@ def test_codex_backend_body_uses_no_reasoning() -> None:
 
     assert body["reasoning"] == {"effort": "none"}
     assert body["include"] == ["reasoning.encrypted_content"]
+
+
+def test_terminal_reasoning_effort_honors_env(monkeypatch) -> None:
+    monkeypatch.setenv("OPENAI_TERMINAL_REASONING_EFFORT", "medium")
+    monkeypatch.delenv("OPENAI_AUTH_MODE", raising=False)
+    fake = RecordingOpenAI("ok")
+    set_client_factory(lambda: fake)
+    try:
+        assert terminal_reasoning_effort() == "medium"
+        assert call_terminal_model([{"role": "user", "content": "next?"}]) == "ok"
+    finally:
+        set_client_factory(None)
+
+    assert fake.calls[0]["reasoning"] == {"effort": "medium"}
+    assert _codex_body([{"role": "user", "content": "next?"}])["reasoning"] == {"effort": "medium"}
 
 
 def test_codex_backend_body_can_include_tools() -> None:

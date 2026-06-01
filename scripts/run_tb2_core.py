@@ -38,14 +38,16 @@ class EvalCandidate:
 
 
 SEED_CANDIDATES = (
-    EvalCandidate("seed_minimal_agent", "harness", Path("seeds/minimal_agent")),
+    EvalCandidate("seed_minimal_agent", "harness", Path("seeds/minimal_agent"), 100),
     EvalCandidate("seed_codex_400", "harness", Path("seeds/codex_400"), 400),
     EvalCandidate("seed_codex_700", "harness", Path("seeds/codex_700"), 700),
     EvalCandidate("seed_codex_1000", "harness", Path("seeds/codex_1000"), 1000),
     EvalCandidate("seed_codex_1300", "harness", Path("seeds/codex_1300"), 1300),
     EvalCandidate("seed_codex_compressed", "harness", Path("seeds/codex_compressed"), 1660),
-    EvalCandidate("seed_codex_full", "harness", Path("seeds/codex_full")),
-    EvalCandidate("seed_terminus_2_compressed", "harness", Path("seeds/terminus_2_compressed")),
+    EvalCandidate("seed_codex_full", "harness", Path("seeds/codex_full"), 2210),
+    EvalCandidate(
+        "seed_terminus_2_compressed", "harness", Path("seeds/terminus_2_compressed"), 634
+    ),
 )
 
 
@@ -106,6 +108,10 @@ def main() -> int:
         "concurrency_per_candidate": args.concurrency,
         "max_candidate_workers": args.max_candidate_workers,
         "backend": args.backend,
+        "codex_model": args.codex_model,
+        "codex_reasoning_effort": args.codex_reasoning_effort,
+        "terminus_model": args.terminus_model,
+        "terminus_reasoning_effort": args.terminus_reasoning_effort,
         "candidates": [_candidate_manifest(candidate) for candidate in candidates],
     }
     (root / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
@@ -198,6 +204,10 @@ def _run_candidate(
         **common,
         candidate_dir=ROOT / candidate.candidate_dir,
         budget=candidate.loc or 0,
+        agent_env=(
+            f"OPENAI_TERMINAL_MODEL={args.codex_model}",
+            f"OPENAI_TERMINAL_REASONING_EFFORT={args.codex_reasoning_effort}",
+        ),
     )
 
 

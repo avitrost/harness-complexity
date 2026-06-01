@@ -100,6 +100,34 @@ def test_run_split_accepts_local_dataset_path(tmp_path: Path) -> None:
     assert summary["retry_exclude"] == ["VerifierTimeoutError"]
 
 
+def test_run_split_passes_agent_env_to_harbor(tmp_path: Path) -> None:
+    summary = run_split(
+        split="tb2-core",
+        candidate_dir=tmp_path,
+        budget=400,
+        out_dir=tmp_path / "out",
+        tasks=["bn-fit-modify"],
+        trials=1,
+        concurrency=1,
+        dry_run=True,
+        harbor_bin="harbor",
+        harbor_help_text="--dataset --include-task-name --n-attempts --n-concurrent",
+        agent_env=(
+            "OPENAI_TERMINAL_MODEL=gpt-5.5",
+            "OPENAI_TERMINAL_REASONING_EFFORT=medium",
+        ),
+    )
+
+    command = summary["command"]
+    assert command.count("--agent-env") == 2
+    assert "OPENAI_TERMINAL_MODEL=gpt-5.5" in command
+    assert "OPENAI_TERMINAL_REASONING_EFFORT=medium" in command
+    assert summary["agent_env"] == [
+        "OPENAI_TERMINAL_MODEL=gpt-5.5",
+        "OPENAI_TERMINAL_REASONING_EFFORT=medium",
+    ]
+
+
 def test_run_split_skips_terminal_model_preflight_by_default(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
     monkeypatch.delenv("HARBOR_TERMINAL_MODEL_PREFLIGHT", raising=False)

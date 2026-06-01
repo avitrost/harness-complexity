@@ -111,7 +111,7 @@ def terminal_model() -> str:
 
 
 def terminal_reasoning_effort() -> str:
-    return TERMINAL_REASONING_EFFORT
+    return os.getenv("OPENAI_TERMINAL_REASONING_EFFORT") or TERMINAL_REASONING_EFFORT
 
 
 def call_terminal_model(messages: list[dict[str, Any]]) -> str:

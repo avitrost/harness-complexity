@@ -29,6 +29,10 @@ def test_tb2_core_runner_writes_manifest_and_uses_requested_candidates(
             "codex_cli",
             "--concurrency",
             "80",
+            "--codex-model",
+            "gpt-5.5",
+            "--codex-reasoning-effort",
+            "medium",
             "--max-candidate-workers",
             "2",
             "--dry-run",
@@ -45,3 +49,6 @@ def test_tb2_core_runner_writes_manifest_and_uses_requested_candidates(
     assert manifest["trials"] == 10
     assert manifest["concurrency_per_candidate"] == 80
     assert manifest["max_candidate_workers"] == 2
+    assert manifest["codex_model"] == "gpt-5.5"
+    assert manifest["codex_reasoning_effort"] == "medium"
+    assert manifest["candidates"][0]["loc"] == 400

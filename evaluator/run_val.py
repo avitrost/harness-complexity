@@ -35,6 +35,7 @@ def run_split(
     verifier_timeout_multiplier: float | None = None,
     retry_include: tuple[str, ...] = (),
     retry_exclude: tuple[str, ...] = (),
+    agent_env: tuple[str, ...] = (),
 ) -> dict[str, Any]:
     if backend not in BACKENDS:
         raise ValueError(f"unsupported backend: {backend}")
@@ -57,6 +58,7 @@ def run_split(
         verifier_timeout_multiplier=verifier_timeout_multiplier,
         retry_include=retry_include,
         retry_exclude=retry_exclude,
+        agent_env=agent_env,
     )
     plan = build_harbor_command(spec, executable=harbor_bin, help_text=harbor_help_text)
     command_json = {
@@ -69,6 +71,7 @@ def run_split(
         "verifier_timeout_multiplier": verifier_timeout_multiplier,
         "retry_include": list(retry_include),
         "retry_exclude": list(retry_exclude),
+        "agent_env": list(agent_env),
         "command": plan.command,
         "runnable": plan.runnable,
         "task_flag": plan.task_flag,
