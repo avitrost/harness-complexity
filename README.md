@@ -77,6 +77,14 @@ OPENAI_AUTH_MODE=codex python scripts/run_tb2_core.py \
   --backend slurm-pyxis
 ```
 
+Run the default Codex-backend model sweep over seed harnesses only. This excludes
+`gpt-5.4-nano` because the Codex/ChatGPT backend rejects it for this account.
+
+```bash
+OPENAI_AUTH_MODE=codex python scripts/run_tb2_model_sweep.py \
+  --backend slurm-pyxis
+```
+
 The run directory contains:
 
 - `manifest.json`: tasks, trials, candidates, backend, and concurrency policy.

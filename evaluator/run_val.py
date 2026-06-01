@@ -114,7 +114,13 @@ def run_split(
         )
         write_summary(summary, out_dir)
         return summary
-    result = subprocess.run(plan.command, check=False, capture_output=True, text=True)
+    result = subprocess.run(
+        plan.command,
+        check=False,
+        capture_output=True,
+        text=True,
+        env=_agent_subprocess_env(agent_env),
+    )
     (out_dir / "stdout.log").write_text(result.stdout, encoding="utf-8")
     (out_dir / "stderr.log").write_text(result.stderr, encoding="utf-8")
     records = parse_records(out_dir)
@@ -123,6 +129,17 @@ def run_split(
     summary.update({"ran": True, "returncode": result.returncode, "command": plan.command})
     write_summary(summary, out_dir)
     return summary
+
+
+def _agent_subprocess_env(agent_env: tuple[str, ...]) -> dict[str, str] | None:
+    if not agent_env:
+        return None
+    env = os.environ.copy()
+    for item in agent_env:
+        key, separator, value = item.partition("=")
+        if separator and key:
+            env[key] = value
+    return env
 
 
 def _backend_error(backend: str) -> str | None:
