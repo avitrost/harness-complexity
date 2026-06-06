@@ -216,15 +216,16 @@ def _attempts(
     trials: int,
 ) -> list[MatrixAttempt]:
     by_candidate = {candidate.name: candidate for candidate in candidates}
-    attempts = []
+    buckets: list[list[MatrixAttempt]] = []
     for config in configs:
+        bucket = []
         for candidate_name in config.candidates:
             candidate = by_candidate.get(candidate_name)
             if candidate is None:
                 continue
             for task in tasks:
                 for attempt in range(1, trials + 1):
-                    attempts.append(
+                    bucket.append(
                         MatrixAttempt(
                             config.provider,
                             config.config_id,
@@ -235,6 +236,21 @@ def _attempts(
                             attempt,
                         )
                     )
+        buckets.append(bucket)
+    return _round_robin_attempts(buckets)
+
+
+def _round_robin_attempts(buckets: list[list[MatrixAttempt]]) -> list[MatrixAttempt]:
+    attempts = []
+    remaining = True
+    index = 0
+    while remaining:
+        remaining = False
+        for bucket in buckets:
+            if index < len(bucket):
+                attempts.append(bucket[index])
+                remaining = True
+        index += 1
     return attempts
 
 

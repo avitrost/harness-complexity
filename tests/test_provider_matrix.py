@@ -90,6 +90,25 @@ def test_provider_matrix_shards_are_disjoint_and_complete() -> None:
     assert sum(len(shard) for shard in shards) == len(attempts)
 
 
+def test_provider_matrix_shard_start_is_provider_interleaved() -> None:
+    candidates = list(SEED_CANDIDATES)
+    configs = run_provider_matrix._provider_configs(tuple(candidate.name for candidate in candidates))
+    attempts = run_provider_matrix._attempts(
+        configs,
+        candidates,
+        ["t1", "t2", "t3", "t4", "t5", "t6", "t7", "t8", "t9"],
+        trials=10,
+    )
+
+    first_local_batch = run_provider_matrix._shard_attempts(attempts, 150, 0)[:16]
+
+    assert {attempt.provider for attempt in first_local_batch} == {
+        "anthropic",
+        "deepseek",
+        "openai",
+    }
+
+
 def test_provider_matrix_api_usage_ignores_missing_usage(tmp_path: Path) -> None:
     trace_dir = tmp_path / "attempt" / "agent"
     trace_dir.mkdir(parents=True)
