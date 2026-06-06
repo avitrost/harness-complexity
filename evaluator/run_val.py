@@ -12,11 +12,7 @@ from evaluator.aggregate import aggregate_records, write_summary
 from evaluator.parse_results import parse_records
 from evaluator.splits import VAL_CONCURRENCY, VAL_TRIALS, get_val_tasks
 from plumbing.harbor_adapter import TERMINAL_BENCH_DATASET, HarborRunSpec, build_harbor_command
-from plumbing.openai_client import (
-    check_terminal_model_available,
-    terminal_provider,
-    using_codex_auth,
-)
+from plumbing.openai_client import check_terminal_model_available
 from plumbing.secrets import get_secret
 
 BACKENDS = {"docker", "slurm-pyxis"}
@@ -103,7 +99,7 @@ def run_split(
         )
         write_summary(summary, out_dir)
         return summary
-    api_error = _terminal_model_error()
+    api_error = _terminal_model_error(agent_env)
     if api_error:
         (out_dir / "stderr.log").write_text(api_error + "\n", encoding="utf-8")
         (out_dir / "stdout.log").write_text("", encoding="utf-8")
@@ -157,12 +153,15 @@ def _backend_error(backend: str) -> str | None:
     return None
 
 
-def _terminal_model_error() -> str | None:
+def _terminal_model_error(agent_env: tuple[str, ...] = ()) -> str | None:
+    env = _agent_subprocess_env(agent_env) or os.environ
     try:
-        provider = terminal_provider()
+        provider = _terminal_provider_from_env(env)
     except RuntimeError as exc:
         return str(exc)
-    if provider == "openai" and not using_codex_auth() and not get_secret("OPENAI_API_KEY"):
+    if provider == "openai" and not _using_codex_auth_from_env(env) and not get_secret(
+        "OPENAI_API_KEY"
+    ):
         return "OPENAI_API_KEY is required for terminal model validation."
     if provider == "anthropic" and not get_secret("ANTHROPIC_API_KEY"):
         return "ANTHROPIC_API_KEY is required for terminal model validation."
@@ -178,6 +177,30 @@ def _terminal_model_error() -> str | None:
             f"quota, and model access before running validation. ({type(exc).__name__}: {exc})"
         )
     return None
+
+
+def _terminal_provider_from_env(env: dict[str, str]) -> str:
+    configured = (
+        env.get("TERMINAL_MODEL_PROVIDER")
+        or env.get("OPENAI_TERMINAL_PROVIDER")
+        or env.get("MODEL_PROVIDER")
+        or "openai"
+    )
+    provider = configured.strip().lower()
+    aliases = {
+        "openai": "openai",
+        "codex": "openai",
+        "anthropic": "anthropic",
+        "claude": "anthropic",
+        "deepseek": "deepseek",
+    }
+    if provider not in aliases:
+        raise RuntimeError(f"unsupported terminal model provider: {configured}")
+    return aliases[provider]
+
+
+def _using_codex_auth_from_env(env: dict[str, str]) -> bool:
+    return _terminal_provider_from_env(env) == "openai" and env.get("OPENAI_AUTH_MODE", "").lower() == "codex"
 
 
 def main() -> int:
