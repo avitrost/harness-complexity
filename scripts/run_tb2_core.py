@@ -45,6 +45,12 @@ SEED_CANDIDATES = (
     EvalCandidate("seed_codex_1300", "harness", Path("seeds/codex_1300"), 1300),
     EvalCandidate("seed_codex_compressed", "harness", Path("seeds/codex_compressed"), 1660),
     EvalCandidate("seed_codex_full", "harness", Path("seeds/codex_full"), 2210),
+    EvalCandidate(
+        "seed_mini_swe_agent_barebones",
+        "harness",
+        Path("seeds/mini_swe_agent_barebones"),
+        149,
+    ),
     EvalCandidate("seed_mini_swe_agent_v2", "harness", Path("seeds/mini_swe_agent_v2"), 478),
     EvalCandidate(
         "seed_terminus_2_compressed", "harness", Path("seeds/terminus_2_compressed"), 634
