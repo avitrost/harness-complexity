@@ -87,6 +87,39 @@ OPENAI_AUTH_MODE=codex python scripts/run_tb2_model_sweep.py \
   --backend slurm-pyxis
 ```
 
+Run the same seed-harness sweep against Claude or DeepSeek by selecting a provider
+and passing explicit model names:
+
+```bash
+TERMINAL_MODEL_PROVIDER=anthropic python scripts/run_tb2_model_sweep.py \
+  --provider anthropic \
+  --model claude-sonnet-4-6 \
+  --reasoning-effort medium \
+  --backend slurm-pyxis
+```
+
+```bash
+TERMINAL_MODEL_PROVIDER=deepseek python scripts/run_tb2_model_sweep.py \
+  --provider deepseek \
+  --model deepseek-v4-flash \
+  --backend slurm-pyxis
+```
+
+API keys may be exported in the environment or placed in
+`~/.config/harness-complexity/secrets.env`:
+
+```bash
+ANTHROPIC_API_KEY=...
+DEEPSEEK_API_KEY=...
+OPENAI_API_KEY=...
+```
+
+`--reasoning-effort` is mapped per provider rather than sent literally:
+OpenAI/Codex uses OpenAI reasoning effort, Claude uses `output_config.effort`,
+and DeepSeek uses `thinking` controls (`none` disables thinking; `low`,
+`medium`, and `high` enable thinking at DeepSeek `high`; `xhigh` and `max` map
+to DeepSeek `max`).
+
 The run directory contains:
 
 - `manifest.json`: tasks, trials, candidates, backend, and concurrency policy.

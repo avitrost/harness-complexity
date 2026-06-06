@@ -60,6 +60,13 @@ SEED_CANDIDATES = (
     ),
     EvalCandidate("seed_codex_full", "seed", "harness", None, Path("seeds/codex_full")),
     EvalCandidate(
+        "seed_mini_swe_agent_v2",
+        "seed",
+        "harness",
+        None,
+        Path("seeds/mini_swe_agent_v2"),
+    ),
+    EvalCandidate(
         "seed_terminus_2_compressed",
         "seed",
         "harness",

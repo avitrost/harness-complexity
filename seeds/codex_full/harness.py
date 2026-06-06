@@ -1329,11 +1329,11 @@ class HistoryReplay:
         item_type = item.get("type")
         if item_type == "message":
             role = str(item.get("role", "assistant"))
-            return {
-                "type": "message",
-                "role": role,
-                "content": self._content_items(item.get("content", []), role),
-            }
+            content = self._content_items(item.get("content", []), role)
+            cleaned = {"type": "message", "role": role, "content": content}
+            if (reasoning := item.get("reasoning_content")) is not None:
+                cleaned["reasoning_content"] = str(reasoning or "")
+            return cleaned
         if item_type == "function_call":
             cleaned = {
                 "type": "function_call",

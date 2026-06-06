@@ -18,12 +18,32 @@ from plumbing.openai_client import (
     reset_trace_dir,
     set_client_factory,
     set_trace_dir,
+    terminal_provider,
     terminal_reasoning_effort,
+    using_codex_auth,
 )
 
 
 @pytest.fixture(autouse=True)
-def clear_terminal_reasoning_env(monkeypatch) -> None:
+def clear_terminal_provider_env(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("HARNESS_SECRETS_FILE", str(tmp_path / "missing-secrets.env"))
+    for name in (
+        "TERMINAL_MODEL_PROVIDER",
+        "OPENAI_TERMINAL_PROVIDER",
+        "MODEL_PROVIDER",
+        "TERMINAL_MODEL",
+        "OPENAI_TERMINAL_MODEL",
+        "TERMINAL_REASONING_EFFORT",
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_BETA",
+        "ANTHROPIC_MESSAGES_URL",
+        "ANTHROPIC_THINKING_BUDGET_TOKENS",
+        "ANTHROPIC_THINKING_TYPE",
+        "ANTHROPIC_VERSION",
+        "DEEPSEEK_API_KEY",
+        "DEEPSEEK_BASE_URL",
+    ):
+        monkeypatch.delenv(name, raising=False)
     monkeypatch.delenv("OPENAI_TERMINAL_REASONING_EFFORT", raising=False)
 
 
@@ -222,6 +242,301 @@ def test_terminal_model_tool_calls_are_extracted(monkeypatch) -> None:
     assert result.tool_calls[0].arguments == {"commands": [{"keystrokes": "pwd\n"}]}
 
 
+def test_anthropic_provider_uses_messages_api_payload(monkeypatch) -> None:
+    captured = {}
+
+    def fake_urlopen(request, timeout):
+        captured["url"] = request.full_url
+        captured["timeout"] = timeout
+        captured["headers"] = {key.lower(): value for key, value in request.header_items()}
+        captured["body"] = json.loads(request.data.decode("utf-8"))
+        return JsonResponse(
+            {
+                "id": "msg_1",
+                "content": [
+                    {"type": "text", "text": "checking"},
+                    {
+                        "type": "tool_use",
+                        "id": "toolu_1",
+                        "name": "exec_command",
+                        "input": {"cmd": "pwd"},
+                    },
+                ],
+                "usage": {"input_tokens": 10, "output_tokens": 4},
+            }
+        )
+
+    monkeypatch.setenv("TERMINAL_MODEL_PROVIDER", "anthropic")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "anthropic-key")
+    monkeypatch.setenv("OPENAI_AUTH_MODE", "codex")
+    monkeypatch.setenv("OPENAI_TERMINAL_MODEL", "claude-sonnet-test")
+    monkeypatch.setenv("OPENAI_TERMINAL_REASONING_EFFORT", "medium")
+    monkeypatch.setattr("plumbing.openai_client.urlopen", fake_urlopen)
+
+    result = call_terminal_model_with_tools(
+        [
+            {"role": "system", "content": "system instructions"},
+            {"role": "user", "content": "next?"},
+        ],
+        [
+            {
+                "type": "function",
+                "name": "exec_command",
+                "description": "Run a shell command.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"cmd": {"type": "string"}},
+                    "required": ["cmd"],
+                },
+            }
+        ],
+        tool_choice="auto",
+    )
+
+    assert terminal_provider() == "anthropic"
+    assert using_codex_auth() is False
+    assert captured["url"] == "https://api.anthropic.com/v1/messages"
+    assert captured["headers"]["x-api-key"] == "anthropic-key"
+    assert captured["headers"]["anthropic-version"] == "2023-06-01"
+    assert captured["body"]["model"] == "claude-sonnet-test"
+    assert captured["body"]["system"] == "system instructions"
+    assert captured["body"]["messages"] == [
+        {"role": "user", "content": [{"type": "text", "text": "next?"}]}
+    ]
+    assert captured["body"]["tools"][0]["input_schema"]["required"] == ["cmd"]
+    assert captured["body"]["tool_choice"] == {"type": "auto"}
+    assert captured["body"]["output_config"] == {"effort": "medium"}
+    assert result.content == "checking"
+    assert result.tool_calls[0].name == "exec_command"
+    assert result.tool_calls[0].arguments == {"cmd": "pwd"}
+    assert result.usage == {
+        "input_tokens": 10,
+        "output_tokens": 4,
+        "total_tokens": 14,
+        "cached_tokens": 0,
+    }
+    assert result.request_metadata["provider"] == "anthropic"
+
+
+def test_anthropic_provider_replays_tool_results(monkeypatch) -> None:
+    captured = {}
+
+    def fake_urlopen(request, timeout):
+        del timeout
+        captured["body"] = json.loads(request.data.decode("utf-8"))
+        return JsonResponse({"id": "msg_2", "content": [{"type": "text", "text": "done"}]})
+
+    monkeypatch.setenv("TERMINAL_MODEL_PROVIDER", "anthropic")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "anthropic-key")
+    monkeypatch.setattr("plumbing.openai_client.urlopen", fake_urlopen)
+
+    assert (
+        call_terminal_model(
+            [
+                {"role": "user", "content": "run pwd"},
+                {
+                    "type": "function_call",
+                    "name": "exec_command",
+                    "arguments": '{"cmd":"pwd"}',
+                    "call_id": "call_1",
+                },
+                {"type": "function_call_output", "call_id": "call_1", "output": "/tmp"},
+            ]
+        )
+        == "done"
+    )
+
+    assert captured["body"]["messages"] == [
+        {"role": "user", "content": [{"type": "text", "text": "run pwd"}]},
+        {
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "tool_use",
+                    "id": "call_1",
+                    "name": "exec_command",
+                    "input": {"cmd": "pwd"},
+                }
+            ],
+        },
+        {
+            "role": "user",
+            "content": [{"type": "tool_result", "tool_use_id": "call_1", "content": "/tmp"}],
+        },
+    ]
+
+
+def test_deepseek_provider_uses_chat_completions_payload(monkeypatch) -> None:
+    captured = {}
+
+    def fake_urlopen(request, timeout):
+        captured["url"] = request.full_url
+        captured["timeout"] = timeout
+        captured["headers"] = {key.lower(): value for key, value in request.header_items()}
+        captured["body"] = json.loads(request.data.decode("utf-8"))
+        return JsonResponse(
+            {
+                "id": "chatcmpl_1",
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "content": "working",
+                            "tool_calls": [
+                                {
+                                    "id": "call_1",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "exec_command",
+                                        "arguments": '{"cmd":"ls"}',
+                                    },
+                                }
+                            ],
+                        }
+                    }
+                ],
+                "usage": {
+                    "prompt_tokens": 8,
+                    "completion_tokens": 2,
+                    "total_tokens": 10,
+                    "prompt_cache_hit_tokens": 3,
+                },
+            }
+        )
+
+    monkeypatch.setenv("TERMINAL_MODEL_PROVIDER", "deepseek")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "deepseek-key")
+    monkeypatch.setenv("OPENAI_TERMINAL_MODEL", "deepseek-v4-flash")
+    monkeypatch.setattr("plumbing.openai_client.urlopen", fake_urlopen)
+
+    result = call_terminal_model_with_tools(
+        [
+            {"role": "system", "content": "system instructions"},
+            {"role": "user", "content": "edit"},
+        ],
+        [
+            {
+                "type": "custom",
+                "name": "apply_patch",
+                "description": "Apply a patch.",
+                "format": {"type": "grammar"},
+            }
+        ],
+        tool_choice="auto",
+    )
+
+    assert captured["url"] == "https://api.deepseek.com/chat/completions"
+    assert captured["headers"]["authorization"] == "Bearer deepseek-key"
+    assert captured["body"]["messages"] == [
+        {"role": "system", "content": "system instructions"},
+        {"role": "user", "content": "edit"},
+    ]
+    assert captured["body"]["tools"] == [
+        {
+            "type": "function",
+            "function": {
+                "name": "apply_patch",
+                "description": "Apply a patch.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "input": {
+                            "type": "string",
+                            "description": "Raw input for this freeform tool.",
+                        }
+                    },
+                    "required": ["input"],
+                    "additionalProperties": False,
+                },
+            },
+        }
+    ]
+    assert captured["body"]["tool_choice"] == "auto"
+    assert captured["body"]["thinking"] == {"type": "disabled"}
+    assert "reasoning_effort" not in captured["body"]
+    assert result.content == "working"
+    assert result.tool_calls[0].name == "exec_command"
+    assert result.tool_calls[0].arguments == {"cmd": "ls"}
+    assert result.usage == {
+        "input_tokens": 8,
+        "output_tokens": 2,
+        "total_tokens": 10,
+        "cached_tokens": 3,
+    }
+    assert result.request_metadata["provider"] == "deepseek"
+
+
+def test_deepseek_provider_maps_non_none_effort_to_thinking(monkeypatch) -> None:
+    captured = {}
+
+    def fake_urlopen(request, timeout):
+        del timeout
+        captured["body"] = json.loads(request.data.decode("utf-8"))
+        return JsonResponse({"id": "chatcmpl_1", "choices": [{"message": {"content": "ok"}}]})
+
+    monkeypatch.setenv("TERMINAL_MODEL_PROVIDER", "deepseek")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "deepseek-key")
+    monkeypatch.setenv("OPENAI_TERMINAL_REASONING_EFFORT", "medium")
+    monkeypatch.setattr("plumbing.openai_client.urlopen", fake_urlopen)
+
+    assert call_terminal_model([{"role": "user", "content": "next?"}]) == "ok"
+
+    assert captured["body"]["thinking"] == {"type": "enabled"}
+    assert captured["body"]["reasoning_effort"] == "high"
+
+
+def test_deepseek_provider_replays_tool_results(monkeypatch) -> None:
+    captured = {}
+
+    def fake_urlopen(request, timeout):
+        del timeout
+        captured["body"] = json.loads(request.data.decode("utf-8"))
+        return JsonResponse({"id": "chatcmpl_2", "choices": [{"message": {"content": "done"}}]})
+
+    monkeypatch.setenv("TERMINAL_MODEL_PROVIDER", "deepseek")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "deepseek-key")
+    monkeypatch.setattr("plumbing.openai_client.urlopen", fake_urlopen)
+
+    assert (
+        call_terminal_model(
+            [
+                {"role": "user", "content": "run pwd"},
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": "using the tool"}],
+                    "reasoning_content": "I need the current directory.",
+                },
+                {
+                    "type": "function_call",
+                    "name": "exec_command",
+                    "arguments": '{"cmd":"pwd"}',
+                    "call_id": "call_1",
+                },
+                {"type": "function_call_output", "call_id": "call_1", "output": "/tmp"},
+            ]
+        )
+        == "done"
+    )
+
+    assert captured["body"]["messages"] == [
+        {"role": "user", "content": "run pwd"},
+        {
+            "role": "assistant",
+            "content": "using the tool",
+            "reasoning_content": "I need the current directory.",
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "exec_command", "arguments": '{"cmd":"pwd"}'},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call_1", "content": "/tmp"},
+    ]
+
+
 def test_codex_response_items_extract_custom_and_local_shell_calls() -> None:
     result = _extract_response_dict_result(
         {
@@ -369,3 +684,17 @@ class RecordingToolOpenAI:
                 )
             ],
         )
+
+
+class JsonResponse:
+    def __init__(self, payload) -> None:
+        self.payload = payload
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+    def read(self):
+        return json.dumps(self.payload).encode("utf-8")

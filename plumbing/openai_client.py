@@ -17,14 +17,24 @@ from urllib.request import Request, urlopen
 
 from openai import OpenAI
 
-from plumbing.secrets import require_openai_api_key
+from plumbing.secrets import (
+    require_anthropic_api_key,
+    require_deepseek_api_key,
+    require_openai_api_key,
+)
 
+TERMINAL_PROVIDER = "openai"
 TERMINAL_MODEL = "gpt-5.4-mini"
+ANTHROPIC_TERMINAL_MODEL = "claude-sonnet-4-6"
+DEEPSEEK_TERMINAL_MODEL = "deepseek-v4-flash"
 TERMINAL_REASONING_EFFORT = "none"
 TIMEOUT_SEC = 120.0
 DEFAULT_MAX_RETRIES = 2
 MAX_OUTPUT_TOKENS = 4096
 PREFLIGHT_OUTPUT_TOKENS = 16
+ANTHROPIC_MESSAGES_URL = "https://api.anthropic.com/v1/messages"
+ANTHROPIC_VERSION = "2023-06-01"
+DEEPSEEK_BASE_URL = "https://api.deepseek.com"
 CODEX_BASE_URL = "https://chatgpt.com/backend-api/codex/responses"
 CODEX_TOKEN_URL = "https://auth.openai.com/oauth/token"
 CODEX_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
@@ -102,16 +112,48 @@ def _make_client() -> OpenAI:
     )
 
 
+def terminal_provider() -> str:
+    configured = (
+        os.getenv("TERMINAL_MODEL_PROVIDER")
+        or os.getenv("OPENAI_TERMINAL_PROVIDER")
+        or os.getenv("MODEL_PROVIDER")
+        or TERMINAL_PROVIDER
+    )
+    provider = configured.strip().lower()
+    aliases = {
+        "openai": "openai",
+        "codex": "openai",
+        "anthropic": "anthropic",
+        "claude": "anthropic",
+        "deepseek": "deepseek",
+    }
+    if provider not in aliases:
+        raise RuntimeError(f"unsupported terminal model provider: {configured}")
+    return aliases[provider]
+
+
 def using_codex_auth() -> bool:
-    return os.getenv("OPENAI_AUTH_MODE", "").lower() == "codex"
+    return terminal_provider() == "openai" and os.getenv("OPENAI_AUTH_MODE", "").lower() == "codex"
 
 
 def terminal_model() -> str:
-    return os.getenv("OPENAI_TERMINAL_MODEL", TERMINAL_MODEL)
+    configured = os.getenv("TERMINAL_MODEL") or os.getenv("OPENAI_TERMINAL_MODEL")
+    if configured:
+        return configured
+    provider = terminal_provider()
+    if provider == "anthropic":
+        return ANTHROPIC_TERMINAL_MODEL
+    if provider == "deepseek":
+        return DEEPSEEK_TERMINAL_MODEL
+    return TERMINAL_MODEL
 
 
 def terminal_reasoning_effort() -> str:
-    return os.getenv("OPENAI_TERMINAL_REASONING_EFFORT") or TERMINAL_REASONING_EFFORT
+    return (
+        os.getenv("TERMINAL_REASONING_EFFORT")
+        or os.getenv("OPENAI_TERMINAL_REASONING_EFFORT")
+        or TERMINAL_REASONING_EFFORT
+    )
 
 
 def call_terminal_model(messages: list[dict[str, Any]]) -> str:
@@ -121,8 +163,27 @@ def call_terminal_model(messages: list[dict[str, Any]]) -> str:
         try:
             _throttle_if_requested()
             started_at = time.monotonic()
+            provider = terminal_provider()
             if using_codex_auth():
                 result = _call_codex_backend_result(messages)
+                _write_model_trace(
+                    messages,
+                    result.content,
+                    duration_sec=time.monotonic() - started_at,
+                    request_metadata=result.request_metadata,
+                )
+                return result.content
+            if provider == "anthropic":
+                result = _call_anthropic_messages_result(messages)
+                _write_model_trace(
+                    messages,
+                    result.content,
+                    duration_sec=time.monotonic() - started_at,
+                    request_metadata=result.request_metadata,
+                )
+                return result.content
+            if provider == "deepseek":
+                result = _call_deepseek_chat_result(messages)
                 _write_model_trace(
                     messages,
                     result.content,
@@ -168,8 +229,39 @@ def call_terminal_model_with_tools(
         try:
             _throttle_if_requested()
             started_at = time.monotonic()
+            provider = terminal_provider()
             if using_codex_auth():
                 result = _call_codex_backend_result(
+                    messages,
+                    tools,
+                    tool_choice=tool_choice,
+                    parallel_tool_calls=parallel_tool_calls,
+                )
+                _write_model_trace(
+                    messages,
+                    result.content,
+                    tool_calls=result.tool_calls,
+                    duration_sec=time.monotonic() - started_at,
+                    request_metadata=result.request_metadata,
+                )
+                return result
+            if provider == "anthropic":
+                result = _call_anthropic_messages_result(
+                    messages,
+                    tools,
+                    tool_choice=tool_choice,
+                    parallel_tool_calls=parallel_tool_calls,
+                )
+                _write_model_trace(
+                    messages,
+                    result.content,
+                    tool_calls=result.tool_calls,
+                    duration_sec=time.monotonic() - started_at,
+                    request_metadata=result.request_metadata,
+                )
+                return result
+            if provider == "deepseek":
+                result = _call_deepseek_chat_result(
                     messages,
                     tools,
                     tool_choice=tool_choice,
@@ -216,8 +308,21 @@ def call_terminal_model_with_tools(
 
 def check_terminal_model_available() -> None:
     _throttle_if_requested()
+    provider = terminal_provider()
     if using_codex_auth():
         _call_codex_backend([{"role": "user", "content": "Reply OK."}])
+        return
+    if provider == "anthropic":
+        _call_anthropic_messages_result(
+            [{"role": "user", "content": "Reply OK."}],
+            max_tokens=PREFLIGHT_OUTPUT_TOKENS,
+        )
+        return
+    if provider == "deepseek":
+        _call_deepseek_chat_result(
+            [{"role": "user", "content": "Reply OK."}],
+            max_tokens=PREFLIGHT_OUTPUT_TOKENS,
+        )
         return
     response = _make_client().responses.create(
         model=terminal_model(),
@@ -262,6 +367,733 @@ def _retry_delay(exc: Exception, attempt: int) -> float:
     return float(2**attempt)
 
 
+class ModelProviderError(RuntimeError):
+    def __init__(self, provider: str, status_code: int, detail: str, headers: Any) -> None:
+        self.provider = provider
+        self.status_code = status_code
+        self.detail = detail
+        self.headers = headers
+        super().__init__(f"{provider} API call failed: {status_code} {detail}")
+
+
+def _call_anthropic_messages_result(
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]] | None = None,
+    *,
+    tool_choice: Any | None = None,
+    parallel_tool_calls: bool | None = None,
+    max_tokens: int = MAX_OUTPUT_TOKENS,
+) -> ToolModelResult:
+    del parallel_tool_calls
+    system, api_messages = _anthropic_messages_and_system(messages)
+    body: dict[str, Any] = {
+        "model": terminal_model(),
+        "max_tokens": max_tokens,
+        "messages": api_messages,
+    }
+    if system:
+        body["system"] = system
+    anthropic_tools = _anthropic_tools(tools)
+    if anthropic_tools:
+        body["tools"] = anthropic_tools
+    converted_tool_choice = _anthropic_tool_choice(tool_choice)
+    if converted_tool_choice is not None:
+        body["tool_choice"] = converted_tool_choice
+    effort = _anthropic_effort()
+    if effort is not None:
+        body["output_config"] = {"effort": effort}
+    thinking = _anthropic_thinking(max_tokens)
+    if thinking is not None:
+        body["thinking"] = thinking
+    headers = {
+        "content-type": "application/json",
+        "x-api-key": require_anthropic_api_key(),
+        "anthropic-version": os.getenv("ANTHROPIC_VERSION", ANTHROPIC_VERSION),
+    }
+    if beta := os.getenv("ANTHROPIC_BETA"):
+        headers["anthropic-beta"] = beta
+    response = _post_json(
+        os.getenv("ANTHROPIC_MESSAGES_URL", ANTHROPIC_MESSAGES_URL),
+        body,
+        headers,
+        "anthropic",
+    )
+    result = _extract_anthropic_result(response)
+    return ToolModelResult(
+        result.content,
+        result.tool_calls,
+        _provider_request_metadata("anthropic", body, result),
+        result.response_items,
+        result.response_id,
+        result.usage,
+    )
+
+
+def _call_deepseek_chat_result(
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]] | None = None,
+    *,
+    tool_choice: Any | None = None,
+    parallel_tool_calls: bool | None = None,
+    max_tokens: int = MAX_OUTPUT_TOKENS,
+) -> ToolModelResult:
+    del parallel_tool_calls
+    body: dict[str, Any] = {
+        "model": terminal_model(),
+        "messages": _deepseek_messages(messages),
+        "max_tokens": max_tokens,
+        "stream": False,
+    }
+    deepseek_tools = _deepseek_tools(tools)
+    if deepseek_tools:
+        body["tools"] = deepseek_tools
+    converted_tool_choice = _deepseek_tool_choice(tool_choice)
+    if converted_tool_choice is not None:
+        body["tool_choice"] = converted_tool_choice
+    thinking, reasoning_effort = _deepseek_thinking_and_effort()
+    body["thinking"] = thinking
+    if reasoning_effort is not None:
+        body["reasoning_effort"] = reasoning_effort
+    response = _post_json(
+        _deepseek_chat_url(),
+        body,
+        {
+            "authorization": f"Bearer {require_deepseek_api_key()}",
+            "content-type": "application/json",
+        },
+        "deepseek",
+    )
+    result = _extract_deepseek_result(response)
+    return ToolModelResult(
+        result.content,
+        result.tool_calls,
+        _provider_request_metadata("deepseek", body, result),
+        result.response_items,
+        result.response_id,
+        result.usage,
+    )
+
+
+def _post_json(
+    url: str,
+    body: dict[str, Any],
+    headers: dict[str, str],
+    provider: str,
+) -> dict[str, Any]:
+    request = Request(
+        url,
+        data=json.dumps(body).encode("utf-8"),
+        headers=headers,
+        method="POST",
+    )
+    try:
+        with urlopen(request, timeout=TIMEOUT_SEC) as response:
+            text = response.read().decode("utf-8", errors="replace")
+    except HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        raise ModelProviderError(provider, exc.code, detail[:500], exc.headers) from exc
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"{provider} API returned invalid JSON: {text[:500]}") from exc
+    if not isinstance(payload, dict):
+        raise RuntimeError(f"{provider} API returned unexpected JSON: {text[:500]}")
+    return payload
+
+
+def _provider_request_metadata(
+    provider: str,
+    body: dict[str, Any],
+    result: ToolModelResult,
+) -> dict[str, Any]:
+    tools = body.get("tools") if isinstance(body.get("tools"), list) else []
+    messages = body.get("messages") if isinstance(body.get("messages"), list) else []
+    metadata = {
+        "provider": provider,
+        "model": body.get("model"),
+        "tool_choice": body.get("tool_choice"),
+        "tool_count": len(tools),
+        "tool_names": [_provider_tool_name(tool) for tool in tools],
+        "input_count": len(messages),
+        "response_id": result.response_id,
+        "response_item_count": len(result.response_items),
+    }
+    if result.usage:
+        metadata["usage"] = result.usage
+    if body.get("output_config") is not None:
+        metadata["output_config"] = body["output_config"]
+    if body.get("thinking") is not None:
+        metadata["thinking"] = body["thinking"]
+    return metadata
+
+
+def _provider_tool_name(tool: Any) -> str | None:
+    if not isinstance(tool, dict):
+        return None
+    if isinstance(tool.get("function"), dict):
+        return tool["function"].get("name")
+    return tool.get("name")
+
+
+def _anthropic_effort() -> str | None:
+    effort = terminal_reasoning_effort().strip().lower()
+    if not effort or effort == "none":
+        return None
+    if effort not in {"low", "medium", "high", "xhigh", "max"}:
+        raise RuntimeError(f"unsupported Anthropic effort: {effort}")
+    return effort
+
+
+def _anthropic_thinking(max_tokens: int) -> dict[str, Any] | None:
+    thinking_type = os.getenv("ANTHROPIC_THINKING_TYPE", "").strip().lower()
+    budget = os.getenv("ANTHROPIC_THINKING_BUDGET_TOKENS")
+    if not thinking_type and not budget:
+        return None
+    if thinking_type in {"", "enabled"}:
+        if not budget:
+            raise RuntimeError("ANTHROPIC_THINKING_BUDGET_TOKENS is required")
+        try:
+            budget_tokens = int(budget)
+        except ValueError as exc:
+            raise RuntimeError("ANTHROPIC_THINKING_BUDGET_TOKENS must be an integer") from exc
+        if budget_tokens >= max_tokens:
+            raise RuntimeError("ANTHROPIC_THINKING_BUDGET_TOKENS must be less than max_tokens")
+        return {"type": "enabled", "budget_tokens": budget_tokens}
+    if thinking_type == "adaptive":
+        return {"type": "adaptive"}
+    if thinking_type == "disabled":
+        return {"type": "disabled"}
+    raise RuntimeError(f"unsupported ANTHROPIC_THINKING_TYPE: {thinking_type}")
+
+
+def _anthropic_messages_and_system(
+    messages: list[dict[str, Any]],
+) -> tuple[str, list[dict[str, Any]]]:
+    system_parts: list[str] = []
+    api_messages: list[dict[str, Any]] = []
+    for item in messages:
+        if not isinstance(item, dict):
+            continue
+        item_type = str(item.get("type") or "")
+        role = str(item.get("role") or "")
+        if role in {"system", "developer"} and item_type != "message":
+            system_parts.append(_plain_text(item.get("content", "")))
+            continue
+        if item_type == "message":
+            message_role = str(item.get("role") or "assistant")
+            if message_role in {"system", "developer"}:
+                system_parts.append(_plain_text(item.get("content", "")))
+                continue
+            _anthropic_append_message(
+                api_messages,
+                _anthropic_role(message_role),
+                _anthropic_text_blocks(item.get("content", "")),
+            )
+            continue
+        if item_type in {"function_call", "custom_tool_call", "local_shell_call", "tool_call"}:
+            call = _tool_call_from_mapping(item)
+            if call is not None:
+                _anthropic_append_message(api_messages, "assistant", [_anthropic_tool_use(call)])
+            continue
+        if item_type in {"function_call_output", "custom_tool_call_output"}:
+            block = _anthropic_tool_result(item)
+            if block is not None:
+                _anthropic_append_message(api_messages, "user", [block])
+            continue
+        if item_type == "reasoning":
+            continue
+        if role in {"system", "developer"}:
+            system_parts.append(_plain_text(item.get("content", "")))
+            continue
+        _anthropic_append_message(
+            api_messages,
+            _anthropic_role(role),
+            _anthropic_text_blocks(item.get("content", "")),
+        )
+    if not api_messages:
+        api_messages.append({"role": "user", "content": [{"type": "text", "text": ""}]})
+    return "\n\n".join(part for part in system_parts if part), api_messages
+
+
+def _anthropic_role(role: str) -> str:
+    return "assistant" if role == "assistant" else "user"
+
+
+def _anthropic_append_message(
+    messages: list[dict[str, Any]],
+    role: str,
+    blocks: list[dict[str, Any]],
+) -> None:
+    if not blocks:
+        return
+    starts_with_tool_result = blocks[0].get("type") == "tool_result"
+    if messages and messages[-1].get("role") == role:
+        existing = messages[-1].get("content")
+        if not isinstance(existing, list):
+            existing = []
+            messages[-1]["content"] = existing
+        if not starts_with_tool_result or all(
+            isinstance(item, dict) and item.get("type") == "tool_result" for item in existing
+        ):
+            existing.extend(blocks)
+            return
+    messages.append({"role": role, "content": blocks})
+
+
+def _anthropic_text_blocks(content: Any) -> list[dict[str, Any]]:
+    if isinstance(content, list):
+        blocks: list[dict[str, Any]] = []
+        for item in content:
+            if isinstance(item, dict) and item.get("type") in {"text", "input_text", "output_text"}:
+                blocks.append({"type": "text", "text": str(item.get("text", ""))})
+            elif isinstance(item, dict) and item.get("type") == "tool_result":
+                block = _anthropic_tool_result(item)
+                if block is not None:
+                    blocks.append(block)
+            elif isinstance(item, dict) and item.get("type") == "tool_use":
+                name = str(item.get("name") or "")
+                call_id = str(item.get("id") or item.get("tool_use_id") or "")
+                blocks.append(
+                    {
+                        "type": "tool_use",
+                        "id": call_id,
+                        "name": name,
+                        "input": _coerce_tool_args(item.get("input")),
+                    }
+                )
+            else:
+                text = _plain_text(item)
+                if text:
+                    blocks.append({"type": "text", "text": text})
+        return blocks
+    return [{"type": "text", "text": _plain_text(content)}]
+
+
+def _anthropic_tool_use(call: ModelToolCall) -> dict[str, Any]:
+    return {
+        "type": "tool_use",
+        "id": call.call_id or f"toolu_{uuid.uuid4().hex}",
+        "name": call.name,
+        "input": call.arguments,
+    }
+
+
+def _anthropic_tool_result(item: dict[str, Any]) -> dict[str, Any] | None:
+    call_id = str(item.get("call_id") or item.get("tool_use_id") or item.get("tool_call_id") or "")
+    if not call_id:
+        return None
+    output = item.get("output", item.get("content", ""))
+    block: dict[str, Any] = {
+        "type": "tool_result",
+        "tool_use_id": call_id,
+        "content": _plain_text(output),
+    }
+    if item.get("is_error") is not None:
+        block["is_error"] = bool(item["is_error"])
+    return block
+
+
+def _anthropic_tools(tools: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    cleaned: list[dict[str, Any]] = []
+    for tool in tools or []:
+        name = _openai_style_tool_name(tool)
+        if not name:
+            continue
+        item = {
+            "name": name,
+            "description": str(tool.get("description") or ""),
+            "input_schema": _tool_schema(tool),
+        }
+        if tool.get("strict") is not None:
+            item["strict"] = bool(tool["strict"])
+        cleaned.append(item)
+    return cleaned
+
+
+def _anthropic_tool_choice(tool_choice: Any | None) -> dict[str, Any] | None:
+    if tool_choice is None:
+        return None
+    if isinstance(tool_choice, str):
+        normalized = tool_choice.strip().lower()
+        if normalized in {"auto", "any", "none"}:
+            return {"type": normalized}
+        if normalized:
+            return {"type": "tool", "name": tool_choice}
+        return None
+    if not isinstance(tool_choice, dict):
+        return None
+    choice_type = str(tool_choice.get("type") or "").lower()
+    if choice_type in {"auto", "any", "none"}:
+        return {"type": choice_type}
+    if choice_type == "tool":
+        name = tool_choice.get("name")
+        return {"type": "tool", "name": str(name)} if name else None
+    if choice_type == "function":
+        name = tool_choice.get("name")
+        function = tool_choice.get("function")
+        if not name and isinstance(function, dict):
+            name = function.get("name")
+        return {"type": "tool", "name": str(name)} if name else None
+    return None
+
+
+def _extract_anthropic_result(response: dict[str, Any]) -> ToolModelResult:
+    text_chunks: list[str] = []
+    calls: list[ModelToolCall] = []
+    response_items: list[dict[str, Any]] = []
+    for block in response.get("content") or []:
+        if not isinstance(block, dict):
+            continue
+        block_type = block.get("type")
+        if block_type == "text":
+            text = block.get("text")
+            if isinstance(text, str):
+                text_chunks.append(text)
+            continue
+        if block_type == "tool_use":
+            call = _make_tool_call(
+                str(block.get("name") or ""),
+                block.get("input", {}),
+                str(block.get("id") or ""),
+            )
+            if call is not None:
+                calls.append(call)
+    content = "\n".join(text_chunks)
+    if content:
+        response_items.append(
+            {
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": content}],
+            }
+        )
+    response_items.extend(_function_call_items(calls))
+    return ToolModelResult(
+        content,
+        calls,
+        response_items=response_items,
+        response_id=_response_id_from_response(response),
+        usage=_usage_from_anthropic_response(response),
+    )
+
+
+def _usage_from_anthropic_response(response: dict[str, Any]) -> dict[str, Any]:
+    usage = response.get("usage")
+    if not isinstance(usage, dict):
+        return {}
+    cache_creation = _int_or_zero(usage.get("cache_creation_input_tokens"))
+    cache_read = _int_or_zero(usage.get("cache_read_input_tokens"))
+    input_tokens = _int_or_zero(usage.get("input_tokens")) + cache_creation + cache_read
+    output_tokens = usage.get("output_tokens")
+    return _clean_usage(
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        total_tokens=input_tokens + _int_or_zero(output_tokens),
+        cached_tokens=cache_creation + cache_read,
+    )
+
+
+def _deepseek_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    system_parts: list[str] = []
+    api_messages: list[dict[str, Any]] = []
+    for item in messages:
+        if not isinstance(item, dict):
+            continue
+        item_type = str(item.get("type") or "")
+        role = str(item.get("role") or "")
+        if role in {"system", "developer"} and item_type != "message":
+            system_parts.append(_plain_text(item.get("content", "")))
+            continue
+        if item_type == "message":
+            message_role = str(item.get("role") or "assistant")
+            if message_role in {"system", "developer"}:
+                system_parts.append(_plain_text(item.get("content", "")))
+            elif message_role == "assistant" and item.get("reasoning_content") is not None:
+                _deepseek_append_assistant_message(
+                    api_messages,
+                    _plain_text(item.get("content", "")),
+                    reasoning_content=str(item.get("reasoning_content") or ""),
+                )
+            else:
+                _deepseek_append_text_message(
+                    api_messages,
+                    _deepseek_role(message_role),
+                    _plain_text(item.get("content", "")),
+                )
+            continue
+        if item_type in {"function_call", "custom_tool_call", "local_shell_call", "tool_call"}:
+            call = _tool_call_from_mapping(item)
+            if call is not None:
+                _deepseek_append_assistant_tool_call(api_messages, call)
+            continue
+        if item_type in {"function_call_output", "custom_tool_call_output"}:
+            call_id = str(item.get("call_id") or item.get("tool_call_id") or "")
+            if call_id:
+                api_messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": call_id,
+                        "content": _plain_text(item.get("output", item.get("content", ""))),
+                    }
+                )
+            continue
+        if item_type == "reasoning":
+            continue
+        if role in {"system", "developer"}:
+            system_parts.append(_plain_text(item.get("content", "")))
+            continue
+        _deepseek_append_text_message(
+            api_messages,
+            _deepseek_role(role),
+            _plain_text(item.get("content", "")),
+        )
+    if system_parts:
+        api_messages.insert(0, {"role": "system", "content": "\n\n".join(system_parts)})
+    if not api_messages:
+        api_messages.append({"role": "user", "content": ""})
+    return api_messages
+
+
+def _deepseek_role(role: str) -> str:
+    return "assistant" if role == "assistant" else "user"
+
+
+def _deepseek_thinking_and_effort() -> tuple[dict[str, str], str | None]:
+    effort = terminal_reasoning_effort().strip().lower()
+    if not effort or effort == "none":
+        return {"type": "disabled"}, None
+    if effort in {"low", "medium", "high"}:
+        return {"type": "enabled"}, "high"
+    if effort in {"xhigh", "max"}:
+        return {"type": "enabled"}, "max"
+    raise RuntimeError(f"unsupported DeepSeek reasoning effort: {effort}")
+
+
+def _deepseek_append_text_message(
+    messages: list[dict[str, Any]],
+    role: str,
+    content: str,
+) -> None:
+    if (
+        messages
+        and messages[-1].get("role") == role
+        and "tool_calls" not in messages[-1]
+        and role in {"system", "user", "assistant"}
+    ):
+        existing = str(messages[-1].get("content") or "")
+        messages[-1]["content"] = f"{existing}\n\n{content}" if existing else content
+        return
+    messages.append({"role": role, "content": content})
+
+
+def _deepseek_append_assistant_message(
+    messages: list[dict[str, Any]],
+    content: str,
+    *,
+    reasoning_content: str = "",
+) -> None:
+    message: dict[str, Any] = {"role": "assistant", "content": content}
+    if reasoning_content:
+        message["reasoning_content"] = reasoning_content
+    messages.append(message)
+
+
+def _deepseek_append_assistant_tool_call(
+    messages: list[dict[str, Any]],
+    call: ModelToolCall,
+) -> None:
+    tool_call = {
+        "id": call.call_id or f"call_{uuid.uuid4().hex}",
+        "type": "function",
+        "function": {"name": call.name, "arguments": call.arguments_text or "{}"},
+    }
+    if messages and messages[-1].get("role") == "assistant":
+        messages[-1].setdefault("tool_calls", []).append(tool_call)
+        if messages[-1].get("content") == "":
+            messages[-1]["content"] = None
+        return
+    messages.append({"role": "assistant", "content": None, "tool_calls": [tool_call]})
+
+
+def _deepseek_tools(tools: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    cleaned: list[dict[str, Any]] = []
+    for tool in tools or []:
+        name = _openai_style_tool_name(tool)
+        if not name:
+            continue
+        cleaned.append(
+            {
+                "type": "function",
+                "function": {
+                    "name": name,
+                    "description": str(tool.get("description") or ""),
+                    "parameters": _tool_schema(tool),
+                },
+            }
+        )
+    return cleaned
+
+
+def _deepseek_tool_choice(tool_choice: Any | None) -> Any | None:
+    if tool_choice is None:
+        return None
+    if isinstance(tool_choice, str):
+        normalized = tool_choice.strip().lower()
+        if normalized in {"auto", "none", "required"}:
+            return normalized
+        if normalized == "any":
+            return "required"
+        if normalized:
+            return {"type": "function", "function": {"name": tool_choice}}
+        return None
+    if not isinstance(tool_choice, dict):
+        return None
+    choice_type = str(tool_choice.get("type") or "").lower()
+    if choice_type in {"auto", "none", "required"}:
+        return choice_type
+    if choice_type == "any":
+        return "required"
+    if choice_type == "function":
+        name = tool_choice.get("name")
+        function = tool_choice.get("function")
+        if not name and isinstance(function, dict):
+            name = function.get("name")
+        return {"type": "function", "function": {"name": str(name)}} if name else None
+    if choice_type == "tool":
+        name = tool_choice.get("name")
+        return {"type": "function", "function": {"name": str(name)}} if name else None
+    return None
+
+
+def _deepseek_chat_url() -> str:
+    return f"{os.getenv('DEEPSEEK_BASE_URL', DEEPSEEK_BASE_URL).rstrip('/')}/chat/completions"
+
+
+def _extract_deepseek_result(response: dict[str, Any]) -> ToolModelResult:
+    choices = response.get("choices") if isinstance(response.get("choices"), list) else []
+    choice = choices[0] if choices and isinstance(choices[0], dict) else {}
+    message = choice.get("message") if isinstance(choice.get("message"), dict) else {}
+    content = message.get("content") or ""
+    text = str(content) if content is not None else ""
+    reasoning_content = message.get("reasoning_content")
+    calls = [
+        call
+        for item in message.get("tool_calls") or []
+        if isinstance(item, dict)
+        for call in [_tool_call_from_mapping(item)]
+        if call is not None
+    ]
+    response_items: list[dict[str, Any]] = []
+    if text or reasoning_content:
+        message_item: dict[str, Any] = {
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "output_text", "text": text}] if text else [],
+        }
+        if reasoning_content is not None:
+            message_item["reasoning_content"] = str(reasoning_content)
+        response_items.append(message_item)
+    response_items.extend(_function_call_items(calls))
+    return ToolModelResult(
+        text,
+        calls,
+        response_items=response_items,
+        response_id=_response_id_from_response(response),
+        usage=_usage_from_deepseek_response(response),
+    )
+
+
+def _usage_from_deepseek_response(response: dict[str, Any]) -> dict[str, Any]:
+    usage = response.get("usage")
+    if not isinstance(usage, dict):
+        return {}
+    return _clean_usage(
+        input_tokens=usage.get("prompt_tokens"),
+        output_tokens=usage.get("completion_tokens"),
+        total_tokens=usage.get("total_tokens"),
+        cached_tokens=usage.get("prompt_cache_hit_tokens"),
+    )
+
+
+def _openai_style_tool_name(tool: dict[str, Any]) -> str:
+    function = tool.get("function") if isinstance(tool.get("function"), dict) else {}
+    return str(tool.get("name") or function.get("name") or "")
+
+
+def _tool_schema(tool: dict[str, Any]) -> dict[str, Any]:
+    function = tool.get("function") if isinstance(tool.get("function"), dict) else {}
+    schema = tool.get("input_schema") or tool.get("parameters") or function.get("parameters")
+    if isinstance(schema, dict):
+        return dict(schema)
+    if tool.get("type") == "custom":
+        return {
+            "type": "object",
+            "properties": {
+                "input": {
+                    "type": "string",
+                    "description": "Raw input for this freeform tool.",
+                }
+            },
+            "required": ["input"],
+            "additionalProperties": False,
+        }
+    return {"type": "object", "properties": {}, "additionalProperties": False}
+
+
+def _function_call_items(calls: list[ModelToolCall]) -> list[dict[str, Any]]:
+    return [
+        {
+            "type": "function_call",
+            "name": call.name,
+            "arguments": call.arguments_text or json.dumps(call.arguments, sort_keys=True),
+            "call_id": call.call_id,
+        }
+        for call in calls
+    ]
+
+
+def _plain_text(content: Any) -> str:
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        chunks = []
+        for item in content:
+            text = _plain_text_from_item(item)
+            if text:
+                chunks.append(text)
+        return "\n".join(chunks)
+    if isinstance(content, dict):
+        return _plain_text_from_item(content)
+    return str(content)
+
+
+def _plain_text_from_item(item: Any) -> str:
+    if isinstance(item, str):
+        return item
+    if not isinstance(item, dict):
+        return str(item)
+    if isinstance(item.get("text"), str):
+        return item["text"]
+    if isinstance(item.get("content"), str):
+        return item["content"]
+    if isinstance(item.get("output"), str):
+        return item["output"]
+    if item.get("type") == "tool_result":
+        return _plain_text(item.get("content", ""))
+    return json.dumps(item, sort_keys=True)
+
+
+def _int_or_zero(value: Any) -> int:
+    if isinstance(value, bool) or value is None:
+        return 0
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
 class CodexBackendError(RuntimeError):
     def __init__(self, status_code: int, detail: str, headers: Any) -> None:
         self.status_code = status_code
@@ -285,7 +1117,8 @@ def _write_model_trace(
     index = _trace_count.get() + 1
     _trace_count.set(index)
     payload: dict[str, Any] = {
-        "model": terminal_model(),
+        "provider": _terminal_provider_for_trace(),
+        "model": _terminal_model_for_trace(),
         "reasoning_effort": terminal_reasoning_effort(),
         "messages": messages,
         "response": response_text,
@@ -302,6 +1135,25 @@ def _write_model_trace(
         json.dumps(payload, indent=2),
         encoding="utf-8",
     )
+
+
+def _terminal_provider_for_trace() -> str:
+    try:
+        return terminal_provider()
+    except RuntimeError:
+        return (
+            os.getenv("TERMINAL_MODEL_PROVIDER")
+            or os.getenv("OPENAI_TERMINAL_PROVIDER")
+            or os.getenv("MODEL_PROVIDER")
+            or TERMINAL_PROVIDER
+        )
+
+
+def _terminal_model_for_trace() -> str:
+    try:
+        return terminal_model()
+    except RuntimeError:
+        return os.getenv("TERMINAL_MODEL") or os.getenv("OPENAI_TERMINAL_MODEL") or TERMINAL_MODEL
 
 
 def _call_codex_backend(messages: list[dict[str, Any]]) -> str:
@@ -806,6 +1658,8 @@ def _sanitize_response_item(item: dict[str, Any]) -> dict[str, Any]:
         }
         if item.get("phase") is not None:
             cleaned["phase"] = item["phase"]
+        if item.get("reasoning_content") is not None:
+            cleaned["reasoning_content"] = str(item.get("reasoning_content") or "")
         return cleaned
     if item_type == "function_call":
         cleaned = {

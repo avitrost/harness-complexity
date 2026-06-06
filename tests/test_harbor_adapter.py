@@ -135,6 +135,34 @@ def test_harbor_agent_executes_candidate_tool_calls(tmp_path: Path) -> None:
     assert payload["tool_call_id"] == "call_2"
 
 
+def test_harbor_agent_can_execute_tool_calls_sequentially(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    candidate = workspace / "candidate"
+    candidate.mkdir(parents=True)
+    (candidate / "harness.py").write_text(
+        "from plumbing.base_agent import BaseHarness\n"
+        "from plumbing.types import HarnessToolCall, HarnessTurn\n"
+        "class H(BaseHarness):\n"
+        "    def next_command(self, task, history):\n"
+        "        if history:\n"
+        "            return HarnessTurn(done=True)\n"
+        "        return HarnessTurn(tool_calls=(\n"
+        "            HarnessToolCall('local_shell', {'command': 'first'}, 'call_1'),\n"
+        "            HarnessToolCall('local_shell', {'command': 'second'}, 'call_2'),\n"
+        "        ), metadata={'sequential_tool_calls': True})\n"
+        "def create_agent():\n"
+        "    return H()\n",
+        encoding="utf-8",
+    )
+    env = OrderedEnvironment()
+    agent = HarborHarnessAgent(logs_dir=tmp_path / "logs", candidate_dir=workspace)
+    asyncio.run(agent.run("instruction", env, SimpleNamespace(metadata=None)))
+
+    assert env.commands == ["first", "second"]
+    second = json.loads((tmp_path / "logs" / "harness-turn-02.json").read_text())
+    assert second["return_code"] == 0
+
+
 def test_harbor_agent_marks_codex_parallel_outputs(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     candidate = workspace / "candidate"
@@ -1066,6 +1094,23 @@ class FakeEnvironment:
         self.commands.append(command)
         self.timeouts.append(timeout_sec)
         return SimpleNamespace(stdout="ok\n", stderr="", return_code=0)
+
+
+class OrderedEnvironment(FakeEnvironment):
+    def __init__(self) -> None:
+        super().__init__()
+        self.first_done = False
+
+    async def exec(self, command: str, timeout_sec: int | None = None):
+        self.commands.append(command)
+        self.timeouts.append(timeout_sec)
+        if command == "first":
+            await asyncio.sleep(0.01)
+            self.first_done = True
+            return SimpleNamespace(stdout="first\n", stderr="", return_code=0)
+        if command == "second" and not self.first_done:
+            return SimpleNamespace(stdout="", stderr="first not done\n", return_code=7)
+        return SimpleNamespace(stdout="second\n", stderr="", return_code=0)
 
 
 class TaskTimeoutEnvironment(FakeEnvironment):

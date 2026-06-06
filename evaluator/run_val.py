@@ -12,7 +12,12 @@ from evaluator.aggregate import aggregate_records, write_summary
 from evaluator.parse_results import parse_records
 from evaluator.splits import VAL_CONCURRENCY, VAL_TRIALS, get_val_tasks
 from plumbing.harbor_adapter import TERMINAL_BENCH_DATASET, HarborRunSpec, build_harbor_command
-from plumbing.openai_client import check_terminal_model_available, using_codex_auth
+from plumbing.openai_client import (
+    check_terminal_model_available,
+    terminal_provider,
+    using_codex_auth,
+)
+from plumbing.secrets import get_secret
 
 BACKENDS = {"docker", "slurm-pyxis"}
 
@@ -153,15 +158,23 @@ def _backend_error(backend: str) -> str | None:
 
 
 def _terminal_model_error() -> str | None:
-    if not using_codex_auth() and not os.getenv("OPENAI_API_KEY"):
+    try:
+        provider = terminal_provider()
+    except RuntimeError as exc:
+        return str(exc)
+    if provider == "openai" and not using_codex_auth() and not get_secret("OPENAI_API_KEY"):
         return "OPENAI_API_KEY is required for terminal model validation."
+    if provider == "anthropic" and not get_secret("ANTHROPIC_API_KEY"):
+        return "ANTHROPIC_API_KEY is required for terminal model validation."
+    if provider == "deepseek" and not get_secret("DEEPSEEK_API_KEY"):
+        return "DEEPSEEK_API_KEY is required for terminal model validation."
     if os.getenv("HARBOR_TERMINAL_MODEL_PREFLIGHT", "0") != "1":
         return None
     try:
         check_terminal_model_available()
     except Exception as exc:
         return (
-            "Terminal model preflight failed. Check OPENAI_API_KEY or Codex auth, "
+            "Terminal model preflight failed. Check the selected provider API key, "
             f"quota, and model access before running validation. ({type(exc).__name__}: {exc})"
         )
     return None

@@ -13,11 +13,12 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from evaluator.aggregate import aggregate_records, write_summary
-from evaluator.parse_results import parse_records
-from evaluator.run_val import run_split
-from evaluator.splits import get_tb2_core_tasks
-from scripts.run_tb2_core import SEED_CANDIDATES, TB2_CORE_SPLIT, EvalCandidate
+from evaluator.aggregate import aggregate_records, write_summary  # noqa: E402
+from evaluator.parse_results import parse_records  # noqa: E402
+from evaluator.run_val import run_split  # noqa: E402
+from evaluator.splits import get_tb2_core_tasks  # noqa: E402
+from plumbing.openai_client import terminal_provider  # noqa: E402
+from scripts.run_tb2_core import SEED_CANDIDATES, TB2_CORE_SPLIT, EvalCandidate  # noqa: E402
 
 SUPPORTED_CODEX_BACKEND_MODELS = ("gpt-5.4-mini", "gpt-5.4", "gpt-5.5")
 
@@ -35,6 +36,7 @@ def main() -> int:
     parser.add_argument("--run-id", default=_default_run_id())
     parser.add_argument("--out-root", type=Path, default=Path("final_test"))
     parser.add_argument("--backend", choices=("docker", "slurm-pyxis"), default="slurm-pyxis")
+    parser.add_argument("--provider", default=terminal_provider())
     parser.add_argument("--model", action="append", dest="models")
     parser.add_argument("--reasoning-effort", default="medium")
     parser.add_argument("--trials", type=int, default=10)
@@ -52,7 +54,8 @@ def main() -> int:
     if args.concurrency < 1:
         raise ValueError("--concurrency must be >= 1")
 
-    models = tuple(args.models or SUPPORTED_CODEX_BACKEND_MODELS)
+    args.provider = _normalize_provider(args.provider)
+    models = tuple(args.models or _default_models(args.provider))
     tasks = args.tasks or get_tb2_core_tasks()
     candidates = _select_candidates(args.candidates)
     root = args.out_root / args.run_id
@@ -90,6 +93,7 @@ def _manifest(
     return {
         "run_id": args.run_id,
         "models": list(models),
+        "provider": args.provider,
         "reasoning_effort": args.reasoning_effort,
         "trials": args.trials,
         "tasks": tasks,
@@ -142,7 +146,9 @@ def _attempt_specs(
 
 
 def _configure_environment(args: argparse.Namespace) -> None:
-    os.environ.setdefault("OPENAI_AUTH_MODE", "codex")
+    if args.provider == "openai":
+        os.environ.setdefault("OPENAI_AUTH_MODE", "codex")
+    os.environ["TERMINAL_MODEL_PROVIDER"] = args.provider
     if args.backend == "slurm-pyxis" and args.slurm_partition:
         os.environ["HARBOR_SLURM_PYXIS_PARTITION"] = args.slurm_partition
 
@@ -190,6 +196,7 @@ def _run_attempt(root: Path, spec: AttemptSpec, args: argparse.Namespace) -> dic
             harbor_bin=args.harbor_bin,
             backend=args.backend,
             agent_env=(
+                f"TERMINAL_MODEL_PROVIDER={args.provider}",
                 f"OPENAI_TERMINAL_MODEL={spec.model}",
                 f"OPENAI_TERMINAL_REASONING_EFFORT={args.reasoning_effort}",
             ),
@@ -288,6 +295,23 @@ def _write_summaries(
 
 def _model_run_id(model: str) -> str:
     return model.replace(".", "_").replace("-", "_")
+
+
+def _normalize_provider(provider: str) -> str:
+    normalized = provider.strip().lower()
+    if normalized in {"openai", "codex"}:
+        return "openai"
+    if normalized in {"anthropic", "claude"}:
+        return "anthropic"
+    if normalized == "deepseek":
+        return "deepseek"
+    raise ValueError(f"unsupported provider: {provider}")
+
+
+def _default_models(provider: str) -> tuple[str, ...]:
+    if provider == "openai":
+        return SUPPORTED_CODEX_BACKEND_MODELS
+    raise ValueError(f"--model is required for provider {provider}")
 
 
 def _default_run_id() -> str:

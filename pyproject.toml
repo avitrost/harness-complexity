@@ -11,6 +11,7 @@ dependencies = [
     "pytest",
     "ruff",
     "huggingface-hub",
+    "jinja2",
 ]
 
 [build-system]

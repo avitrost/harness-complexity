@@ -174,23 +174,35 @@ class HarborHarnessAgent(HarborBaseAgent):
                 ):
                     termination_reason = "soft_agent_timeout_before_tools"
                     break
-                max_timeout_sec = _remaining_timeout_sec(
-                    _guarded_deadline(agent_deadline, HARD_AGENT_TIMEOUT_GUARD_SEC)
-                )
-                records = await asyncio.gather(
-                    *(
-                        _execute_tool_call_with_timeout(
-                            environment,
-                            tool_call,
-                            turn.timeout_sec,
-                            max_timeout_sec=max_timeout_sec,
-                        )
-                        for tool_call in tool_calls
-                    )
-                )
                 turn_metadata = (
                     dict(turn.metadata) if isinstance(getattr(turn, "metadata", None), dict) else {}
                 )
+                max_timeout_sec = _remaining_timeout_sec(
+                    _guarded_deadline(agent_deadline, HARD_AGENT_TIMEOUT_GUARD_SEC)
+                )
+                if turn_metadata.get("sequential_tool_calls"):
+                    records = []
+                    for tool_call in tool_calls:
+                        records.append(
+                            await _execute_tool_call_with_timeout(
+                                environment,
+                                tool_call,
+                                turn.timeout_sec,
+                                max_timeout_sec=max_timeout_sec,
+                            )
+                        )
+                else:
+                    records = await asyncio.gather(
+                        *(
+                            _execute_tool_call_with_timeout(
+                                environment,
+                                tool_call,
+                                turn.timeout_sec,
+                                max_timeout_sec=max_timeout_sec,
+                            )
+                            for tool_call in tool_calls
+                        )
+                    )
                 has_codex_items = bool(turn_metadata.get("codex_response_items"))
                 for record_index, record in enumerate(records):
                     extra: dict[str, Any] = {}

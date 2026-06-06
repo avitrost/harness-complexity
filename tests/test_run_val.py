@@ -9,7 +9,15 @@ class _Completed:
     returncode = 0
 
 
+def _isolate_secrets(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("HARNESS_SECRETS_FILE", str(tmp_path / "missing-secrets.env"))
+    monkeypatch.delenv("TERMINAL_MODEL_PROVIDER", raising=False)
+    monkeypatch.delenv("OPENAI_TERMINAL_PROVIDER", raising=False)
+    monkeypatch.delenv("MODEL_PROVIDER", raising=False)
+
+
 def test_run_split_fails_before_harbor_without_docker(monkeypatch, tmp_path: Path) -> None:
+    _isolate_secrets(monkeypatch, tmp_path)
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
     monkeypatch.setattr("evaluator.run_val.shutil.which", lambda name: None)
     summary = run_split(
@@ -29,6 +37,7 @@ def test_run_split_fails_before_harbor_without_docker(monkeypatch, tmp_path: Pat
 
 
 def test_run_split_fails_before_harbor_without_openai_key(monkeypatch, tmp_path: Path) -> None:
+    _isolate_secrets(monkeypatch, tmp_path)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_AUTH_MODE", raising=False)
     monkeypatch.setattr("evaluator.run_val.shutil.which", lambda name: "docker")
@@ -48,7 +57,50 @@ def test_run_split_fails_before_harbor_without_openai_key(monkeypatch, tmp_path:
     assert "OPENAI_API_KEY" in summary["error"]
 
 
+def test_run_split_fails_before_harbor_without_anthropic_key(monkeypatch, tmp_path: Path) -> None:
+    _isolate_secrets(monkeypatch, tmp_path)
+    monkeypatch.setenv("TERMINAL_MODEL_PROVIDER", "anthropic")
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setattr("evaluator.run_val.shutil.which", lambda name: "docker")
+    summary = run_split(
+        split="val",
+        candidate_dir=tmp_path,
+        budget=128,
+        out_dir=tmp_path / "out",
+        tasks=["task"],
+        trials=1,
+        concurrency=1,
+        dry_run=False,
+        harbor_bin="harbor",
+        harbor_help_text="--dataset --include-task-name --n-attempts --n-concurrent",
+    )
+    assert summary["ran"] is False
+    assert "ANTHROPIC_API_KEY" in summary["error"]
+
+
+def test_run_split_fails_before_harbor_without_deepseek_key(monkeypatch, tmp_path: Path) -> None:
+    _isolate_secrets(monkeypatch, tmp_path)
+    monkeypatch.setenv("TERMINAL_MODEL_PROVIDER", "deepseek")
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    monkeypatch.setattr("evaluator.run_val.shutil.which", lambda name: "docker")
+    summary = run_split(
+        split="val",
+        candidate_dir=tmp_path,
+        budget=128,
+        out_dir=tmp_path / "out",
+        tasks=["task"],
+        trials=1,
+        concurrency=1,
+        dry_run=False,
+        harbor_bin="harbor",
+        harbor_help_text="--dataset --include-task-name --n-attempts --n-concurrent",
+    )
+    assert summary["ran"] is False
+    assert "DEEPSEEK_API_KEY" in summary["error"]
+
+
 def test_run_split_slurm_backend_skips_docker_preflight(monkeypatch, tmp_path: Path) -> None:
+    _isolate_secrets(monkeypatch, tmp_path)
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
     monkeypatch.setattr(
         "evaluator.run_val.shutil.which",
@@ -130,6 +182,7 @@ def test_run_split_passes_agent_env_to_harbor(tmp_path: Path) -> None:
 
 
 def test_run_split_sets_agent_env_on_harbor_process(monkeypatch, tmp_path: Path) -> None:
+    _isolate_secrets(monkeypatch, tmp_path)
     captured_env = {}
 
     def fake_run(*args, **kwargs):
@@ -163,6 +216,7 @@ def test_run_split_sets_agent_env_on_harbor_process(monkeypatch, tmp_path: Path)
 
 
 def test_run_split_skips_terminal_model_preflight_by_default(monkeypatch, tmp_path: Path) -> None:
+    _isolate_secrets(monkeypatch, tmp_path)
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
     monkeypatch.delenv("HARBOR_TERMINAL_MODEL_PREFLIGHT", raising=False)
     monkeypatch.setattr("evaluator.run_val.shutil.which", lambda name: "/usr/bin/docker")
