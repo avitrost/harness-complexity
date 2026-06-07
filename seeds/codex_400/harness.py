@@ -196,15 +196,16 @@ class CandidateHarness(BaseHarness):
             tool_choice="auto",
             parallel_tool_calls=True,
         )
+        metadata = {"codex_response_items": result.response_items} if result.response_items else {}
+        text = _visible_text(result)
         calls = tuple(call for item in _model_items(result) if (call := _tool_call(item)))
         if calls:
-            return HarnessTurn(tool_calls=calls, assistant_content=_visible_text(result))
-        text = _visible_text(result)
+            return HarnessTurn(tool_calls=calls, assistant_content=text, metadata=metadata)
         if text.strip() and not text.lower().replace("\u2019", "'").startswith(
             ("i'll ", "i will ", "i'm going to ", "i am going to ", "let me ")
         ):
-            return HarnessTurn(done=True, assistant_content=text)
-        return HarnessTurn(tool_calls=(_recovery(history),))
+            return HarnessTurn(done=True, assistant_content=text, metadata=metadata)
+        return HarnessTurn(tool_calls=(_recovery(history),), metadata=metadata)
 
 
 def _messages(task, history):
@@ -242,10 +243,7 @@ def _conversation(task, history):
 def _task_text(task):
     cwd = task.working_dir or "."
     parts = [
-        "<environment_context>\n"
-        f"  <cwd>{cwd}</cwd>\n"
-        "  <shell>bash</shell>\n"
-        "</environment_context>"
+        f"<environment_context>\n  <cwd>{cwd}</cwd>\n  <shell>bash</shell>\n</environment_context>"
     ]
     parts.extend(_agents(task))
     parts.extend(["Task:", str(task.instruction)])
@@ -253,8 +251,7 @@ def _task_text(task):
 
 
 def _agents(task):
-    metadata = task.metadata if isinstance(task.metadata, dict) else {}
-    agents = metadata.get("agents_md")
+    agents = task.metadata.get("agents_md") if isinstance(task.metadata, dict) else None
     if not isinstance(agents, list):
         return []
     return [
@@ -268,7 +265,15 @@ def _agents(task):
 
 def _record_items(index, record):
     cid = record.tool_call_id or f"call_{index}"
-    return [_call_history(record, cid), _output_history(record, cid)]
+    metadata = record.metadata if isinstance(record.metadata, dict) else {}
+    if metadata.get("codex_output_only"):
+        return [_output_history(record, cid)]
+    raw = metadata.get("codex_response_items")
+    return (
+        [*raw[:48], _output_history(record, cid)]
+        if isinstance(raw, list)
+        else [_call_history(record, cid), _output_history(record, cid)]
+    )
 
 
 def _call_history(record, cid):
@@ -349,10 +354,8 @@ def _tool_call(item):
 
 def _args(item):
     raw = item.get("arguments", {})
-    if item.get("type") == "local_shell_call":
-        raw = item.get("action", raw)
-    if item.get("type") == "custom_tool_call":
-        raw = item.get("input", raw)
+    if item.get("type") in {"local_shell_call", "custom_tool_call"}:
+        raw = item.get("action" if item.get("type") == "local_shell_call" else "input", raw)
     if isinstance(raw, dict):
         return dict(raw)
     if isinstance(raw, str) and raw.strip():
@@ -389,11 +392,8 @@ def _visible_text(result):
 
 def _recovery(history):
     cmd = "pwd && find . -maxdepth 2 -type f | sort | sed -n '1,160p'"
-    return HarnessToolCall(
-        "exec_command",
-        {"cmd": cmd, "yield_time_ms": 1000, "max_output_tokens": 12000},
-        "recovery_status",
-    )
+    args = {"cmd": cmd, "yield_time_ms": 1000, "max_output_tokens": 12000}
+    return HarnessToolCall("exec_command", args, "recovery_status")
 
 
 def create_agent():

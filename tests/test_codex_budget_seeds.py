@@ -232,6 +232,38 @@ def test_codex_400_surfaces_repeated_command_history(monkeypatch) -> None:
     assert "STDERR:\nfailed" in outputs[-1]["output"]
 
 
+def test_codex_400_replays_response_items_with_reasoning_content() -> None:
+    module = _load_seed("codex_400")
+    response_items = [
+        {
+            "type": "message",
+            "role": "assistant",
+            "content": [],
+            "reasoning_content": "hidden chain",
+        },
+        {
+            "type": "function_call",
+            "name": "exec_command",
+            "arguments": '{"cmd":"pwd"}',
+            "call_id": "call_reasoning",
+        },
+    ]
+    record = CommandResult(
+        command="pwd",
+        return_code=0,
+        stdout="/app",
+        tool_call_id="call_reasoning",
+        metadata={"codex_response_items": response_items, "arguments": {"cmd": "ignored"}},
+    )
+
+    items = module._record_items(1, record)
+
+    assert items[0]["reasoning_content"] == "hidden chain"
+    assert items[1]["call_id"] == "call_reasoning"
+    assert items[2]["type"] == "function_call_output"
+    assert items[2]["call_id"] == "call_reasoning"
+
+
 @pytest.mark.parametrize("seed", SEEDS)
 def test_codex_budget_seed_prefers_response_items_to_avoid_duplicate_tool_calls(
     seed: str,
