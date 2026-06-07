@@ -47,6 +47,9 @@ _trace_dir: contextvars.ContextVar[Path | None] = contextvars.ContextVar(
 _trace_count: contextvars.ContextVar[int] = contextvars.ContextVar(
     "terminal_model_trace_count", default=0
 )
+_deepseek_reasoning_by_call_id: contextvars.ContextVar[dict[str, str]] = (
+    contextvars.ContextVar("deepseek_reasoning_by_call_id", default={})
+)
 
 
 @dataclass(frozen=True)
@@ -90,15 +93,22 @@ def set_trace_dir(path: Path | str | None) -> object:
     trace_path = Path(path) if path is not None else None
     trace_token = _trace_dir.set(trace_path)
     session_token = _codex_session.set(_new_codex_session(trace_path))
-    return trace_token, session_token
+    reasoning_token = _deepseek_reasoning_by_call_id.set({})
+    return trace_token, session_token, reasoning_token
 
 
 def reset_trace_dir(token: object) -> None:
-    if isinstance(token, tuple) and len(token) == 2:
+    if isinstance(token, tuple) and len(token) == 3:
         _trace_dir.reset(token[0])  # type: ignore[arg-type]
         _codex_session.reset(token[1])  # type: ignore[arg-type]
+        _deepseek_reasoning_by_call_id.reset(token[2])  # type: ignore[arg-type]
+    elif isinstance(token, tuple) and len(token) == 2:
+        _trace_dir.reset(token[0])  # type: ignore[arg-type]
+        _codex_session.reset(token[1])  # type: ignore[arg-type]
+        _deepseek_reasoning_by_call_id.set({})
     else:
         _trace_dir.reset(token)  # type: ignore[arg-type]
+        _deepseek_reasoning_by_call_id.set({})
     _trace_count.set(0)
 
 
@@ -898,21 +908,39 @@ def _deepseek_append_assistant_message(
     messages.append(message)
 
 
+def _deepseek_reasoning_content_for_call(call_id: str) -> str | None:
+    cache = _deepseek_reasoning_by_call_id.get()
+    return cache[call_id] if call_id in cache else None
+
+
+def _deepseek_apply_reasoning_content(
+    message: dict[str, Any],
+    reasoning_content: str | None,
+) -> None:
+    if reasoning_content is not None and "reasoning_content" not in message:
+        message["reasoning_content"] = reasoning_content
+
+
 def _deepseek_append_assistant_tool_call(
     messages: list[dict[str, Any]],
     call: ModelToolCall,
 ) -> None:
+    call_id = call.call_id or f"call_{uuid.uuid4().hex}"
     tool_call = {
-        "id": call.call_id or f"call_{uuid.uuid4().hex}",
+        "id": call_id,
         "type": "function",
         "function": {"name": call.name, "arguments": call.arguments_text or "{}"},
     }
+    reasoning_content = _deepseek_reasoning_content_for_call(call_id)
     if messages and messages[-1].get("role") == "assistant":
         messages[-1].setdefault("tool_calls", []).append(tool_call)
         if messages[-1].get("content") == "":
             messages[-1]["content"] = None
+        _deepseek_apply_reasoning_content(messages[-1], reasoning_content)
         return
-    messages.append({"role": "assistant", "content": None, "tool_calls": [tool_call]})
+    message = {"role": "assistant", "content": None, "tool_calls": [tool_call]}
+    _deepseek_apply_reasoning_content(message, reasoning_content)
+    messages.append(message)
 
 
 def _deepseek_tools(tools: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
@@ -983,6 +1011,7 @@ def _extract_deepseek_result(response: dict[str, Any]) -> ToolModelResult:
         for call in [_tool_call_from_mapping(item)]
         if call is not None
     ]
+    _remember_deepseek_reasoning_content(reasoning_content, calls)
     response_items: list[dict[str, Any]] = []
     if text or reasoning_content:
         message_item: dict[str, Any] = {
@@ -1001,6 +1030,21 @@ def _extract_deepseek_result(response: dict[str, Any]) -> ToolModelResult:
         response_id=_response_id_from_response(response),
         usage=_usage_from_deepseek_response(response),
     )
+
+
+def _remember_deepseek_reasoning_content(
+    reasoning_content: Any,
+    calls: list[ModelToolCall],
+) -> None:
+    if reasoning_content is None:
+        return
+    call_ids = [call.call_id for call in calls if call.call_id]
+    if not call_ids:
+        return
+    cache = dict(_deepseek_reasoning_by_call_id.get())
+    for call_id in call_ids:
+        cache[call_id] = str(reasoning_content)
+    _deepseek_reasoning_by_call_id.set(cache)
 
 
 def _usage_from_deepseek_response(response: dict[str, Any]) -> dict[str, Any]:

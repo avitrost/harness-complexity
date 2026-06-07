@@ -9,6 +9,8 @@ from plumbing.openai_client import (
     CodexBackendError,
     _codex_body,
     _codex_headers,
+    _deepseek_messages,
+    _extract_deepseek_result,
     _extract_response_dict_result,
     _extract_sse_result,
     _retry_delay,
@@ -534,6 +536,73 @@ def test_deepseek_provider_replays_tool_results(monkeypatch) -> None:
             ],
         },
         {"role": "tool", "tool_call_id": "call_1", "content": "/tmp"},
+    ]
+
+
+def test_deepseek_replays_cached_reasoning_for_tool_call_response_items(tmp_path) -> None:
+    token = set_trace_dir(tmp_path)
+    try:
+        result = _extract_deepseek_result(
+            {
+                "id": "chatcmpl_reasoning",
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "content": "",
+                            "reasoning_content": "hidden chain",
+                            "tool_calls": [
+                                {
+                                    "id": "call_reasoning",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "exec_command",
+                                        "arguments": '{"cmd":"pwd"}',
+                                    },
+                                }
+                            ],
+                        }
+                    }
+                ],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 2, "total_tokens": 3},
+            }
+        )
+        messages = _deepseek_messages(
+            [
+                {"role": "user", "content": "run pwd"},
+                {
+                    "type": "function_call",
+                    "name": "exec_command",
+                    "arguments": '{"cmd":"pwd"}',
+                    "call_id": "call_reasoning",
+                },
+                {
+                    "type": "function_call_output",
+                    "call_id": "call_reasoning",
+                    "output": "/app",
+                },
+            ]
+        )
+    finally:
+        reset_trace_dir(token)
+
+    assert result.response_items[0]["reasoning_content"] == "hidden chain"
+    assert result.tool_calls[0].call_id == "call_reasoning"
+    assert messages == [
+        {"role": "user", "content": "run pwd"},
+        {
+            "role": "assistant",
+            "content": None,
+            "reasoning_content": "hidden chain",
+            "tool_calls": [
+                {
+                    "id": "call_reasoning",
+                    "type": "function",
+                    "function": {"name": "exec_command", "arguments": '{"cmd":"pwd"}'},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call_reasoning", "content": "/app"},
     ]
 
 
