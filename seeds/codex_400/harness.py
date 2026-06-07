@@ -196,9 +196,13 @@ class CandidateHarness(BaseHarness):
             tool_choice="auto",
             parallel_tool_calls=True,
         )
-        metadata = {"codex_response_items": result.response_items} if result.response_items else {}
         text = _visible_text(result)
         calls = tuple(call for item in _model_items(result) if (call := _tool_call(item)))
+        metadata = (
+            {"codex_response_items": result.response_items}
+            if calls and result.response_items
+            else {}
+        )
         if calls:
             return HarnessTurn(tool_calls=calls, assistant_content=text, metadata=metadata)
         if text.strip() and not text.lower().replace("\u2019", "'").startswith(
@@ -269,11 +273,9 @@ def _record_items(index, record):
     if metadata.get("codex_output_only"):
         return [_output_history(record, cid)]
     raw = metadata.get("codex_response_items")
-    return (
-        [*raw[:48], _output_history(record, cid)]
-        if isinstance(raw, list)
-        else [_call_history(record, cid), _output_history(record, cid)]
-    )
+    if isinstance(raw, list) and any(item.get("call_id") == cid for item in raw):
+        return [*raw[:48], _output_history(record, cid)]
+    return [_call_history(record, cid), _output_history(record, cid)]
 
 
 def _call_history(record, cid):
@@ -341,8 +343,6 @@ def _tool_call(item):
     if plain in SHELL_NAMES:
         if "command" in args and "cmd" not in args:
             args["cmd"] = args.pop("command")
-        if isinstance(args.get("cmd"), list):
-            args["cmd"] = " ".join(str(x) for x in args["cmd"])
         cmd = str(args.get("cmd") or args.get("input") or "").strip()
         if not cmd:
             return None

@@ -264,6 +264,32 @@ def test_codex_400_replays_response_items_with_reasoning_content() -> None:
     assert items[2]["call_id"] == "call_reasoning"
 
 
+def test_codex_400_ignores_response_items_when_call_id_mismatches() -> None:
+    module = _load_seed("codex_400")
+    record = CommandResult(
+        command="pwd",
+        return_code=0,
+        stdout="/app",
+        tool_call_id="recovery_status",
+        metadata={
+            "codex_response_items": [
+                {
+                    "type": "function_call",
+                    "name": "update_plan",
+                    "arguments": "{}",
+                    "call_id": "call_plan",
+                }
+            ]
+        },
+    )
+
+    items = module._record_items(1, record)
+
+    assert items[0]["call_id"] == "recovery_status"
+    assert items[0]["name"] == "exec_command"
+    assert items[1]["call_id"] == "recovery_status"
+
+
 @pytest.mark.parametrize("seed", SEEDS)
 def test_codex_budget_seed_prefers_response_items_to_avoid_duplicate_tool_calls(
     seed: str,
