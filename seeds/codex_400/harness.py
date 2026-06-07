@@ -234,10 +234,8 @@ def _conversation(task, history):
     if not history:
         return items
     recent = history[-12:]
-    old = len(history) - len(recent)
-    if old:
-        summary = f"{SUMMARY_PREFIX}\nCompacted transcript: {old} older terminal observations."
-        items.append({"role": "user", "content": summary})
+    while recent and recent[0].metadata.get("codex_output_only"):
+        recent = recent[1:]
     start = len(history) - len(recent) + 1
     for index, record in enumerate(recent, start):
         items.extend(_record_items(index, record))

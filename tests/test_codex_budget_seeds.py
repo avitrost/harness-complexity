@@ -290,6 +290,25 @@ def test_codex_400_ignores_response_items_when_call_id_mismatches() -> None:
     assert items[1]["call_id"] == "recovery_status"
 
 
+def test_codex_400_drops_leading_output_only_records() -> None:
+    module = _load_seed("codex_400")
+    history = [
+        CommandResult(
+            command="second output",
+            return_code=0,
+            stdout="orphan",
+            tool_call_id="call_2",
+            metadata={"codex_output_only": True},
+        ),
+        CommandResult(command="pwd", return_code=0, stdout="/app", tool_call_id="call_3"),
+    ]
+
+    items = module._conversation(TaskContext("Run task.", "/repo"), history)
+
+    assert not any(item.get("call_id") == "call_2" for item in items)
+    assert any(item.get("call_id") == "call_3" for item in items)
+
+
 @pytest.mark.parametrize("seed", SEEDS)
 def test_codex_budget_seed_prefers_response_items_to_avoid_duplicate_tool_calls(
     seed: str,
