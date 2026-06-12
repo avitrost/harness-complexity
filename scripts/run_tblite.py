@@ -74,6 +74,34 @@ SEED_CANDIDATES = (
         Path("seeds/mini_swe_agent_v2"),
     ),
     EvalCandidate(
+        "seed_mini_swe_agent_barebones_v2",
+        "seed",
+        "harness",
+        None,
+        Path("seeds/mini_swe_agent_barebones_v2"),
+    ),
+    EvalCandidate(
+        "seed_mini_swe_agent_barebones_v2_persistent",
+        "seed",
+        "harness",
+        None,
+        Path("seeds/mini_swe_agent_barebones_v2_persistent"),
+    ),
+    EvalCandidate(
+        "seed_mini_swe_agent_barebones_v2_rich_terminal",
+        "seed",
+        "harness",
+        None,
+        Path("seeds/mini_swe_agent_barebones_v2_rich_terminal"),
+    ),
+    EvalCandidate(
+        "seed_mini_swe_agent_barebones_v2_rich_terminal_no_examples",
+        "seed",
+        "harness",
+        None,
+        Path("seeds/mini_swe_agent_barebones_v2_rich_terminal_no_examples"),
+    ),
+    EvalCandidate(
         "seed_terminus_2_compressed",
         "seed",
         "harness",
@@ -126,6 +154,13 @@ def main() -> int:
     parser.add_argument("--harbor-bin")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
+
+    if args.backend == "slurm-pyxis" and not args.dry_run and not os.environ.get("SLURM_JOB_ID"):
+        print(
+            "Refusing to run heavy work outside Slurm. Use sbatch, salloc, or srun first.",
+            file=sys.stderr,
+        )
+        return 2
 
     dataset_path = args.dataset_path or materialize_tblite(
         cache_root=args.cache_root,

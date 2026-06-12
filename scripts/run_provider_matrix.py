@@ -47,8 +47,72 @@ DEEPSEEK_CONFIGS = (
 MINI_BACKFILL_CANDIDATES = {
     "seed_mini_swe_agent_v2",
     "seed_mini_swe_agent_barebones",
+    "seed_mini_swe_agent_barebones_v2",
+    "seed_mini_swe_agent_barebones_v2_persistent",
+    "seed_mini_swe_agent_barebones_v2_rich_terminal",
+    "seed_mini_swe_agent_barebones_v2_rich_terminal_no_examples",
 }
-CORRUPTED_CLASSES = {"rate_limit", "provider_transport", "infra", "harbor_cache"}
+CORRUPTED_CLASSES = {
+    "rate_limit",
+    "provider_transport",
+    "infra",
+    "harbor_cache",
+}
+RATE_LIMIT_PATTERNS = (
+    re.compile(r"\brate limit(?:ed|s|ing)?\b"),
+    re.compile(r"\btoo many requests\b"),
+    re.compile(r"\bhttp(?: status)?\s*429\b"),
+    re.compile(r"\bstatus[_ ]?code[\"']?\s*[:=]\s*429\b"),
+    re.compile(r"\berror code[\"']?\s*[:=]\s*429\b"),
+)
+PROVIDER_POLICY_PATTERNS = (
+    re.compile(r"\bflagged for possible cybersecurity risk\b"),
+    re.compile(r"\btrusted access for cyber\b"),
+    re.compile(r"\bcontent[_ -]?policy[_ -]?violation\b"),
+    re.compile(r"\bsafety policy\b"),
+)
+HARBOR_CACHE_PATTERNS = (
+    re.compile(r"\.cache/harbor/tasks[^\n]*(?:file exists|directory not empty)"),
+    re.compile(r"(?:file exists|directory not empty)[^\n]*\.cache/harbor/tasks"),
+    re.compile(r"fileexistserror[^\n]*\.cache/harbor/tasks"),
+    re.compile(r"oserror[^\n]*(?:17|39)[^\n]*\.cache/harbor/tasks"),
+)
+CONTEXT_OVERFLOW_PATTERNS = (
+    re.compile(r"\bcontext[_ -]?length[_ -]?exceeded\b"),
+    re.compile(r"\bmaximum context\b"),
+    re.compile(r"\bcontext window\b"),
+    re.compile(r"\btoken limit\b"),
+    re.compile(r"\btoo many tokens\b"),
+)
+VERIFIER_TIMEOUT_PATTERNS = (
+    re.compile(r"\bverifier execution timed out\b"),
+    re.compile(r"\bverifiertimeouterror\b"),
+)
+PROVIDER_TRANSPORT_PATTERNS = (
+    re.compile(r"\bapi call failed\b"),
+    re.compile(r"\boverloaded_error\b"),
+    re.compile(r"\b(?:http|status(?:_code)?)[^\n]{0,80}\b(?:500|502|503|504)\b"),
+    re.compile(r"\bapi[^\n]{0,80}timeout(?:error)?\b"),
+    re.compile(r"\b(?:connect|read|write)timeout(?:error)?\b"),
+    re.compile(r"\brequest timed out\b"),
+    re.compile(r"\btimed out while (?:connecting|reading|writing|waiting for api)\b"),
+    re.compile(r"\bconnection reset(?: by peer)?\b"),
+    re.compile(r"\bremoteprotocolerror\b"),
+    re.compile(r"\bserver disconnected\b"),
+    re.compile(r"\btemporarily unavailable\b"),
+    re.compile(r"\brequests\.exceptions\.\w+"),
+    re.compile(r"\bhttpx\.\w+error\b"),
+)
+INFRA_PATTERNS = (
+    re.compile(r"\bslurmstepd:\s*(?:error|fatal)\b"),
+    re.compile(r"\bsrun:\s*(?:error|fatal)\b"),
+    re.compile(r"\bsrun:\s+job step aborted\b"),
+    re.compile(r"\bsrun:\s+force terminated\b"),
+    re.compile(r"\bpyxis:\s*(?:error|fatal)\b"),
+    re.compile(r"\bpyxis_[a-z_]+:\s*(?:error|fatal)\b"),
+    re.compile(r"\boom-kill(?: event)?\b"),
+    re.compile(r"\bout of memory\b"),
+)
 
 
 @dataclass(frozen=True)
@@ -92,6 +156,9 @@ def main() -> int:
     parser.add_argument("--shard-index", type=int, default=0)
     parser.add_argument("--skip-aggregate", action="store_true")
     parser.add_argument("--aggregate-only", action="store_true")
+    parser.add_argument("--skip-nested-summaries", action="store_true")
+    parser.add_argument("--refresh-classifier-only", action="store_true")
+    parser.add_argument("--skip-aggregate-tables", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
@@ -106,12 +173,19 @@ def main() -> int:
 
     tasks = args.tasks or get_tb2_core_tasks()
     candidates = _select_candidates(args.candidate_names)
-    configs = _select_configs(_provider_configs(tuple(candidate.name for candidate in candidates)), args.config_ids)
+    configs = _select_configs(
+        _provider_configs(tuple(candidate.name for candidate in candidates)), args.config_ids
+    )
     all_attempts = _attempts(configs, candidates, tasks, args.trials)
     attempts = _shard_attempts(all_attempts, args.shard_count, args.shard_index)
     root = args.out_root / args.run_id
     root.mkdir(parents=True, exist_ok=True)
     manifest = _manifest(args, configs, candidates, tasks, all_attempts, attempts)
+    if args.refresh_classifier_only:
+        aggregate = _refresh_classifier_outputs(root, args)
+        (root / "summary.json").write_text(json.dumps(aggregate, indent=2), encoding="utf-8")
+        print(json.dumps({"out_root": str(root), **aggregate}, indent=2))
+        return 0 if not aggregate["corrupted_attempts"] else 1
     _write_manifest(root, args, manifest)
 
     if args.aggregate_only:
@@ -119,6 +193,11 @@ def main() -> int:
         (root / "summary.json").write_text(json.dumps(aggregate, indent=2), encoding="utf-8")
         print(json.dumps({"out_root": str(root), **aggregate}, indent=2))
         return 0 if not aggregate["corrupted_attempts"] else 1
+
+    if args.backend == "slurm-pyxis" and not args.dry_run and not os.environ.get("SLURM_JOB_ID"):
+        raise SystemExit(
+            "Refusing to run Harbor/evals outside Slurm. Submit with sbatch/salloc/srun."
+        )
 
     os.environ["HARBOR_SLURM_PYXIS_PARTITION"] = args.slurm_partition
     harbor_help_text = _harbor_help_text(args.harbor_bin)
@@ -259,11 +338,7 @@ def _shard_attempts(
     shard_count: int,
     shard_index: int,
 ) -> list[MatrixAttempt]:
-    return [
-        attempt
-        for index, attempt in enumerate(attempts)
-        if index % shard_count == shard_index
-    ]
+    return [attempt for index, attempt in enumerate(attempts) if index % shard_count == shard_index]
 
 
 def _manifest(
@@ -292,6 +367,9 @@ def _manifest(
         "shard_index": args.shard_index,
         "skip_aggregate": args.skip_aggregate,
         "aggregate_only": args.aggregate_only,
+        "skip_nested_summaries": args.skip_nested_summaries,
+        "refresh_classifier_only": args.refresh_classifier_only,
+        "skip_aggregate_tables": args.skip_aggregate_tables,
         "configs": [config.__dict__ for config in configs],
         "candidates": [
             {
@@ -341,8 +419,7 @@ def _run_attempt_pool(
     started = time.monotonic()
     with ThreadPoolExecutor(max_workers=worker_count) as pool:
         futures = [
-            pool.submit(_run_attempt, root, args, attempt, harbor_help_text)
-            for attempt in attempts
+            pool.submit(_run_attempt, root, args, attempt, harbor_help_text) for attempt in attempts
         ]
         for index, future in enumerate(as_completed(futures), start=1):
             summaries.append(future.result())
@@ -445,10 +522,36 @@ def _write_outputs(
     args: argparse.Namespace,
 ) -> dict[str, Any]:
     attempt_rows = [_attempt_row(root, attempt) for attempt in attempts]
-    _write_csv(root / "attempts.csv", attempt_rows)
-    (root / "attempts.json").write_text(json.dumps(attempt_rows, indent=2), encoding="utf-8")
+    aggregate = _write_matrix_outputs(root, attempt_rows, args)
+    if not args.skip_nested_summaries:
+        _write_nested_summaries(root, attempts)
+    return aggregate
 
-    candidate_rows = _aggregate_rows(attempt_rows, ("provider", "config_id", "model", "effort", "candidate"), args)
+
+def _refresh_classifier_outputs(root: Path, args: argparse.Namespace) -> dict[str, Any]:
+    attempt_rows = _read_csv(root / "attempts.csv")
+    for row in attempt_rows:
+        out_dir = Path(str(row.get("out_dir") or ""))
+        status = str(row.get("status") or "unknown")
+        candidate = str(row.get("candidate") or "")
+        failure_class = _failure_class(out_dir, status, candidate)
+        row["failure_class"] = failure_class
+        row["corrupted"] = "1" if failure_class in CORRUPTED_CLASSES else "0"
+    if args.skip_aggregate_tables:
+        return _write_attempt_level_outputs(root, attempt_rows)
+    return _write_matrix_outputs(root, attempt_rows, args)
+
+
+def _write_matrix_outputs(
+    root: Path,
+    attempt_rows: list[dict[str, Any]],
+    args: argparse.Namespace,
+) -> dict[str, Any]:
+    aggregate = _write_attempt_level_outputs(root, attempt_rows)
+
+    candidate_rows = _aggregate_rows(
+        attempt_rows, ("provider", "config_id", "model", "effort", "candidate"), args
+    )
     task_rows = _aggregate_rows(
         attempt_rows,
         ("provider", "config_id", "model", "effort", "candidate", "task"),
@@ -456,8 +559,19 @@ def _write_outputs(
     )
     _write_csv(root / "aggregate_by_candidate.csv", candidate_rows)
     _write_csv(root / "aggregate_by_task.csv", task_rows)
-    _write_nested_summaries(root, attempts)
 
+    aggregate.update(
+        {
+            "aggregate_by_candidate_rows": len(candidate_rows),
+            "aggregate_by_task_rows": len(task_rows),
+        }
+    )
+    return aggregate
+
+
+def _write_attempt_level_outputs(root: Path, attempt_rows: list[dict[str, Any]]) -> dict[str, Any]:
+    _write_csv(root / "attempts.csv", attempt_rows)
+    (root / "attempts.json").write_text(json.dumps(attempt_rows, indent=2), encoding="utf-8")
     corrupted = [row for row in attempt_rows if row["corrupted"] == "1"]
     (root / "corrupted_attempts.json").write_text(
         json.dumps(corrupted, indent=2),
@@ -466,8 +580,6 @@ def _write_outputs(
     return {
         "attempts": len(attempt_rows),
         "corrupted_attempts": len(corrupted),
-        "aggregate_by_candidate_rows": len(candidate_rows),
-        "aggregate_by_task_rows": len(task_rows),
     }
 
 
@@ -502,33 +614,129 @@ def _status_from_summary(out_dir: Path) -> str:
 def _failure_class(out_dir: Path, status: str, candidate: str) -> str:
     if status == "success":
         return "success"
+    if _latest_result_has_final_verifier_reward(out_dir):
+        return "task_failure"
+    if _latest_result_completed_without_errors(out_dir):
+        return "task_failure"
     text = _failure_text(out_dir).lower()
-    if any(item in text for item in ("rate limit", "too many requests", " 429 ", "status_code\": 429")):
+    if _matches_any(text, RATE_LIMIT_PATTERNS):
         return "rate_limit"
-    if any(item in text for item in ("cybersecurity risk", "trusted access for cyber", "policy")):
+    if _matches_any(text, PROVIDER_POLICY_PATTERNS):
         return "provider_policy"
-    if any(item in text for item in ("directory not empty", "file exists", ".cache/harbor/tasks")):
+    if _matches_any(text, HARBOR_CACHE_PATTERNS):
         return "harbor_cache"
-    if any(item in text for item in ("context", "maximum context", "token limit", "too many tokens")) and "mini_swe_agent" in candidate:
+    if _matches_any(text, CONTEXT_OVERFLOW_PATTERNS) and "mini_swe_agent" in candidate:
         return "context_overflow_no_compaction"
-    if any(item in text for item in ("slurm", "pyxis", "srun", "connection reset", "transport")):
-        return "infra"
-    if "api call failed" in text or "http" in text and "failed" in text:
+    if _matches_any(text, VERIFIER_TIMEOUT_PATTERNS):
+        return "verifier_timeout"
+    if _matches_any(text, PROVIDER_TRANSPORT_PATTERNS):
         return "provider_transport"
+    if _matches_any(text, INFRA_PATTERNS):
+        return "infra"
     return "task_failure" if status in {"failure", "crash"} else "unknown"
+
+
+def _matches_any(text: str, patterns: tuple[re.Pattern[str], ...]) -> bool:
+    return any(pattern.search(text) for pattern in patterns)
+
+
+def _latest_result_has_final_verifier_reward(out_dir: Path) -> bool:
+    for run_dir in _latest_run_dirs(out_dir):
+        payload = _read_json(run_dir / "result.json")
+        if not _result_payload_has_final_verifier_reward(payload):
+            try:
+                trial_dirs = [path for path in run_dir.iterdir() if path.is_dir()]
+            except OSError:
+                trial_dirs = []
+            for trial_dir in sorted(trial_dirs):
+                if _result_payload_has_final_verifier_reward(_read_json(trial_dir / "result.json")):
+                    return True
+            continue
+        return True
+    return False
+
+
+def _result_payload_has_final_verifier_reward(payload: Any) -> bool:
+    if not isinstance(payload, dict) or payload.get("exception_info"):
+        return False
+    verifier = payload.get("verifier_result")
+    if not isinstance(verifier, dict):
+        return False
+    rewards = verifier.get("rewards")
+    return isinstance(rewards, dict) and any(
+        isinstance(value, int | float) and not isinstance(value, bool) for value in rewards.values()
+    )
+
+
+def _latest_result_completed_without_errors(out_dir: Path) -> bool:
+    for run_dir in _latest_run_dirs(out_dir):
+        payload = _read_json(run_dir / "result.json")
+        if not isinstance(payload, dict):
+            continue
+        stats = payload.get("stats")
+        if not isinstance(stats, dict):
+            continue
+        total = payload.get("n_total_trials", stats.get("n_total_trials"))
+        completed = stats.get("n_completed_trials")
+        if isinstance(total, bool) or isinstance(completed, bool):
+            continue
+        if not isinstance(total, int) or not isinstance(completed, int):
+            continue
+        if total <= 0 or completed != total:
+            continue
+        errored = stats.get("n_errored_trials", 0)
+        running = stats.get("n_running_trials", 0)
+        pending = stats.get("n_pending_trials", 0)
+        cancelled = stats.get("n_cancelled_trials", 0)
+        if (errored, running, pending, cancelled) == (0, 0, 0, 0):
+            return True
+    return False
 
 
 def _failure_text(out_dir: Path) -> str:
     chunks = []
-    for name in ("stderr.log", "stdout.log", "summary.json"):
-        path = out_dir / name
-        if path.is_file():
-            chunks.append(path.read_text(encoding="utf-8", errors="replace")[-4000:])
-    for path in sorted(out_dir.glob("**/exception.txt")):
-        chunks.append(path.read_text(encoding="utf-8", errors="replace")[-4000:])
-    for path in sorted(out_dir.glob("**/harness-result.json")):
+    for path in _failure_text_paths(out_dir):
         chunks.append(path.read_text(encoding="utf-8", errors="replace")[-4000:])
     return "\n".join(chunks)
+
+
+def _failure_text_paths(out_dir: Path) -> list[Path]:
+    paths = [out_dir / name for name in ("stderr.log", "stdout.log", "summary.json")]
+    for run_dir in _latest_run_dirs(out_dir):
+        paths.extend(
+            run_dir / name
+            for name in ("job.log", "result.json", "harness-result.json", "exception.txt")
+        )
+        try:
+            task_dirs = [path for path in run_dir.iterdir() if path.is_dir()]
+        except OSError:
+            task_dirs = []
+        for task_dir in sorted(task_dirs):
+            paths.extend(
+                task_dir / name
+                for name in ("trial.log", "result.json", "harness-result.json", "exception.txt")
+            )
+            paths.extend(
+                task_dir / name for name in ("agent/exception.txt", "verifier/exception.txt")
+            )
+    seen = set()
+    result = []
+    for path in paths:
+        if path in seen or not path.is_file():
+            continue
+        seen.add(path)
+        result.append(path)
+    return result
+
+
+def _latest_run_dirs(out_dir: Path) -> list[Path]:
+    try:
+        run_dirs = [path for path in out_dir.iterdir() if path.is_dir()]
+    except OSError:
+        return []
+    if len(run_dirs) <= 1:
+        return sorted(run_dirs)
+    return [sorted(run_dirs)[-1]]
 
 
 def _api_usage(out_dir: Path) -> dict[str, int]:
@@ -596,12 +804,7 @@ def _aggregate_rows(
 
 
 def _write_nested_summaries(root: Path, attempts: list[MatrixAttempt]) -> None:
-    candidate_dirs = sorted(
-        {
-            _attempt_dir(root, attempt).parents[1]
-            for attempt in attempts
-        }
-    )
+    candidate_dirs = sorted({_attempt_dir(root, attempt).parents[1] for attempt in attempts})
     for candidate_dir in candidate_dirs:
         records = parse_records(candidate_dir)
         (candidate_dir / "records.json").write_text(
@@ -645,6 +848,11 @@ def _write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
         writer = csv.DictWriter(handle, fieldnames=fieldnames)
         writer.writeheader()
         writer.writerows(rows)
+
+
+def _read_csv(path: Path) -> list[dict[str, str]]:
+    with path.open(newline="", encoding="utf-8") as handle:
+        return list(csv.DictReader(handle))
 
 
 def _read_json(path: Path) -> Any:

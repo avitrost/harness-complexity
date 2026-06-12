@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>GPT-5.4-Mini Low Attribute Drivers</title>
+  <style>
+    body { margin: 0; background: #fffffb; color: #1d1a16; font: 18px/1.48 Georgia, "Times New Roman", serif; }
+    main { max-width: 1180px; margin: 0 auto; padding: 42px 36px 76px; }
+    h1 { font-weight: 400; font-size: 43px; line-height: 1.05; margin: 0 0 12px; letter-spacing: 0; }
+    h2 { margin: 42px 0 10px; padding-top: 16px; border-top: 1px solid #d8d1c3; font: 700 13px/1.2 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; text-transform: uppercase; letter-spacing: 0.08em; }
+    p { max-width: 890px; margin: 12px 0; }
+    .deck { font-size: 21px; color: #3b352d; }
+    .note { border-left: 2px solid #3d6f85; padding-left: 14px; color: #332f28; }
+    .grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; margin: 24px 0 12px; }
+    .point { border-top: 3px solid #222; padding-top: 9px; font-size: 16px; line-height: 1.35; }
+    .point b { display: block; font: 700 12px/1.2 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 4px; }
+    .glossary { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin: 14px 0 8px; max-width: 1040px; }
+    .term { border-top: 1px solid #d8d1c3; padding-top: 8px; font-size: 15px; line-height: 1.4; }
+    .term b { display: block; font: 700 12px/1.2 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 4px; }
+    table.data { border-collapse: collapse; width: 100%; font: 13px/1.35 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 12px 0 8px; }
+    table.data th { text-align: left; border-bottom: 1px solid #d8d1c3; padding: 6px 7px; white-space: nowrap; vertical-align: bottom; }
+    table.data td { border-bottom: 1px solid #eee8dc; padding: 6px 7px; vertical-align: top; }
+    .num { text-align: right; font-variant-numeric: tabular-nums; }
+    code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; font-size: 12px; }
+    .small { color: #756f63; font: 12px/1.35 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    @media (max-width: 850px) { main { padding: 28px 18px 56px; } h1 { font-size: 34px; } .grid, .glossary { grid-template-columns: 1fr; } }
+    </style>
+</head>
+<body>
+<main>
+  <h1>Which harness attributes seem to drive the small-model lift?</h1>
+  <p class="deck">Exploratory analysis for <b>gpt-5.4-mini low</b> on the TB2
+  9-task subset, excluding <b>minimal-agent</b> and
+  <b>terminus-2-compressed</b>.</p>
+  <p class="small">CSV outputs: <code>/wbl-fast/usrs/trost/harness-complexity/final_test/behavior_gpt54_low_family_20260612/attribute_driver_analysis</code></p>
+
+  <div class="grid">
+    <div class="point"><b>Most stable signal</b>
+      Session handling plus multi-call/replay mechanics is the only feature
+      family that survives the task-fixed and leave-one-task-out checks.</div>
+    <div class="point"><b>Secondary signal</b>
+      Read/search plus a bounded edit/execute loop helps. Repeated editing or
+      scripting by itself looks more like struggle than capability.</div>
+    <div class="point"><b>Weak signal</b>
+      LOC, input tokens, output tokens, and total command count are weaker and
+      less stable than the mechanics features.</div>
+  </div>
+
+  <h2>Caveat</h2>
+  <p class="note">This is not causal identification. The sample is small, many
+  harness features are correlated, and action counts are partly downstream of
+  the model's behavior. The goal is to narrow plausible mechanisms, not to prove
+  one variable independently causes the whole lift.</p>
+
+  <h2>What The Terms Mean</h2>
+  <p>By <b>recoverable stateful interaction</b>, I mean a harness that gives the
+  model a durable enough interaction loop to recover from a bad command: it can
+  see the command output or error, keep track of prior tool calls, adjust the
+  next action, and continue without having to reconstruct the whole state from
+  scratch. In these logs this is not one primitive; it is a bundle of mechanics
+  that make the next step better informed after each shell action.</p>
+  <div class="glossary">
+    <div class="term"><b>Session commands</b>
+      Counted when a shell turn has <code>metadata.unified_exec.session_id</code>.
+      Practically, this means the harness is using a persistent execution
+      session rather than only isolated one-shot shell calls. That can preserve
+      useful process/session state such as current shell context, active
+      subprocesses, or interactive continuity.</div>
+    <div class="term"><b>Multi-call turns</b>
+      Counted when Codex metadata reports <code>codex_emitted_tool_calls &gt; 1</code>.
+      This means one model response produced multiple tool calls instead of a
+      single command. It is a proxy for a harness that lets the model express a
+      small sequence of operations in one reasoning step.</div>
+    <div class="term"><b>Response replay turns</b>
+      Counted when a turn includes <code>mini_swe_agent_v2_messages</code> or
+      <code>codex_response_items</code> metadata. This means the harness is
+      preserving or replaying structured assistant/tool-call history around the
+      command, rather than logging only the raw shell command. It helps the next
+      model call retain the action/observation chain.</div>
+    <div class="term"><b>Session + multi-call + replay</b>
+      The combined metric used in the regressions:
+      <code>mean_session_commands + mean_multi_call_turns + mean_response_replay_turns</code>.
+      It should be read as a proxy for interaction scaffolding, not as a literal
+      causal variable. It captures whether the harness supports continuity,
+      batched/planned actions, and trace replay.</div>
+  </div>
+  <p>So the claim is not "state" in the philosophical sense, and not just "the
+  model has a longer prompt." The concrete claim is: the small model does better
+  when the harness makes the action/observation loop recoverable enough that
+  failed commands and partial results become useful information for the next
+  action.</p>
+  <p>More explicitly: most files written to <code>/app</code> persist even in a
+  non-persistent shell, so the likely benefit is not just "the file system keeps
+  state." The helpful pieces appear to be: keeping the command/observation
+  history structured, letting the model continue after errors, allowing multiple
+  related tool calls in one response, and, when needed, preserving a live shell
+  session for ongoing processes or interactive continuations.</p>
+
+  <h2>Mechanics Class</h2>
+  <p>The coarse class view is the clearest: replay-only and session-only each
+  move the score from 13.3% to 16.7%, while the session+multi-call+replay Codex
+  family averages 22.9%. The outlier is codex-1300, which has the mechanics but
+  underperforms, so mechanics are necessary-looking but not sufficient.</p>
+  <table class="data"><thead><tr><th>Class</th><th>Harness</th><th>Score</th><th>Stateful+replay</th><th>Tests/attempt</th><th>Read+search</th><th>Edits</th></tr></thead><tbody><tr><td>none</td><td>msa-fully-compressed</td><td class="num">13.3%</td><td class="num">0.00</td><td class="num">0.02</td><td class="num">8.41</td><td class="num">3.27</td></tr><tr><td>replay_only</td><td>mini-swe-agent</td><td class="num">16.7%</td><td class="num">8.71</td><td class="num">0.06</td><td class="num">7.16</td><td class="num">2.38</td></tr><tr><td>session_multi_replay</td><td>codex-700</td><td class="num">28.9%</td><td class="num">11.69</td><td class="num">0.26</td><td class="num">12.03</td><td class="num">3.36</td></tr><tr><td>session_multi_replay</td><td>codex-1000</td><td class="num">25.6%</td><td class="num">13.42</td><td class="num">0.28</td><td class="num">10.47</td><td class="num">4.13</td></tr><tr><td>session_multi_replay</td><td>codex-compressed</td><td class="num">24.4%</td><td class="num">13.66</td><td class="num">0.02</td><td class="num">10.12</td><td class="num">2.06</td></tr><tr><td>session_multi_replay</td><td>codex-full</td><td class="num">21.1%</td><td class="num">13.12</td><td class="num">0.00</td><td class="num">9.22</td><td class="num">2.27</td></tr><tr><td>session_multi_replay</td><td>codex-1300</td><td class="num">14.4%</td><td class="num">12.40</td><td class="num">0.08</td><td class="num">8.80</td><td class="num">2.98</td></tr><tr><td>session_only</td><td>codex-400</td><td class="num">16.7%</td><td class="num">4.38</td><td class="num">0.01</td><td class="num">14.84</td><td class="num">5.77</td></tr></tbody></table>
+
+  <h2>Task-Fixed Regressions</h2>
+  <p>These regressions subtract each task's mean score first, then ask which
+  within-task feature variation predicts above-task-average performance. The
+  coefficient is percentage points of score for a one-standard-deviation
+  increase in the feature residual.</p>
+  <table class="data"><thead><tr><th>Feature</th><th>Beta pp / SD</th><th>R2</th><th>t</th></tr></thead><tbody><tr><td>session + multi-call + replay</td><td class="num">5.80</td><td class="num">0.206</td><td class="num">4.30</td></tr><tr><td>session + multi-call</td><td class="num">5.21</td><td class="num">0.167</td><td class="num">3.77</td></tr><tr><td>session commands</td><td class="num">4.46</td><td class="num">0.122</td><td class="num">3.14</td></tr><tr><td>multi-call turns</td><td class="num">4.31</td><td class="num">0.114</td><td class="num">3.03</td></tr><tr><td>response replay turns</td><td class="num">4.25</td><td class="num">0.111</td><td class="num">2.97</td></tr><tr><td>edit_per_cmd</td><td class="num">-4.13</td><td class="num">0.105</td><td class="num">-2.88</td></tr><tr><td>mean_search_commands</td><td class="num">3.05</td><td class="num">0.057</td><td class="num">2.07</td></tr><tr><td>total commands</td><td class="num">2.99</td><td class="num">0.055</td><td class="num">2.03</td></tr><tr><td>script commands</td><td class="num">-2.98</td><td class="num">0.054</td><td class="num">-2.02</td></tr><tr><td>verify_plus_script</td><td class="num">-2.74</td><td class="num">0.046</td><td class="num">-1.85</td></tr><tr><td>test-like commands</td><td class="num">2.56</td><td class="num">0.040</td><td class="num">1.73</td></tr><tr><td>API input tokens</td><td class="num">1.90</td><td class="num">0.022</td><td class="num">1.27</td></tr><tr><td>harness_loc</td><td class="num">1.80</td><td class="num">0.020</td><td class="num">1.20</td></tr><tr><td>test_per_cmd</td><td class="num">1.77</td><td class="num">0.019</td><td class="num">1.18</td></tr></tbody></table>
+
+  <h2>Out-of-Task Check</h2>
+  <p>Leave-one-task-out prediction is harsh with only 9 tasks. The mechanics
+  feature sets remain positive; action-only and token/LOC sets do not.</p>
+  <table class="data"><thead><tr><th>Feature set</th><th>LOTO CV R2</th><th>Features</th></tr></thead><tbody><tr><td>stateful_replay</td><td class="num">0.105</td><td>stateful_replay</td></tr><tr><td>codex_tooling</td><td class="num">0.097</td><td>codex_tooling</td></tr><tr><td>tokens+loc</td><td class="num">-0.048</td><td>harness_loc, mean_api_input_tokens, mean_api_output_tokens</td></tr><tr><td>actions</td><td class="num">-0.538</td><td>read_search_commands, mean_edit_commands, mean_script_commands, mean_test_commands</td></tr><tr><td>actions+mechanics</td><td class="num">-1.022</td><td>read_search_commands, mean_edit_commands, mean_script_commands, mean_test_commands, mean_session_commands, mean_multi_call_turns, mean_response_replay_turns</td></tr></tbody></table>
+
+  <h2>Paired Delta Against MSA-Fully-Compressed</h2>
+  <p>For every task, each harness is compared to the 149-line compressed
+  mini-SWE baseline. The largest positive correlations with score deltas are
+  again session/multi/replay features.</p>
+  <table class="data"><thead><tr><th>Feature delta</th><th>Pearson</th><th>Spearman</th></tr></thead><tbody><tr><td>session commands</td><td class="num">0.572</td><td class="num">0.405</td></tr><tr><td>session + multi-call + replay</td><td class="num">0.531</td><td class="num">0.443</td></tr><tr><td>session + multi-call</td><td class="num">0.516</td><td class="num">0.366</td></tr><tr><td>script commands</td><td class="num">-0.442</td><td class="num">-0.036</td></tr><tr><td>verify_plus_script</td><td class="num">-0.431</td><td class="num">-0.038</td></tr><tr><td>total commands</td><td class="num">0.419</td><td class="num">0.355</td></tr><tr><td>response replay turns</td><td class="num">0.399</td><td class="num">0.372</td></tr><tr><td>mean_failed_commands</td><td class="num">-0.397</td><td class="num">-0.225</td></tr><tr><td>test-like commands</td><td class="num">0.346</td><td class="num">-0.105</td></tr><tr><td>edit_per_cmd</td><td class="num">-0.322</td><td class="num">-0.182</td></tr><tr><td>read + search commands</td><td class="num">0.252</td><td class="num">0.034</td></tr><tr><td>mean_inspect_commands</td><td class="num">0.247</td><td class="num">0.037</td></tr><tr><td>mean_read_file_commands</td><td class="num">0.237</td><td class="num">0.060</td></tr><tr><td>mean_search_commands</td><td class="num">0.184</td><td class="num">0.081</td></tr></tbody></table>
+
+  <h2>Success Versus Failure</h2>
+  <p>Successful attempts are more active, but the important distinction is the
+  complete loop. Successes have more read/search, edits, scripts, tests, session
+  commands, and replay turns. Output tokens move in the opposite direction,
+  suggesting long hidden/visible output often marks struggle rather than
+  success.</p>
+  <table class="data"><thead><tr><th>Feature</th><th>Success mean</th><th>Failure mean</th><th>Diff</th></tr></thead><tbody><tr><td>included_actions</td><td class="num">23.29</td><td class="num">12.55</td><td class="num">10.74</td></tr><tr><td>file_read_count</td><td class="num">4.79</td><td class="num">2.59</td><td class="num">2.20</td></tr><tr><td>search_count</td><td class="num">4.54</td><td class="num">2.71</td><td class="num">1.83</td></tr><tr><td>file_edit_count</td><td class="num">4.95</td><td class="num">2.78</td><td class="num">2.17</td></tr><tr><td>script_execution_count</td><td class="num">3.65</td><td class="num">2.17</td><td class="num">1.47</td></tr><tr><td>test_execution_count</td><td class="num">0.32</td><td class="num">0.03</td><td class="num">0.28</td></tr><tr><td>reasoning_only_count</td><td class="num">4.01</td><td class="num">1.51</td><td class="num">2.50</td></tr><tr><td>commands</td><td class="num">23.48</td><td class="num">12.79</td><td class="num">10.70</td></tr><tr><td>failed_commands</td><td class="num">2.63</td><td class="num">1.70</td><td class="num">0.93</td></tr><tr><td>session_commands</td><td class="num">4.72</td><td class="num">2.16</td><td class="num">2.56</td></tr><tr><td>multi_call_turns</td><td class="num">2.52</td><td class="num">1.32</td><td class="num">1.20</td></tr><tr><td>response_replay_turns</td><td class="num">8.12</td><td class="num">4.75</td><td class="num">3.37</td></tr><tr><td>model_call_input_tokens</td><td class="num">14837.31</td><td class="num">11248.21</td><td class="num">3589.10</td></tr><tr><td>model_call_output_tokens</td><td class="num">227.63</td><td class="num">474.65</td><td class="num">-247.02</td></tr></tbody></table>
+
+  <h2>Finer Session Metrics</h2>
+  <p>I added a finer metadata pass over the raw <code>harness-turn-*.json</code>
+  files. This separates raw session use from session reuse, post-failure
+  continuation, replay, and multi-call behavior. The signal is strongest for
+  <b>continuing after a failure with structured replay</b>, not for session reuse
+  alone.</p>
+  <table class="data"><thead><tr><th>Metric</th><th>Success mean</th><th>Failure mean</th><th>Diff</th></tr></thead><tbody><tr><td>session_turns_raw</td><td class="num">4.72</td><td class="num">2.16</td><td class="num">2.56</td></tr><tr><td>unique_sessions</td><td class="num">3.59</td><td class="num">1.73</td><td class="num">1.86</td></tr><tr><td>session_reuse_turns</td><td class="num">1.14</td><td class="num">0.43</td><td class="num">0.70</td></tr><tr><td>write_stdin_turns</td><td class="num">1.94</td><td class="num">0.76</td><td class="num">1.18</td></tr><tr><td>post_failure_turns_raw</td><td class="num">15.20</td><td class="num">8.02</td><td class="num">7.18</td></tr><tr><td>post_failure_session_turns</td><td class="num">2.72</td><td class="num">1.33</td><td class="num">1.39</td></tr><tr><td>post_failure_replay_turns</td><td class="num">4.60</td><td class="num">2.74</td><td class="num">1.86</td></tr><tr><td>replay_turns_raw</td><td class="num">8.12</td><td class="num">4.75</td><td class="num">3.37</td></tr><tr><td>multi_turns_raw</td><td class="num">2.52</td><td class="num">1.32</td><td class="num">1.20</td></tr><tr><td>multi_tool_calls_raw</td><td class="num">17.14</td><td class="num">7.62</td><td class="num">9.52</td></tr><tr><td>timeout_turns</td><td class="num">0.03</td><td class="num">0.10</td><td class="num">-0.07</td></tr></tbody></table>
+
+  <h2>Working Interpretation</h2>
+  <p>The most likely driver is <b>recoverable stateful interaction</b>: the model
+  benefits when the harness preserves enough interaction structure for it to
+  recover from partial failures and continue an inspect-edit-execute loop. The
+  second driver is <b>context acquisition without thrash</b>: read/search is
+  useful, while high edit/script volume without the stateful loop often marks
+  wandering. Test-like checks help when present, but they are not the whole
+  story because some high-scoring Codex rows have few explicit test commands.</p>
+</main>
+</body>
+</html>

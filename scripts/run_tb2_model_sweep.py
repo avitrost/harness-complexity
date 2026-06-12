@@ -65,6 +65,10 @@ def main() -> int:
     (root / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
 
     _configure_environment(args)
+    if args.backend == "slurm-pyxis" and not args.dry_run and not os.environ.get("SLURM_JOB_ID"):
+        raise SystemExit(
+            "Refusing to run Harbor/evals outside Slurm. Submit with sbatch/salloc/srun."
+        )
     if args.max_candidate_workers is not None:
         print(
             "[tb2-model-sweep] --max-candidate-workers is ignored by the global pool",

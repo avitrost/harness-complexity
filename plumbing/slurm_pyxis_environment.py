@@ -1011,6 +1011,12 @@ class SlurmPyxisEnvironment(BaseEnvironment):
 
     def _srun_env(self) -> dict[str, str]:
         env = os.environ.copy()
+        if os.environ.get("SLURM_JOB_ID") and os.environ.get(
+            "HARBOR_SLURM_PYXIS_DETACH_ALLOCATION", "0"
+        ).lower() not in {"0", "false", "no"}:
+            for key in list(env):
+                if key.startswith("SLURM_") and key not in {"SLURM_CONF", "SLURM_CLUSTER_NAME"}:
+                    env.pop(key, None)
         env.setdefault("TZ", "Etc/UTC")
         env["DEBIAN_FRONTEND"] = "noninteractive"
         env["HARBOR_SLURM_PYXIS_VERIFY_SETTLE_SEC"] = str(self._verifier_reward_settle_sec)
@@ -1065,6 +1071,9 @@ class SlurmPyxisEnvironment(BaseEnvironment):
             "/",
             "--container-writable",
         ]
+        exclude = os.getenv("HARBOR_SLURM_PYXIS_EXCLUDE")
+        if exclude:
+            cmd[5:5] = [f"--exclude={exclude}"]
         if self._remap_root:
             cmd.append("--container-remap-root")
         return [*cmd, "/bin/bash", "-lc", boot]

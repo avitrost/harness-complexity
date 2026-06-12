@@ -1,0 +1,589 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>GPT-5.4 Low Harness Behavior Report</title>
+  <style>
+    :root {
+      --paper: #fffffb;
+      --ink: #1d1a16;
+      --muted: #756f63;
+      --rule: #d8d1c3;
+      --soft: #f3f0e6;
+    }
+    body {
+      margin: 0;
+      background: var(--paper);
+      color: var(--ink);
+      font: 18px/1.48 Georgia, "Times New Roman", serif;
+    }
+    main {
+      max-width: 1380px;
+      margin: 0 auto;
+      padding: 42px 42px 80px;
+    }
+    article {
+      max-width: 1040px;
+    }
+    h1 {
+      font-size: 48px;
+      line-height: 1.02;
+      font-weight: 400;
+      letter-spacing: 0;
+      margin: 0 0 10px;
+    }
+    h2 {
+      margin: 48px 0 10px;
+      padding-top: 18px;
+      border-top: 1px solid var(--rule);
+      font: 700 13px/1.2 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+    h3 {
+      font-size: 23px;
+      line-height: 1.2;
+      font-weight: 400;
+      margin: 0 0 8px;
+    }
+    p {
+      margin: 12px 0;
+      max-width: 880px;
+    }
+    .deck {
+      max-width: 920px;
+      color: #3b352d;
+      font-size: 21px;
+    }
+    .run-meta, .micro, .caption, .muted {
+      color: var(--muted);
+      font: 12px/1.35 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    .keypoints {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 14px;
+      margin: 28px 0 12px;
+      max-width: 1050px;
+    }
+    .point {
+      border-top: 3px solid #222;
+      padding-top: 10px;
+      font-size: 16px;
+      line-height: 1.35;
+    }
+    .point b {
+      display: block;
+      font: 700 13px/1.2 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      margin-bottom: 4px;
+    }
+    .figure {
+      margin: 26px 0 16px;
+      overflow-x: auto;
+    }
+    .linechart {
+      width: min(100%, 920px);
+      min-width: 720px;
+      height: auto;
+    }
+    .linechart text {
+      font: 11px/1.2 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      fill: #5d554c;
+    }
+    .linechart .legendtext {
+      font-weight: 700;
+    }
+    .linechart .xlab {
+      font-size: 10px;
+    }
+    table.data {
+      border-collapse: collapse;
+      width: 100%;
+      font: 13px/1.35 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      margin: 12px 0 8px;
+    }
+    table.data th {
+      text-align: left;
+      font-weight: 700;
+      color: #342f28;
+      border-bottom: 1px solid var(--rule);
+      padding: 6px 7px;
+      vertical-align: bottom;
+      white-space: nowrap;
+    }
+    table.data td {
+      border-bottom: 1px solid #eee8dc;
+      padding: 6px 7px;
+      vertical-align: middle;
+    }
+    table.compact td, table.compact th {
+      padding: 5px 6px;
+    }
+    .num {
+      text-align: right;
+      font-variant-numeric: tabular-nums;
+    }
+    .strong {
+      font-weight: 700;
+    }
+    .stack {
+      display: block;
+      width: 230px;
+      height: 14px;
+      outline: 1px solid #e6dfd2;
+    }
+    .legend {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px 15px;
+      margin: 10px 0 12px;
+      font: 12px/1.3 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      color: #4d463d;
+    }
+    .legend span {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+    }
+    .legend i {
+      width: 11px;
+      height: 11px;
+      display: inline-block;
+    }
+    .heatmap {
+      min-width: 980px;
+    }
+    .heatmap th:first-child {
+      min-width: 190px;
+    }
+    .heat {
+      font-weight: 700;
+      border: 1px solid #fffffb !important;
+    }
+    .note {
+      border-left: 2px solid #3d6f85;
+      padding-left: 16px;
+      max-width: 900px;
+      color: #332f28;
+    }
+    .case-card {
+      margin: 24px 0 28px;
+      padding-top: 18px;
+      border-top: 1px solid var(--rule);
+    }
+    .case-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+      margin-top: 12px;
+    }
+    .case-run {
+      border: 1px solid var(--rule);
+      background: #fffefa;
+      padding: 10px 12px 12px;
+      min-width: 0;
+    }
+    .case-run.success {
+      border-top: 4px solid #2f7f6f;
+    }
+    .case-run.failure {
+      border-top: 4px solid #b44b4b;
+    }
+    .case-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: baseline;
+      font: 14px/1.2 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      margin-bottom: 5px;
+    }
+    .case-head b {
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      font-size: 11px;
+    }
+    table.trace {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 8px;
+      font: 12px/1.35 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    table.trace td {
+      border-top: 1px solid #eee8dc;
+      padding: 4px 3px;
+      vertical-align: top;
+    }
+    table.trace td:first-child {
+      width: 32px;
+      color: var(--muted);
+      text-align: right;
+      font-variant-numeric: tabular-nums;
+    }
+    table.trace td:nth-child(2) {
+      width: 58px;
+      color: #4b443b;
+      font-weight: 700;
+    }
+    code {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+      font-size: 11px;
+      white-space: normal;
+      overflow-wrap: anywhere;
+    }
+    .files code {
+      font-size: 12px;
+    }
+    @media (max-width: 900px) {
+      main { padding: 28px 18px 56px; }
+      h1 { font-size: 36px; }
+      .keypoints, .case-grid { grid-template-columns: 1fr; }
+      body { font-size: 17px; }
+    }
+    @media print {
+      body { background: white; }
+      main { padding: 20px; }
+      .figure { overflow: visible; }
+      .case-grid { grid-template-columns: 1fr; }
+    }
+    </style>
+</head>
+<body>
+<main>
+<article>
+  <h1>How the small model uses richer terminal harnesses</h1>
+  <p class="deck">Quantitative and qualitative analysis of the low-effort GPT-5.4 family runs,
+  centered on <b>gpt-5.4-mini low</b> across the 9-task TB2 subset, with gpt-5.4 low
+  as a comparison and TBLite as an appendix.</p>
+  <p class="run-meta">Generated from compact trace artifacts in <code>/wbl-fast/usrs/trost/harness-complexity/final_test/behavior_gpt54_low_family_20260612</code>.</p>
+
+  <div class="keypoints">
+    <div class="point"><b>Main result</b>
+      gpt-5.4-mini low improves from 13.3%
+      on minimal-agent and 13.3% on the 149-line
+      mini-SWE compression to 28.9% on
+      codex-700.</div>
+    <div class="point"><b>Mechanism</b>
+      The useful harnesses do not just increase command count. They reshape the
+      loop toward inspect/search, edit, execute, and occasional verification,
+      while keeping enough state to recover from local mistakes.</div>
+    <div class="point"><b>Limit</b>
+      The trend is positive but non-monotone for the small model: codex-700/1000
+      and codex-compressed are the strongest region, while codex-full and
+      codex-1300 are not uniformly better.</div>
+  </div>
+
+  <h2>Method</h2>
+  <p>The action taxonomy follows the style of the HarnessBridge action-category
+  analysis: deterministic syntax categories, one category per action, and
+  submission turns excluded from category percentages. The categories are
+  read, search, script execution, file edit, test execution, dependency setup,
+  git operation, navigation, reasoning-only, and interrupt/abort.</p>
+  <p>The token columns are API-reported usage totals from saved
+  <code>agent/model-call-*.json</code> metadata, not post-hoc estimates. In the
+  OpenAI traces, saved histories include encrypted <code>reasoning</code> items
+  with empty visible content, and sampled calls show API output-token totals
+  substantially above the visible assistant text plus tool-call JSON. The logs
+  therefore support treating <code>Output tok</code> as an API total that likely
+  includes hidden reasoning, but they do not expose a separate reasoning-token
+  split.</p>
+  <p class="note">Important caveat: Terminus compressed traces often store tmux
+  batches as summarized <code>write_stdin(..., commands=N)</code> entries rather
+  than the underlying command strings. Those events classify as reasoning-only
+  here, so Terminus action mix is not directly comparable to the other harnesses.</p>
+
+  <h2>Score Trend</h2>
+  <p>On TB2, the small model benefits from added harness structure, but it does
+  not get a clean monotonic lift from every extra line of harness code. The
+  stronger gpt-5.4 low run shows a smoother relationship: gpt-5.4-mini: Pearson LOC 0.450, log LOC 0.541; gpt-5.4: Pearson LOC 0.772, log LOC 0.871.</p>
+  <div class="figure">
+    <svg class="linechart" viewBox="0 0 760 245" role="img"
+      aria-label="TB2 score by harness complexity">
+      <rect x="0" y="0" width="760" height="245" fill="#fffffb"/>
+      <line x1="54" x2="742" y1="191.0" y2="191.0" stroke="#e3dfd2" stroke-width="1"/><text x="44" y="195.0" text-anchor="end">0.00</text><line x1="54" x2="742" y1="151.1" y2="151.1" stroke="#e3dfd2" stroke-width="1"/><text x="44" y="155.1" text-anchor="end">0.15</text><line x1="54" x2="742" y1="111.2" y2="111.2" stroke="#e3dfd2" stroke-width="1"/><text x="44" y="115.2" text-anchor="end">0.30</text><line x1="54" x2="742" y1="71.2" y2="71.2" stroke="#e3dfd2" stroke-width="1"/><text x="44" y="75.2" text-anchor="end">0.45</text><line x1="54" x2="742" y1="31.3" y2="31.3" stroke="#e3dfd2" stroke-width="1"/><text x="44" y="35.3" text-anchor="end">0.60</text>
+      <polyline points="54.0,155.5 130.4,155.5 206.9,146.6 283.3,146.6 359.8,158.5 436.2,114.1 512.7,123.0 589.1,152.6 665.6,125.9 742.0,134.8" fill="none" stroke="#b44b4b" stroke-width="2.4"/>
+      <polyline points="54.0,81.6 130.4,66.8 206.9,60.9 283.3,40.2 359.8,66.8 436.2,37.2 512.7,34.3 589.1,37.2 665.6,37.2 742.0,28.4" fill="none" stroke="#2f6f8f" stroke-width="2.4"/>
+      <circle cx="54.0" cy="155.5" r="3.8" fill="#b44b4b"><title>minimal-agent: 0.133</title></circle><circle cx="54.0" cy="81.6" r="3.8" fill="#2f6f8f"><title>minimal-agent: 0.411</title></circle><circle cx="130.4" cy="155.5" r="3.8" fill="#b44b4b"><title>msa-fully-compressed: 0.133</title></circle><circle cx="130.4" cy="66.8" r="3.8" fill="#2f6f8f"><title>msa-fully-compressed: 0.467</title></circle><circle cx="206.9" cy="146.6" r="3.8" fill="#b44b4b"><title>codex-400: 0.167</title></circle><circle cx="206.9" cy="60.9" r="3.8" fill="#2f6f8f"><title>codex-400: 0.489</title></circle><circle cx="283.3" cy="146.6" r="3.8" fill="#b44b4b"><title>mini-swe-agent: 0.167</title></circle><circle cx="283.3" cy="40.2" r="3.8" fill="#2f6f8f"><title>mini-swe-agent: 0.567</title></circle><circle cx="359.8" cy="158.5" r="3.8" fill="#b44b4b"><title>terminus-2-compressed: 0.122</title></circle><circle cx="359.8" cy="66.8" r="3.8" fill="#2f6f8f"><title>terminus-2-compressed: 0.467</title></circle><circle cx="436.2" cy="114.1" r="3.8" fill="#b44b4b"><title>codex-700: 0.289</title></circle><circle cx="436.2" cy="37.2" r="3.8" fill="#2f6f8f"><title>codex-700: 0.578</title></circle><circle cx="512.7" cy="123.0" r="3.8" fill="#b44b4b"><title>codex-1000: 0.256</title></circle><circle cx="512.7" cy="34.3" r="3.8" fill="#2f6f8f"><title>codex-1000: 0.589</title></circle><circle cx="589.1" cy="152.6" r="3.8" fill="#b44b4b"><title>codex-1300: 0.144</title></circle><circle cx="589.1" cy="37.2" r="3.8" fill="#2f6f8f"><title>codex-1300: 0.578</title></circle><circle cx="665.6" cy="125.9" r="3.8" fill="#b44b4b"><title>codex-compressed: 0.244</title></circle><circle cx="665.6" cy="37.2" r="3.8" fill="#2f6f8f"><title>codex-compressed: 0.578</title></circle><circle cx="742.0" cy="134.8" r="3.8" fill="#b44b4b"><title>codex-full: 0.211</title></circle><circle cx="742.0" cy="28.4" r="3.8" fill="#2f6f8f"><title>codex-full: 0.611</title></circle>
+      <text class="xlab" x="54.0" y="222" text-anchor="end" transform="rotate(-35 54.0 222)">minimal-agent</text><text class="xlab" x="130.4" y="222" text-anchor="end" transform="rotate(-35 130.4 222)">msa-fully-compressed</text><text class="xlab" x="206.9" y="222" text-anchor="end" transform="rotate(-35 206.9 222)">codex-400</text><text class="xlab" x="283.3" y="222" text-anchor="end" transform="rotate(-35 283.3 222)">mini-swe-agent</text><text class="xlab" x="359.8" y="222" text-anchor="end" transform="rotate(-35 359.8 222)">terminus-2-compressed</text><text class="xlab" x="436.2" y="222" text-anchor="end" transform="rotate(-35 436.2 222)">codex-700</text><text class="xlab" x="512.7" y="222" text-anchor="end" transform="rotate(-35 512.7 222)">codex-1000</text><text class="xlab" x="589.1" y="222" text-anchor="end" transform="rotate(-35 589.1 222)">codex-1300</text><text class="xlab" x="665.6" y="222" text-anchor="end" transform="rotate(-35 665.6 222)">codex-compressed</text><text class="xlab" x="742.0" y="222" text-anchor="end" transform="rotate(-35 742.0 222)">codex-full</text>
+      <text x="54" y="15" class="legendtext" fill="#b44b4b">gpt-5.4-mini low</text>
+      <text x="214" y="15" class="legendtext" fill="#2f6f8f">gpt-5.4 low</text>
+    </svg>
+    
+    <div class="caption">Scores are success rates across 9 tasks x 10 trials per harness.</div>
+  </div>
+
+  <h2>GPT-5.4-Mini Low, TB2</h2>
+  <p>The winning region uses fewer actions than minimal-agent but with a more
+  balanced action mix. Minimal-agent is very active, yet much of that activity is
+  repeated reading/searching/script execution without reliable closing checks.</p>
+  <div class="legend"><span><i style="background:#4c78a8"></i>Read</span><span><i style="background:#f58518"></i>Search</span><span><i style="background:#54a24b"></i>Script</span><span><i style="background:#e45756"></i>Edit</span><span><i style="background:#72b7b2"></i>Test</span><span><i style="background:#b279a2"></i>Deps</span><span><i style="background:#9d755d"></i>Git</span><span><i style="background:#ff9da6"></i>Nav</span><span><i style="background:#8f8f8f"></i>Other</span><span><i style="background:#000000"></i>Abort</span></div>
+  <div class="figure"><table class="data compact">
+    <thead><tr>
+      <th>LOC</th><th>Harness</th><th>Score</th><th>Actions/attempt</th>
+      <th>Read+search</th><th>Edit</th><th>Script</th><th>Test</th>
+      <th>Input tok</th><th>Output tok</th><th>Action mix</th>
+    </tr></thead>
+    <tbody><tr><td>100</td><td>minimal-agent</td><td class="num strong">13.3%</td><td class="num">40.5</td><td class="num">26.3</td><td class="num">3.7</td><td class="num">8.9</td><td class="num">0.00</td><td class="num">1844</td><td class="num">670</td><td><svg class="stack" viewBox="0 0 230 14" role="img" aria-label="action category mix"><rect x="0.00" y="0" width="65.81" height="14" fill="#4c78a8"><title>Read: 28.6%</title></rect><rect x="65.81" y="0" width="83.80" height="14" fill="#f58518"><title>Search: 36.4%</title></rect><rect x="149.61" y="0" width="50.48" height="14" fill="#54a24b"><title>Script: 21.9%</title></rect><rect x="200.09" y="0" width="21.20" height="14" fill="#e45756"><title>Edit: 9.2%</title></rect><rect x="221.29" y="0" width="6.31" height="14" fill="#ff9da6"><title>Nav: 2.7%</title></rect><rect x="227.60" y="0" width="2.27" height="14" fill="#8f8f8f"><title>Other: 1.0%</title></rect></svg></td></tr><tr><td>149</td><td>msa-fully-compressed</td><td class="num strong">13.3%</td><td class="num">10.3</td><td class="num">4.4</td><td class="num">3.3</td><td class="num">2.1</td><td class="num">0.02</td><td class="num">4059</td><td class="num">538</td><td><svg class="stack" viewBox="0 0 230 14" role="img" aria-label="action category mix"><rect x="0.00" y="0" width="52.66" height="14" fill="#4c78a8"><title>Read: 22.9%</title></rect><rect x="52.66" y="0" width="45.21" height="14" fill="#f58518"><title>Search: 19.7%</title></rect><rect x="97.86" y="0" width="46.70" height="14" fill="#54a24b"><title>Script: 20.3%</title></rect><rect x="144.56" y="0" width="73.77" height="14" fill="#e45756"><title>Edit: 32.1%</title></rect><rect x="218.33" y="0" width="2.24" height="14" fill="#b279a2"><title>Deps: 1.0%</title></rect><rect x="220.56" y="0" width="2.73" height="14" fill="#ff9da6"><title>Nav: 1.2%</title></rect><rect x="223.29" y="0" width="6.21" height="14" fill="#8f8f8f"><title>Other: 2.7%</title></rect></svg></td></tr><tr><td>398</td><td>codex-400</td><td class="num strong">16.7%</td><td class="num">19.9</td><td class="num">8.7</td><td class="num">5.8</td><td class="num">3.5</td><td class="num">0.01</td><td class="num">8944</td><td class="num">556</td><td><svg class="stack" viewBox="0 0 230 14" role="img" aria-label="action category mix"><rect x="0.00" y="0" width="49.23" height="14" fill="#4c78a8"><title>Read: 21.4%</title></rect><rect x="49.23" y="0" width="50.64" height="14" fill="#f58518"><title>Search: 22.0%</title></rect><rect x="99.87" y="0" width="39.87" height="14" fill="#54a24b"><title>Script: 17.3%</title></rect><rect x="139.74" y="0" width="66.54" height="14" fill="#e45756"><title>Edit: 28.9%</title></rect><rect x="206.28" y="0" width="4.36" height="14" fill="#b279a2"><title>Deps: 1.9%</title></rect><rect x="210.64" y="0" width="0.64" height="14" fill="#9d755d"><title>Git: 0.3%</title></rect><rect x="211.28" y="0" width="2.31" height="14" fill="#ff9da6"><title>Nav: 1.0%</title></rect><rect x="213.59" y="0" width="16.28" height="14" fill="#8f8f8f"><title>Other: 7.1%</title></rect></svg></td></tr><tr><td>478</td><td>mini-swe-agent</td><td class="num strong">16.7%</td><td class="num">8.8</td><td class="num">3.7</td><td class="num">2.4</td><td class="num">1.8</td><td class="num">0.06</td><td class="num">8123</td><td class="num">130</td><td><svg class="stack" viewBox="0 0 230 14" role="img" aria-label="action category mix"><rect x="0.00" y="0" width="55.48" height="14" fill="#4c78a8"><title>Read: 24.1%</title></rect><rect x="55.48" y="0" width="40.45" height="14" fill="#f58518"><title>Search: 17.6%</title></rect><rect x="95.93" y="0" width="45.94" height="14" fill="#54a24b"><title>Script: 20.0%</title></rect><rect x="141.87" y="0" width="61.26" height="14" fill="#e45756"><title>Edit: 26.6%</title></rect><rect x="203.13" y="0" width="1.44" height="14" fill="#72b7b2"><title>Test: 0.6%</title></rect><rect x="204.57" y="0" width="4.91" height="14" fill="#b279a2"><title>Deps: 2.1%</title></rect><rect x="209.48" y="0" width="18.49" height="14" fill="#ff9da6"><title>Nav: 8.0%</title></rect><rect x="227.98" y="0" width="1.73" height="14" fill="#8f8f8f"><title>Other: 0.8%</title></rect></svg></td></tr><tr><td>634</td><td>terminus-2-compressed</td><td class="num strong">12.2%</td><td class="num">35.8</td><td class="num">0.0</td><td class="num">0.0</td><td class="num">0.0</td><td class="num">0.00</td><td class="num">55686</td><td class="num">1316</td><td><svg class="stack" viewBox="0 0 230 14" role="img" aria-label="action category mix"><rect x="0.00" y="0" width="230.00" height="14" fill="#8f8f8f"><title>Other: 100.0%</title></rect></svg></td></tr><tr><td>700</td><td>codex-700</td><td class="num strong">28.9%</td><td class="num">15.9</td><td class="num">6.5</td><td class="num">3.1</td><td class="num">2.6</td><td class="num">0.26</td><td class="num">12085</td><td class="num">598</td><td><svg class="stack" viewBox="0 0 230 14" role="img" aria-label="action category mix"><rect x="0.00" y="0" width="45.87" height="14" fill="#4c78a8"><title>Read: 19.9%</title></rect><rect x="45.87" y="0" width="48.12" height="14" fill="#f58518"><title>Search: 20.9%</title></rect><rect x="93.99" y="0" width="37.85" height="14" fill="#54a24b"><title>Script: 16.5%</title></rect><rect x="131.84" y="0" width="45.23" height="14" fill="#e45756"><title>Edit: 19.7%</title></rect><rect x="177.07" y="0" width="3.69" height="14" fill="#72b7b2"><title>Test: 1.6%</title></rect><rect x="180.76" y="0" width="2.89" height="14" fill="#b279a2"><title>Deps: 1.3%</title></rect><rect x="183.65" y="0" width="16.36" height="14" fill="#9d755d"><title>Git: 7.1%</title></rect><rect x="200.01" y="0" width="4.49" height="14" fill="#ff9da6"><title>Nav: 2.0%</title></rect><rect x="204.50" y="0" width="25.50" height="14" fill="#8f8f8f"><title>Other: 11.1%</title></rect></svg></td></tr><tr><td>1000</td><td>codex-1000</td><td class="num strong">25.6%</td><td class="num">16.1</td><td class="num">6.4</td><td class="num">4.0</td><td class="num">2.9</td><td class="num">0.28</td><td class="num">18144</td><td class="num">440</td><td><svg class="stack" viewBox="0 0 230 14" role="img" aria-label="action category mix"><rect x="0.00" y="0" width="45.78" height="14" fill="#4c78a8"><title>Read: 19.9%</title></rect><rect x="45.78" y="0" width="45.46" height="14" fill="#f58518"><title>Search: 19.8%</title></rect><rect x="91.24" y="0" width="42.12" height="14" fill="#54a24b"><title>Script: 18.3%</title></rect><rect x="133.36" y="0" width="56.59" height="14" fill="#e45756"><title>Edit: 24.6%</title></rect><rect x="189.94" y="0" width="3.97" height="14" fill="#72b7b2"><title>Test: 1.7%</title></rect><rect x="193.92" y="0" width="4.61" height="14" fill="#b279a2"><title>Deps: 2.0%</title></rect><rect x="198.53" y="0" width="3.66" height="14" fill="#9d755d"><title>Git: 1.6%</title></rect><rect x="202.18" y="0" width="4.45" height="14" fill="#ff9da6"><title>Nav: 1.9%</title></rect><rect x="206.63" y="0" width="23.37" height="14" fill="#8f8f8f"><title>Other: 10.2%</title></rect></svg></td></tr><tr><td>1300</td><td>codex-1300</td><td class="num strong">14.4%</td><td class="num">13.9</td><td class="num">5.9</td><td class="num">2.9</td><td class="num">2.5</td><td class="num">0.08</td><td class="num">23442</td><td class="num">408</td><td><svg class="stack" viewBox="0 0 230 14" role="img" aria-label="action category mix"><rect x="0.00" y="0" width="46.59" height="14" fill="#4c78a8"><title>Read: 20.3%</title></rect><rect x="46.59" y="0" width="50.81" height="14" fill="#f58518"><title>Search: 22.1%</title></rect><rect x="97.39" y="0" width="41.08" height="14" fill="#54a24b"><title>Script: 17.9%</title></rect><rect x="138.48" y="0" width="48.42" height="14" fill="#e45756"><title>Edit: 21.1%</title></rect><rect x="186.90" y="0" width="1.28" height="14" fill="#72b7b2"><title>Test: 0.6%</title></rect><rect x="188.18" y="0" width="2.75" height="14" fill="#b279a2"><title>Deps: 1.2%</title></rect><rect x="190.93" y="0" width="5.32" height="14" fill="#9d755d"><title>Git: 2.3%</title></rect><rect x="196.25" y="0" width="4.04" height="14" fill="#ff9da6"><title>Nav: 1.8%</title></rect><rect x="200.29" y="0" width="28.98" height="14" fill="#8f8f8f"><title>Other: 12.6%</title></rect><rect x="229.27" y="0" width="0.73" height="14" fill="#000000"><title>Abort: 0.3%</title></rect></svg></td></tr><tr><td>1660</td><td>codex-compressed</td><td class="num strong">24.4%</td><td class="num">17.0</td><td class="num">7.0</td><td class="num">2.0</td><td class="num">2.6</td><td class="num">0.02</td><td class="num">12011</td><td class="num">448</td><td><svg class="stack" viewBox="0 0 230 14" role="img" aria-label="action category mix"><rect x="0.00" y="0" width="43.17" height="14" fill="#4c78a8"><title>Read: 18.8%</title></rect><rect x="43.17" y="0" width="50.99" height="14" fill="#f58518"><title>Search: 22.2%</title></rect><rect x="94.17" y="0" width="34.60" height="14" fill="#54a24b"><title>Script: 15.0%</title></rect><rect x="128.76" y="0" width="27.53" height="14" fill="#e45756"><title>Edit: 12.0%</title></rect><rect x="156.29" y="0" width="3.31" height="14" fill="#b279a2"><title>Deps: 1.4%</title></rect><rect x="159.60" y="0" width="2.56" height="14" fill="#9d755d"><title>Git: 1.1%</title></rect><rect x="162.16" y="0" width="2.41" height="14" fill="#ff9da6"><title>Nav: 1.0%</title></rect><rect x="164.57" y="0" width="64.83" height="14" fill="#8f8f8f"><title>Other: 28.2%</title></rect></svg></td></tr><tr><td>2210</td><td>codex-full</td><td class="num strong">21.1%</td><td class="num">15.7</td><td class="num">6.4</td><td class="num">2.3</td><td class="num">1.8</td><td class="num">0.00</td><td class="num">11699</td><td class="num">330</td><td><svg class="stack" viewBox="0 0 230 14" role="img" aria-label="action category mix"><rect x="0.00" y="0" width="45.67" height="14" fill="#4c78a8"><title>Read: 19.9%</title></rect><rect x="45.67" y="0" width="48.11" height="14" fill="#f58518"><title>Search: 20.9%</title></rect><rect x="93.79" y="0" width="26.98" height="14" fill="#54a24b"><title>Script: 11.7%</title></rect><rect x="120.77" y="0" width="33.16" height="14" fill="#e45756"><title>Edit: 14.4%</title></rect><rect x="153.93" y="0" width="2.60" height="14" fill="#b279a2"><title>Deps: 1.1%</title></rect><rect x="156.53" y="0" width="3.58" height="14" fill="#9d755d"><title>Git: 1.6%</title></rect><rect x="160.11" y="0" width="4.88" height="14" fill="#ff9da6"><title>Nav: 2.1%</title></rect><rect x="164.98" y="0" width="64.69" height="14" fill="#8f8f8f"><title>Other: 28.1%</title></rect></svg></td></tr></tbody></table></div>
+
+  <h2>GPT-5.4 Low Comparison</h2>
+  <p>The larger model extracts value from both mini-SWE and Codex-style harnesses
+  more consistently. It reaches 61.1% on
+  codex-full, and the whole Codex family is relatively flat
+  near the top.</p>
+  <div class="legend"><span><i style="background:#4c78a8"></i>Read</span><span><i style="background:#f58518"></i>Search</span><span><i style="background:#54a24b"></i>Script</span><span><i style="background:#e45756"></i>Edit</span><span><i style="background:#72b7b2"></i>Test</span><span><i style="background:#b279a2"></i>Deps</span><span><i style="background:#9d755d"></i>Git</span><span><i style="background:#ff9da6"></i>Nav</span><span><i style="background:#8f8f8f"></i>Other</span><span><i style="background:#000000"></i>Abort</span></div>
+  <div class="figure"><table class="data compact">
+    <thead><tr>
+      <th>LOC</th><th>Harness</th><th>Score</th><th>Actions/attempt</th>
+      <th>Read+search</th><th>Edit</th><th>Script</th><th>Test</th>
+      <th>Input tok</th><th>Output tok</th><th>Action mix</th>
+    </tr></thead>
+    <tbody><tr><td>100</td><td>minimal-agent</td><td class="num strong">41.1%</td><td class="num">42.2</td><td class="num">20.4</td><td class="num">7.2</td><td class="num">12.6</td><td class="num">0.26</td><td class="num">2726</td><td class="num">378</td><td><svg class="stack" viewBox="0 0 230 14" role="img" aria-label="action category mix"><rect x="0.00" y="0" width="88.06" height="14" fill="#4c78a8"><title>Read: 38.3%</title></rect><rect x="88.06" y="0" width="23.27" height="14" fill="#f58518"><title>Search: 10.1%</title></rect><rect x="111.33" y="0" width="68.67" height="14" fill="#54a24b"><title>Script: 29.9%</title></rect><rect x="180.00" y="0" width="39.03" height="14" fill="#e45756"><title>Edit: 17.0%</title></rect><rect x="219.03" y="0" width="1.39" height="14" fill="#72b7b2"><title>Test: 0.6%</title></rect><rect x="220.42" y="0" width="1.82" height="14" fill="#b279a2"><title>Deps: 0.8%</title></rect><rect x="222.24" y="0" width="6.06" height="14" fill="#ff9da6"><title>Nav: 2.6%</title></rect><rect x="228.30" y="0" width="1.70" height="14" fill="#8f8f8f"><title>Other: 0.7%</title></rect></svg></td></tr><tr><td>149</td><td>msa-fully-compressed</td><td class="num strong">46.7%</td><td class="num">7.4</td><td class="num">2.1</td><td class="num">3.4</td><td class="num">1.6</td><td class="num">0.10</td><td class="num">5639</td><td class="num">113</td><td><svg class="stack" viewBox="0 0 230 14" role="img" aria-label="action category mix"><rect x="0.00" y="0" width="42.91" height="14" fill="#4c78a8"><title>Read: 18.7%</title></rect><rect x="42.91" y="0" width="22.31" height="14" fill="#f58518"><title>Search: 9.7%</title></rect><rect x="65.22" y="0" width="50.12" height="14" fill="#54a24b"><title>Script: 21.8%</title></rect><rect x="115.34" y="0" width="104.36" height="14" fill="#e45756"><title>Edit: 45.4%</title></rect><rect x="219.70" y="0" width="3.09" height="14" fill="#72b7b2"><title>Test: 1.3%</title></rect><rect x="222.79" y="0" width="5.84" height="14" fill="#b279a2"><title>Deps: 2.5%</title></rect><rect x="228.63" y="0" width="1.03" height="14" fill="#8f8f8f"><title>Other: 0.4%</title></rect></svg></td></tr><tr><td>398</td><td>codex-400</td><td class="num strong">48.9%</td><td class="num">15.6</td><td class="num">6.7</td><td class="num">4.6</td><td class="num">2.4</td><td class="num">0.31</td><td class="num">10591</td><td class="num">185</td><td><svg class="stack" viewBox="0 0 230 14" role="img" aria-label="action category mix"><rect x="0.00" y="0" width="51.15" height="14" fill="#4c78a8"><title>Read: 22.2%</title></rect><rect x="51.15" y="0" width="47.54" height="14" fill="#f58518"><title>Search: 20.7%</title></rect><rect x="98.69" y="0" width="35.25" height="14" fill="#54a24b"><title>Script: 15.3%</title></rect><rect x="133.93" y="0" width="67.38" height="14" fill="#e45756"><title>Edit: 29.3%</title></rect><rect x="201.31" y="0" width="4.59" height="14" fill="#72b7b2"><title>Test: 2.0%</title></rect><rect x="205.90" y="0" width="6.72" height="14" fill="#b279a2"><title>Deps: 2.9%</title></rect><rect x="212.62" y="0" width="6.07" height="14" fill="#ff9da6"><title>Nav: 2.6%</title></rect><rect x="218.69" y="0" width="10.98" height="14" fill="#8f8f8f"><title>Other: 4.8%</title></rect></svg></td></tr><tr><td>478</td><td>mini-swe-agent</td><td class="num strong">56.7%</td><td class="num">9.7</td><td class="num">4.4</td><td class="num">2.6</td><td class="num">1.5</td><td class="num">0.22</td><td class="num">9519</td><td class="num">159</td><td><svg class="stack" viewBox="0 0 230 14" role="img" aria-label="action category mix"><rect x="0.00" y="0" width="63.95" height="14" fill="#4c78a8"><title>Read: 27.8%</title></rect><rect x="63.95" y="0" width="40.79" height="14" fill="#f58518"><title>Search: 17.7%</title></rect><rect x="104.74" y="0" width="35.79" height="14" fill="#54a24b"><title>Script: 15.6%</title></rect><rect x="140.53" y="0" width="60.79" height="14" fill="#e45756"><title>Edit: 26.4%</title></rect><rect x="201.32" y="0" width="5.26" height="14" fill="#72b7b2"><title>Test: 2.3%</title></rect><rect x="206.58" y="0" width="6.32" height="14" fill="#b279a2"><title>Deps: 2.7%</title></rect><rect x="212.89" y="0" width="8.68" height="14" fill="#ff9da6"><title>Nav: 3.8%</title></rect><rect x="221.58" y="0" width="8.42" height="14" fill="#8f8f8f"><title>Other: 3.7%</title></rect></svg></td></tr><tr><td>634</td><td>terminus-2-compressed</td><td class="num strong">46.7%</td><td class="num">18.6</td><td class="num">0.0</td><td class="num">0.0</td><td class="num">0.0</td><td class="num">0.00</td><td class="num">25498</td><td class="num">336</td><td><svg class="stack" viewBox="0 0 230 14" role="img" aria-label="action category mix"><rect x="0.00" y="0" width="230.00" height="14" fill="#8f8f8f"><title>Other: 100.0%</title></rect></svg></td></tr><tr><td>700</td><td>codex-700</td><td class="num strong">57.8%</td><td class="num">20.9</td><td class="num">6.6</td><td class="num">3.5</td><td class="num">3.0</td><td class="num">0.64</td><td class="num">13265</td><td class="num">199</td><td><svg class="stack" viewBox="0 0 230 14" role="img" aria-label="action category mix"><rect x="0.00" y="0" width="42.04" height="14" fill="#4c78a8"><title>Read: 18.3%</title></rect><rect x="42.04" y="0" width="30.19" height="14" fill="#f58518"><title>Search: 13.1%</title></rect><rect x="72.23" y="0" width="32.51" height="14" fill="#54a24b"><title>Script: 14.1%</title></rect><rect x="104.73" y="0" width="38.01" height="14" fill="#e45756"><title>Edit: 16.5%</title></rect><rect x="142.74" y="0" width="7.09" height="14" fill="#72b7b2"><title>Test: 3.1%</title></rect><rect x="149.83" y="0" width="6.72" height="14" fill="#b279a2"><title>Deps: 2.9%</title></rect><rect x="156.55" y="0" width="27.13" height="14" fill="#9d755d"><title>Git: 11.8%</title></rect><rect x="183.68" y="0" width="4.16" height="14" fill="#ff9da6"><title>Nav: 1.8%</title></rect><rect x="187.84" y="0" width="41.92" height="14" fill="#8f8f8f"><title>Other: 18.2%</title></rect></svg></td></tr><tr><td>1000</td><td>codex-1000</td><td class="num strong">58.9%</td><td class="num">21.7</td><td class="num">7.1</td><td class="num">4.5</td><td class="num">2.9</td><td class="num">0.54</td><td class="num">20063</td><td class="num">262</td><td><svg class="stack" viewBox="0 0 230 14" role="img" aria-label="action category mix"><rect x="0.00" y="0" width="44.54" height="14" fill="#4c78a8"><title>Read: 19.4%</title></rect><rect x="44.54" y="0" width="30.87" height="14" fill="#f58518"><title>Search: 13.4%</title></rect><rect x="75.41" y="0" width="30.75" height="14" fill="#54a24b"><title>Script: 13.4%</title></rect><rect x="106.16" y="0" width="47.60" height="14" fill="#e45756"><title>Edit: 20.7%</title></rect><rect x="153.77" y="0" width="5.77" height="14" fill="#72b7b2"><title>Test: 2.5%</title></rect><rect x="159.54" y="0" width="7.07" height="14" fill="#b279a2"><title>Deps: 3.1%</title></rect><rect x="166.61" y="0" width="6.01" height="14" fill="#9d755d"><title>Git: 2.6%</title></rect><rect x="172.62" y="0" width="4.60" height="14" fill="#ff9da6"><title>Nav: 2.0%</title></rect><rect x="177.21" y="0" width="52.43" height="14" fill="#8f8f8f"><title>Other: 22.8%</title></rect></svg></td></tr><tr><td>1300</td><td>codex-1300</td><td class="num strong">57.8%</td><td class="num">18.7</td><td class="num">5.4</td><td class="num">4.0</td><td class="num">2.5</td><td class="num">0.16</td><td class="num">25589</td><td class="num">191</td><td><svg class="stack" viewBox="0 0 230 14" role="img" aria-label="action category mix"><rect x="0.00" y="0" width="38.22" height="14" fill="#4c78a8"><title>Read: 16.6%</title></rect><rect x="38.22" y="0" width="28.26" height="14" fill="#f58518"><title>Search: 12.3%</title></rect><rect x="66.47" y="0" width="31.12" height="14" fill="#54a24b"><title>Script: 13.5%</title></rect><rect x="97.60" y="0" width="49.28" height="14" fill="#e45756"><title>Edit: 21.4%</title></rect><rect x="146.87" y="0" width="1.91" height="14" fill="#72b7b2"><title>Test: 0.8%</title></rect><rect x="148.78" y="0" width="8.87" height="14" fill="#b279a2"><title>Deps: 3.9%</title></rect><rect x="157.66" y="0" width="15.15" height="14" fill="#9d755d"><title>Git: 6.6%</title></rect><rect x="172.81" y="0" width="3.14" height="14" fill="#ff9da6"><title>Nav: 1.4%</title></rect><rect x="175.95" y="0" width="54.05" height="14" fill="#8f8f8f"><title>Other: 23.5%</title></rect></svg></td></tr><tr><td>1660</td><td>codex-compressed</td><td class="num strong">57.8%</td><td class="num">24.2</td><td class="num">6.5</td><td class="num">3.8</td><td class="num">2.4</td><td class="num">0.03</td><td class="num">14012</td><td class="num">198</td><td><svg class="stack" viewBox="0 0 230 14" role="img" aria-label="action category mix"><rect x="0.00" y="0" width="29.20" height="14" fill="#4c78a8"><title>Read: 12.7%</title></rect><rect x="29.20" y="0" width="32.48" height="14" fill="#f58518"><title>Search: 14.1%</title></rect><rect x="61.68" y="0" width="22.96" height="14" fill="#54a24b"><title>Script: 10.0%</title></rect><rect x="84.64" y="0" width="35.86" height="14" fill="#e45756"><title>Edit: 15.6%</title></rect><rect x="120.50" y="0" width="7.41" height="14" fill="#b279a2"><title>Deps: 3.2%</title></rect><rect x="127.91" y="0" width="8.68" height="14" fill="#9d755d"><title>Git: 3.8%</title></rect><rect x="136.58" y="0" width="2.33" height="14" fill="#ff9da6"><title>Nav: 1.0%</title></rect><rect x="138.91" y="0" width="90.67" height="14" fill="#8f8f8f"><title>Other: 39.4%</title></rect></svg></td></tr><tr><td>2210</td><td>codex-full</td><td class="num strong">61.1%</td><td class="num">20.9</td><td class="num">5.3</td><td class="num">3.3</td><td class="num">2.2</td><td class="num">0.14</td><td class="num">13143</td><td class="num">208</td><td><svg class="stack" viewBox="0 0 230 14" role="img" aria-label="action category mix"><rect x="0.00" y="0" width="26.38" height="14" fill="#4c78a8"><title>Read: 11.5%</title></rect><rect x="26.38" y="0" width="31.88" height="14" fill="#f58518"><title>Search: 13.9%</title></rect><rect x="58.26" y="0" width="24.18" height="14" fill="#54a24b"><title>Script: 10.5%</title></rect><rect x="82.45" y="0" width="35.79" height="14" fill="#e45756"><title>Edit: 15.6%</title></rect><rect x="118.24" y="0" width="1.59" height="14" fill="#72b7b2"><title>Test: 0.7%</title></rect><rect x="119.82" y="0" width="5.86" height="14" fill="#b279a2"><title>Deps: 2.5%</title></rect><rect x="125.69" y="0" width="9.28" height="14" fill="#9d755d"><title>Git: 4.0%</title></rect><rect x="134.97" y="0" width="4.15" height="14" fill="#ff9da6"><title>Nav: 1.8%</title></rect><rect x="139.12" y="0" width="90.88" height="14" fill="#8f8f8f"><title>Other: 39.5%</title></rect></svg></td></tr></tbody></table></div>
+
+  <h2>Success-Conditioned Behavior</h2>
+  <p>For gpt-5.4-mini low, successful Codex attempts generally perform more of
+  every useful action type than failed Codex attempts. The biggest distinction is
+  not raw tool volume alone; it is the complete loop: read/search enough context,
+  edit, execute, and sometimes run test-like checks.</p>
+  <div class="figure">
+    <table class="data compact">
+      <thead><tr>
+        <th>Harness</th><th>Score</th>
+        <th>Read+search<br>success</th><th>Read+search<br>failure</th>
+        <th>Edit<br>success</th><th>Edit<br>failure</th>
+        <th>Script<br>success</th><th>Script<br>failure</th>
+        <th>Test<br>success</th><th>Test<br>failure</th>
+        <th>Other<br>success</th><th>Other<br>failure</th>
+      </tr></thead>
+      <tbody><tr><td>minimal-agent</td><td class="num">100.0%</td><td class="num">42.1</td><td class="num">23.9</td><td class="num">1.9</td><td class="num">4.0</td><td class="num">13.9</td><td class="num">8.1</td><td class="num">0.00</td><td class="num">0.00</td><td class="num">1.0</td><td class="num">0.3</td></tr><tr><td>mini-swe-agent</td><td class="num">100.0%</td><td class="num">4.9</td><td class="num">3.5</td><td class="num">3.4</td><td class="num">2.1</td><td class="num">2.2</td><td class="num">1.7</td><td class="num">0.07</td><td class="num">0.05</td><td class="num">0.0</td><td class="num">0.1</td></tr><tr><td>codex-700</td><td class="num">100.0%</td><td class="num">9.3</td><td class="num">5.4</td><td class="num">5.6</td><td class="num">2.1</td><td class="num">4.1</td><td class="num">2.0</td><td class="num">0.88</td><td class="num">0.00</td><td class="num">2.6</td><td class="num">1.4</td></tr><tr><td>codex-1000</td><td class="num">100.0%</td><td class="num">9.2</td><td class="num">5.4</td><td class="num">5.3</td><td class="num">3.5</td><td class="num">3.5</td><td class="num">2.7</td><td class="num">0.96</td><td class="num">0.04</td><td class="num">3.0</td><td class="num">1.2</td></tr><tr><td>codex-compressed</td><td class="num">100.0%</td><td class="num">12.7</td><td class="num">5.1</td><td class="num">3.0</td><td class="num">1.7</td><td class="num">4.3</td><td class="num">2.0</td><td class="num">0.00</td><td class="num">0.03</td><td class="num">9.1</td><td class="num">3.4</td></tr><tr><td>codex-full</td><td class="num">100.0%</td><td class="num">8.9</td><td class="num">5.7</td><td class="num">3.9</td><td class="num">1.8</td><td class="num">1.9</td><td class="num">1.8</td><td class="num">0.00</td><td class="num">0.00</td><td class="num">7.9</td><td class="num">3.5</td></tr></tbody></table></div>
+
+  <h2>Task-Level Heatmap</h2>
+  <p>The lift is task-specific. Large-scale text editing and password recovery
+  benefit strongly from richer harness behavior. Bayes-net fitting is mixed, and
+  several hard tasks remain unsolved for every gpt-5.4-mini low harness.</p>
+  <div class="figure"><table class="data heatmap"><thead><tr><th>Task</th><th>minimal-agent</th><th>msa-fully-compressed</th><th>codex-400</th><th>mini-swe-agent</th><th>terminus-2-compressed</th><th>codex-700</th><th>codex-1000</th><th>codex-1300</th><th>codex-compressed</th><th>codex-full</th></tr></thead><tbody><tr><th>bn-fit-modify</th><td class="num heat" style="background: rgb(124,169,159); color: #111;">6/10</td><td class="num heat" style="background: rgb(226,233,225); color: #111;">1/10</td><td class="num heat" style="background: rgb(104,157,145); color: #fff;">7/10</td><td class="num heat" style="background: rgb(185,207,199); color: #111;">3/10</td><td class="num heat" style="background: rgb(226,233,225); color: #111;">1/10</td><td class="num heat" style="background: rgb(165,195,185); color: #111;">4/10</td><td class="num heat" style="background: rgb(124,169,159); color: #111;">6/10</td><td class="num heat" style="background: rgb(206,220,212); color: #111;">2/10</td><td class="num heat" style="background: rgb(165,195,185); color: #111;">4/10</td><td class="num heat" style="background: rgb(206,220,212); color: #111;">2/10</td></tr><tr><th>circuit-fibsqrt</th><td class="num heat" style="background: rgb(247,246,239); color: #111;">0/10</td><td class="num heat" style="background: rgb(247,246,239); color: #111;">0/10</td><td class="num heat" style="background: rgb(247,246,239); color: #111;">0/10</td><td class="num heat" style="background: rgb(247,246,239); color: #111;">0/10</td><td class="num heat" style="background: rgb(247,246,239); color: #111;">0/10</td><td class="num heat" style="background: rgb(247,246,239); color: #111;">0/10</td><td class="num heat" style="background: rgb(247,246,239); color: #111;">0/10</td><td class="num heat" style="background: rgb(247,246,239); color: #111;">0/10</td><td class="num heat" style="background: rgb(247,246,239); color: #111;">0/10</td><td class="num heat" style="background: rgb(247,246,239); color: #111;">0/10</td></tr><tr><th>cobol-modernization</th><td class="num heat" style="background: rgb(185,207,199); color: #111;">3/10</td><td class="num heat" style="background: rgb(124,169,159); color: #111;">6/10</td><td class="num heat" style="background: rgb(165,195,185); color: #111;">4/10</td><td class="num heat" style="background: rgb(124,169,159); color: #111;">6/10</td><td class="num heat" style="background: rgb(165,195,185); color: #111;">4/10</td><td class="num heat" style="background: rgb(104,157,145); color: #fff;">7/10</td><td class="num heat" style="background: rgb(145,182,172); color: #111;">5/10</td><td class="num heat" style="background: rgb(185,207,199); color: #111;">3/10</td><td class="num heat" style="background: rgb(145,182,172); color: #111;">5/10</td><td class="num heat" style="background: rgb(104,157,145); color: #fff;">7/10</td></tr><tr><th>large-scale-text-editing</th><td class="num heat" style="background: rgb(247,246,239); color: #111;">0/10</td><td class="num heat" style="background: rgb(247,246,239); color: #111;">0/10</td><td class="num heat" style="background: rgb(185,207,199); color: #111;">3/10</td><td class="num heat" style="background: rgb(206,220,212); color: #111;">2/10</td><td class="num heat" style="background: rgb(226,233,225); color: #111;">1/10</td><td class="num heat" style="background: rgb(124,169,159); color: #111;">6/10</td><td class="num heat" style="background: rgb(145,182,172); color: #111;">5/10</td><td class="num heat" style="background: rgb(145,182,172); color: #111;">5/10</td><td class="num heat" style="background: rgb(124,169,159); color: #111;">6/10</td><td class="num heat" style="background: rgb(124,169,159); color: #111;">6/10</td></tr><tr><th>model-extraction-relu-logits</th><td class="num heat" style="background: rgb(247,246,239); color: #111;">0/10</td><td class="num heat" style="background: rgb(247,246,239); color: #111;">0/10</td><td class="num heat" style="background: rgb(247,246,239); color: #111;">0/10</td><td class="num heat" style="background: rgb(247,246,239); color: #111;">0/10</td><td class="num heat" style="background: rgb(247,246,239); color: #111;">0/10</td><td class="num heat" style="background: rgb(247,246,239); color: #111;">0/10</td><td class="num heat" style="background: rgb(247,246,239); color: #111;">0/10</td><td class="num heat" style="background: rgb(247,246,239); color: #111;">0/10</td><td class="num heat" style="background: rgb(247,246,239); color: #111;">0/10</td><td class="num heat" style="background: rgb(247,246,239); color: #111;">0/10</td></tr><tr><th>mteb-retrieve</th><td class="num heat" style="background: rgb(247,246,239); color: #111;">0/10</td><td class="num heat" style="background: rgb(247,246,239); color: #111;">0/10</td><td class="num heat" style="background: rgb(247,246,239); color: #111;">0/10</td><td class="num heat" style="background: rgb(247,246,239); color: #111;">0/10</td><td class="num heat" style="background: rgb(247,246,239); color: #111;">0/10</td><td class="num heat" style="background: rgb(226,233,225); color: #111;">1/10</td><td class="num heat" style="background: rgb(247,246,239); color: #111;">0/10</td><td class="num heat" style="background: rgb(226,233,225); color: #111;">1/10</td><td class="num heat" style="background: rgb(247,246,239); color: #111;">0/10</td><td class="num heat" style="background: rgb(247,246,239); color: #111;">0/10</td></tr><tr><th>password-recovery</th><td class="num heat" style="background: rgb(185,207,199); color: #111;">3/10</td><td class="num heat" style="background: rgb(145,182,172); color: #111;">5/10</td><td class="num heat" style="background: rgb(226,233,225); color: #111;">1/10</td><td class="num heat" style="background: rgb(185,207,199); color: #111;">3/10</td><td class="num heat" style="background: rgb(145,182,172); color: #111;">5/10</td><td class="num heat" style="background: rgb(124,169,159); color: #111;">6/10</td><td class="num heat" style="background: rgb(124,169,159); color: #111;">6/10</td><td class="num heat" style="background: rgb(206,220,212); color: #111;">2/10</td><td class="num heat" style="background: rgb(104,157,145); color: #fff;">7/10</td><td class="num heat" style="background: rgb(165,195,185); color: #111;">4/10</td></tr><tr><th>polyglot-c-py</th><td class="num heat" style="background: rgb(247,246,239); color: #111;">0/10</td><td class="num heat" style="background: rgb(247,246,239); color: #111;">0/10</td><td class="num heat" style="background: rgb(247,246,239); color: #111;">0/10</td><td class="num heat" style="background: rgb(247,246,239); color: #111;">0/10</td><td class="num heat" style="background: rgb(247,246,239); color: #111;">0/10</td><td class="num heat" style="background: rgb(247,246,239); color: #111;">0/10</td><td class="num heat" style="background: rgb(247,246,239); color: #111;">0/10</td><td class="num heat" style="background: rgb(247,246,239); color: #111;">0/10</td><td class="num heat" style="background: rgb(247,246,239); color: #111;">0/10</td><td class="num heat" style="background: rgb(247,246,239); color: #111;">0/10</td></tr><tr><th>sparql-university</th><td class="num heat" style="background: rgb(247,246,239); color: #111;">0/10</td><td class="num heat" style="background: rgb(247,246,239); color: #111;">0/10</td><td class="num heat" style="background: rgb(247,246,239); color: #111;">0/10</td><td class="num heat" style="background: rgb(226,233,225); color: #111;">1/10</td><td class="num heat" style="background: rgb(247,246,239); color: #111;">0/10</td><td class="num heat" style="background: rgb(206,220,212); color: #111;">2/10</td><td class="num heat" style="background: rgb(226,233,225); color: #111;">1/10</td><td class="num heat" style="background: rgb(247,246,239); color: #111;">0/10</td><td class="num heat" style="background: rgb(247,246,239); color: #111;">0/10</td><td class="num heat" style="background: rgb(247,246,239); color: #111;">0/10</td></tr></tbody></table></div>
+
+  <h2>Qualitative Trace Reads</h2>
+  <p>These paired cases are not meant as a full causal proof, but they show the
+  repeated pattern behind the aggregate: richer harnesses help when they cause a
+  small model to maintain a usable inspect-edit-verify loop, and hurt when the
+  extra affordances become exploratory overhead.</p>
+  
+            <section class="case-card">
+              <h3>Large scale text editing, attempt 1</h3>
+              <p>The weak harnesses burn turns on repeated patch/script attempts and submit without a convincing full-file comparison. Codex-700 and the larger Codex harnesses do a more recognizable loop: inspect names, patch, run the transformation, and compare output.</p>
+              <div class="case-grid">
+                <div class="case-run failure">
+                  <div class="case-head">
+                    <span>minimal-agent</span>
+                    <b>failure</b>
+                  </div>
+                  <div class="micro">Read 1, Script 24, Edit 21</div>
+                  <table class="trace"><tbody><tr><td>1</td><td>Script</td><td><code>python3 - &lt;&lt;&#x27;PY&#x27;\nimport csv\nfrom itertools import islice\nfor path in [&#x27;/app/input.csv&#x27;,&#x27;/app/expected.csv&#x27;]:\n print(&#x27;FILE&#x27;,path)\n with open(path,&#x27;r&#x27;,...</code></td></tr><tr><td>2</td><td>Script</td><td><code>python3 - &lt;&lt;&#x27;PY&#x27;\nimport os\nfor path in [&#x27;/app/input.csv&#x27;,&#x27;/app/expected.csv&#x27;]:\n print(path, os.path.getsize(path))\nPY</code></td></tr><tr><td>3</td><td>Edit</td><td><code>cat &gt; /app/apply_macros.vim &lt;&lt;&#x27;VIM&#x27;\ncall setreg(&#x27;a&#x27;, &quot;:s/^\\s*\\([^,]*\\),\\s*\\([^,]*\\),\\s*\\([^,]*\\)\\s*$/\\U\\3;\\2;\\1;OK/e\&lt;CR&gt;&quot;)\ncall setreg(&#x27;b...</code></td></tr><tr><td>4</td><td>Edit</td><td><code>cat &gt; /app/apply_macros.vim &lt;&lt;&#x27;VIM&#x27;\ncall setreg(&#x27;a&#x27;, &quot;:s/^\\s*\\([^,]*\\),\\s*\\([^,]*\\),\\s*\\([^,]*\\)\\s*$/\\U\\3\\E;\\U\\2\\E;\\U\\1\\E;OK/e\r&quot;)\nca...</code></td></tr><tr><td colspan="3" class="muted">... 40 intermediate actions omitted</td></tr><tr><td>45</td><td>Edit</td><td><code>cat &gt; /app/apply_macros.vim &lt;&lt;&#x27;EOF&#x27;\ncall setreg(&#x27;a&#x27;, &quot;0&quot;)\ncall setreg(&#x27;b&#x27;, &quot;^&quot;)\ncall setreg(&#x27;c&#x27;, &quot;$&quot;)\n:%normal! @a\n:%normal! @b\n:%normal! @c\n:wq\nE...</code></td></tr><tr><td>46</td><td>Script</td><td><code>python3 - &lt;&lt;&#x27;PY&#x27;\nfrom pathlib import Path\nfor p in [&#x27;/app/input.csv&#x27;,&#x27;/app/expected.csv&#x27;]:\n b=Path(p).read_bytes()\n print(p, hash(b), b==Path(&#x27;/app/ex...</code></td></tr></tbody></table>
+                </div>
+                
+                <div class="case-run failure">
+                  <div class="case-head">
+                    <span>mini-swe-agent</span>
+                    <b>failure</b>
+                  </div>
+                  <div class="micro">Read 2, Script 2, Edit 7</div>
+                  <table class="trace"><tbody><tr><td>1</td><td>Read</td><td><code>ls -l /app &amp;&amp; echo &#x27;--- input head ---&#x27; &amp;&amp; head -n 20 /app/input.csv &amp;&amp; echo &#x27;--- expected head ---&#x27; &amp;&amp; head -n 20 /app/expected.csv</code></td></tr><tr><td>2</td><td>Script</td><td><code>python3 - &lt;&lt;&#x27;PY&#x27;\nimport csv\nfrom pathlib import Path\nfor name in [&#x27;/app/input.csv&#x27;,&#x27;/app/expected.csv&#x27;]:\n p=Path(name)\n with p.open(newline=&#x27;&#x27;) as f:...</code></td></tr><tr><td>3</td><td>Edit</td><td><code>cat &gt; /app/apply_macros.vim &lt;&lt;&#x27;EOF&#x27;\ncall setreg(&#x27;a&#x27;, &#x27;:s/^\s*\(.*\S\)\s*,\s*\(.*\S\)\s*,\s*\(.*\S\)\s*$/\U\3;\U\2;\U\1;OK/&lt;CR&gt;&#x27;)\ncall setreg(&#x27;b&#x27;, &#x27;0&#x27;)\n...</code></td></tr><tr><td>4</td><td>Edit</td><td><code>cat &gt; /app/apply_macros.vim &lt;&lt;&#x27;EOF&#x27;\ncall setreg(&#x27;a&#x27;, &#x27;:s/^\s*\([^,]*\)\s*,\s*\([^,]*\)\s*,\s*\([^,]*\)\s*$/\U\3;\U\2;\U\1;OK/&lt;CR&gt;&#x27;)\ncall setreg(&#x27;b&#x27;, &#x27;0&#x27;...</code></td></tr><tr><td colspan="3" class="muted">... 5 intermediate actions omitted</td></tr><tr><td>10</td><td>Script</td><td><code>python3 - &lt;&lt;&#x27;PY&#x27;\nfrom pathlib import Path\ntext=Path(&#x27;/app/input.csv&#x27;).read_text().splitlines()\nprint(&#x27;lines&#x27;, len(text))\nprint(&#x27;sample 10-12&#x27;, text[9:...</code></td></tr><tr><td>11</td><td>Read</td><td><code>cat /app/apply_macros.vim &amp;&amp; echo &#x27;--- current input sample ---&#x27; &amp;&amp; head -n 3 /app/input.csv</code></td></tr></tbody></table>
+                </div>
+                
+                <div class="case-run success">
+                  <div class="case-head">
+                    <span>codex-700</span>
+                    <b>success</b>
+                  </div>
+                  <div class="micro">Read 3, Search 2, Script 2, Edit 15, Git 2, Nav 1, Other 2</div>
+                  <table class="trace"><tbody><tr><td>1</td><td>Search</td><td><code>pwd &amp;&amp; rg --files -g &#x27;AGENTS.md&#x27; -g &#x27;input.csv&#x27; -g &#x27;expected.csv&#x27; -g &#x27;apply_macros.vim&#x27;</code></td></tr><tr><td>2</td><td>Nav</td><td><code>ls -la /app</code></td></tr><tr><td>3</td><td>Read</td><td><code>head -n 5 /app/input.csv &amp;&amp; printf &#x27;\n---EXPECTED---\n&#x27; &amp;&amp; head -n 5 /app/expected.csv</code></td></tr><tr><td>4</td><td>Script</td><td><code>python3 - &lt;&lt;&#x27;PY&#x27;\nfrom pathlib import Path\nfor name in [&#x27;/app/input.csv&#x27;,&#x27;/app/expected.csv&#x27;]:\n data=Path(name).read_bytes().splitlines()\n print(name, ...</code></td></tr><tr><td colspan="3" class="muted">... 21 intermediate actions omitted</td></tr><tr><td>26</td><td>Search</td><td><code>ps -ef | grep &#x27;[v]im -Nu NONE -n -Es /app/input.csv -S /app/apply_macros.vim&#x27; || true</code></td></tr><tr><td>27</td><td>Edit</td><td><code>cp /app/input.csv /app/fulltest.csv &amp;&amp; timeout 300 vim -Nu NONE -n -Es /app/fulltest.csv -S /app/apply_macros.vim; echo EXIT:$?; cmp -s /app/fulltest.csv ...</code></td></tr></tbody></table>
+                </div>
+                
+                <div class="case-run success">
+                  <div class="case-head">
+                    <span>codex-compressed</span>
+                    <b>success</b>
+                  </div>
+                  <div class="micro">Read 1, Search 1, Edit 12, Other 18</div>
+                  <table class="trace"><tbody><tr><td>1</td><td>Search</td><td><code>rg --files /app | sed &#x27;s#^/app/##&#x27; | sort | head -50</code></td></tr><tr><td>2</td><td>Read</td><td><code>wc -l /app/input.csv /app/expected.csv &amp;&amp; printf &#x27;\n--- input head ---\n&#x27; &amp;&amp; head -5 /app/input.csv &amp;&amp; printf &#x27;\n--- expected head ---\n&#x27; &amp;&amp; head -5 /app/...</code></td></tr><tr><td>3</td><td>Edit</td><td><code>apply_patch &lt;&lt;&#x27;PATCH&#x27;\n*** Begin Patch\n*** Add File: /app/apply_macros.vim\n+call setreg(&#x27;a&#x27;, &quot;:%s/ //g\r&quot;)\n+call setreg(&#x27;b&#x27;, &quot;:%s/,/;/g\r&quot;)\n+call setr...</code></td></tr><tr><td>4</td><td>Edit</td><td><code>cp /app/input.csv /app/test.csv &amp;&amp; vim -Nu NONE -n -Es /app/test.csv -S /app/apply_macros.vim; status=$?; echo EXIT:$status; cmp -s /app/test.csv /app/exp...</code></td></tr><tr><td colspan="3" class="muted">... 26 intermediate actions omitted</td></tr><tr><td>31</td><td>Other</td><td><code>write_stdin(session_id=6, chars=0 chars)</code></td></tr><tr><td>32</td><td>Other</td><td><code>write_stdin(session_id=6, chars=0 chars)</code></td></tr></tbody></table>
+                </div>
+                
+                <div class="case-run success">
+                  <div class="case-head">
+                    <span>codex-full</span>
+                    <b>success</b>
+                  </div>
+                  <div class="micro">Read 1, Search 2, Script 2, Edit 8, Nav 1, Other 15, Abort 1</div>
+                  <table class="trace"><tbody><tr><td>1</td><td>Search</td><td><code>rg --files /app | sed &#x27;s#^/app/##&#x27; | sort | head -200</code></td></tr><tr><td>2</td><td>Nav</td><td><code>wc -l /app/input.csv /app/expected.csv &amp;&amp; ls -lh /app/input.csv /app/expected.csv</code></td></tr><tr><td>3</td><td>Read</td><td><code>head -5 /app/input.csv &amp;&amp; printf &#x27;\n---\n&#x27; &amp;&amp; head -5 /app/expected.csv</code></td></tr><tr><td>4</td><td>Script</td><td><code>python3 - &lt;&lt;&#x27;PY&#x27;\nimport csv\nfor path in [&#x27;/app/input.csv&#x27;,&#x27;/app/expected.csv&#x27;]:\n with open(path,newline=&#x27;&#x27;) as f:\n r=csv.reader(f)\n rows=[next(r) for...</code></td></tr><tr><td colspan="3" class="muted">... 24 intermediate actions omitted</td></tr><tr><td>29</td><td>Edit</td><td><code>cp /app/input.csv /app/input.work.csv &amp;&amp; vim -Nu NONE -n -Es /app/input.work.csv -S /app/apply_macros.vim; echo EXIT:$?; cmp -s /app/input.work.csv /app/e...</code></td></tr><tr><td>30</td><td>Other</td><td><code>write_stdin(session_id=3, chars=0 chars)</code></td></tr></tbody></table>
+                </div>
+                </div>
+            </section>
+            
+            <section class="case-card">
+              <h3>Password recovery, attempt 3</h3>
+              <p>The mini-SWE variants find plausible prefixes and candidate strings, then stop short. Codex-700 and Codex-compressed keep doing offset and byte-level searches until the full token is recovered.</p>
+              <div class="case-grid">
+                <div class="case-run failure">
+                  <div class="case-head">
+                    <span>msa-fully-compressed</span>
+                    <b>failure</b>
+                  </div>
+                  <div class="micro">Read 5, Search 13, Script 2, Edit 2, Other 2</div>
+                  <table class="trace"><tbody><tr><td>1</td><td>Search</td><td><code>find /app -maxdepth 4 -type f | sed &#x27;s#^#/##&#x27; | head -200</code></td></tr><tr><td>2</td><td>Search</td><td><code>strings -a /app/varsea/*/*.bin /app/varsea/*/*.log 2&gt;/dev/null | grep -oE &#x27;PASSWORD=[A-Z0-9]+&#x27; | sort -u</code></td></tr><tr><td>3</td><td>Search</td><td><code>grep -RhoE &#x27;PASSWORD=[A-Z0-9]+&#x27; /app/varsea 2&gt;/dev/null | sort -u</code></td></tr><tr><td>4</td><td>Search</td><td><code>find /app/varsea -type f | while read f; do echo &#x27;== &#x27;&quot;$f&quot;&#x27; ==&#x27;; strings -a &quot;$f&quot; | head -200; done | sed -n &#x27;1,400p&#x27;</code></td></tr><tr><td colspan="3" class="muted">... 18 intermediate actions omitted</td></tr><tr><td>23</td><td>Read</td><td><code>unzip -p /app/varsea/disks/sub1/subA/subAlpha/ae3f4c.dat app/launchcode.txt 2&gt;/dev/null | cat -v</code></td></tr><tr><td>24</td><td>Edit</td><td><code>printf &#x27;%s\n&#x27; &#x27;PASSWORD=8XDP5Q2RT9Z&#x27; &gt; /app/recovered_passwords.txt &amp;&amp; cat /app/recovered_passwords.txt</code></td></tr></tbody></table>
+                </div>
+                
+                <div class="case-run failure">
+                  <div class="case-head">
+                    <span>mini-swe-agent</span>
+                    <b>failure</b>
+                  </div>
+                  <div class="micro">Read 5, Search 6, Script 3, Edit 1, Nav 4, Other 1</div>
+                  <table class="trace"><tbody><tr><td>1</td><td>Search</td><td><code>cd /app &amp;&amp; find . -maxdepth 3 -type f | sed &#x27;s#^./##&#x27; | sort | head -200</code></td></tr><tr><td>2</td><td>Read</td><td><code>cd /app &amp;&amp; for f in varsea/*/*.log; do echo &#x27;=== &#x27;&quot;$f&quot;; sed -n &#x27;1,120p&#x27; &quot;$f&quot;; done</code></td></tr><tr><td>3</td><td>Search</td><td><code>cd /app &amp;&amp; strings -a varsea/*/*.bin | grep -E &#x27;PASSWORD=|8XD|W54|[A-Z0-9]{23}&#x27; | head -200</code></td></tr><tr><td>4</td><td>Nav</td><td><code>cd /app &amp;&amp; ls -l varsea/*/*.bin &amp;&amp; echo &#x27;---&#x27; &amp;&amp; for f in varsea/*/*.bin; do echo &quot;== $f ==&quot;; xxd -l 128 &quot;$f&quot;; done</code></td></tr><tr><td colspan="3" class="muted">... 14 intermediate actions omitted</td></tr><tr><td>19</td><td>Read</td><td><code>fls -r /app/varsea/disks/sub1/subA/subAlpha/ae3f4c.dat | sed -n &#x27;1,200p&#x27;</code></td></tr><tr><td>20</td><td>Edit</td><td><code>cd /app &amp;&amp; cat &gt; recovered_passwords.txt &lt;&lt;&#x27;EOF&#x27;\n8XD17611081571874407W54\n8XD17611081572434303W54\n8XD17611081572873413W54\n8XD17611081573190175W54\n8XD1...</code></td></tr></tbody></table>
+                </div>
+                
+                <div class="case-run success">
+                  <div class="case-head">
+                    <span>codex-700</span>
+                    <b>success</b>
+                  </div>
+                  <div class="micro">Read 1, Search 15, Script 1, Edit 1, Git 2, Other 3</div>
+                  <table class="trace"><tbody><tr><td>1</td><td>Search</td><td><code>find . -name AGENTS.md -o -name .git -o -name &#x27;*.txt&#x27; | sed &#x27;s#^./##&#x27; | sort | head -200</code></td></tr><tr><td>2</td><td>Git</td><td><code>git status --short --branch &amp;&amp; echo &#x27;---&#x27; &amp;&amp; git rev-parse --is-inside-work-tree &amp;&amp; echo &#x27;---&#x27; &amp;&amp; ls -la</code></td></tr><tr><td>3</td><td>Search</td><td><code>find /app -name AGENTS.md -o -name launchcode.txt -o -name recovered_passwords.txt -o -name &#x27;*.log&#x27; -o -name &#x27;*.bak&#x27; -o -name &#x27;*.tmp&#x27; | sort</code></td></tr><tr><td>4</td><td>Search</td><td><code>find /app -maxdepth 2 -type f | sed &#x27;s#^/app/##&#x27; | sort | head -200</code></td></tr><tr><td colspan="3" class="muted">... 17 intermediate actions omitted</td></tr><tr><td>22</td><td>Edit</td><td><code>printf &#x27;%s\n&#x27; &#x27;8XDP5Q2RT9ZK7VB3BV4WW54&#x27; &gt; /app/recovered_passwords.txt &amp;&amp; cat /app/recovered_passwords.txt</code></td></tr><tr><td>23</td><td>Git</td><td><code>pwd &amp;&amp; git status --short 2&gt;/dev/null || true &amp;&amp; find . -maxdepth 2 -type f | sort | sed -n &#x27;1,160p&#x27;</code></td></tr></tbody></table>
+                </div>
+                
+                <div class="case-run success">
+                  <div class="case-head">
+                    <span>codex-compressed</span>
+                    <b>success</b>
+                  </div>
+                  <div class="micro">Read 17, Search 26, Script 12, Edit 2, Nav 1, Other 9</div>
+                  <table class="trace"><tbody><tr><td>1</td><td>Search</td><td><code>find /app -name AGENTS.md -o -name .git -maxdepth 3</code></td></tr><tr><td>2</td><td>Search</td><td><code>rg -n --hidden --no-ignore -S &quot;PASSWORD=|launchcode|8XD|W54&quot; /app</code></td></tr><tr><td>3</td><td>Search</td><td><code>find /app -name AGENTS.md -o -name .git</code></td></tr><tr><td>4</td><td>Search</td><td><code>find /app -type f \( -name &#x27;*launchcode*&#x27; -o -name &#x27;*password*&#x27; -o -name &#x27;*.txt&#x27; \) | head -200</code></td></tr><tr><td colspan="3" class="muted">... 61 intermediate actions omitted</td></tr><tr><td>66</td><td>Script</td><td><code>printf &#x27;%s\n&#x27; &#x27;8XDP5Q2RT9ZK7VB3BV4WW54&#x27; | awk &#x27;{print length($0)}&#x27;</code></td></tr><tr><td>67</td><td>Edit</td><td><code>printf &#x27;%s\n&#x27; &#x27;8XDP5Q2RT9ZK7VB3BV4WW54&#x27; &gt; /app/recovered_passwords.txt &amp;&amp; cat /app/recovered_passwords.txt</code></td></tr></tbody></table>
+                </div>
+                </div>
+            </section>
+            
+            <section class="case-card">
+              <h3>Bayes-net fit modify, attempt 5</h3>
+              <p>This is the counterexample: a direct read/compute/write path works, while extra harness affordances can pull the small model into longer setup or exploratory behavior that does not improve the final files.</p>
+              <div class="case-grid">
+                <div class="case-run success">
+                  <div class="case-head">
+                    <span>minimal-agent</span>
+                    <b>success</b>
+                  </div>
+                  <div class="micro">Read 3, Script 6, Edit 1</div>
+                  <table class="trace"><tbody><tr><td>1</td><td>Read</td><td><code>python - &lt;&lt;&#x27;PY&#x27;\nimport pandas as pd\np=&#x27;/app/bn_sample_10k.csv&#x27;\ndf=pd.read_csv(p)\nprint(df.head())\nprint(df.columns.tolist())\nprint(df.shape)\nprint(...</code></td></tr><tr><td>2</td><td>Read</td><td><code>python3 - &lt;&lt;&#x27;PY&#x27;\nimport pandas as pd\np=&#x27;/app/bn_sample_10k.csv&#x27;\ndf=pd.read_csv(p)\nprint(df.head())\nprint(df.columns.tolist())\nprint(df.shape)\nprint...</code></td></tr><tr><td>3</td><td>Read</td><td><code>awk &#x27;NR&lt;=5{print}&#x27; /app/bn_sample_10k.csv &amp;&amp; echo &#x27;---&#x27; &amp;&amp; head -n 1 /app/bn_sample_10k.csv | tr &#x27;,&#x27; &#x27;\n&#x27; | nl -ba &amp;&amp; echo &#x27;---&#x27; &amp;&amp; wc -l /app/bn_sample_1...</code></td></tr><tr><td>4</td><td>Script</td><td><code>python3 - &lt;&lt;&#x27;PY&#x27;\nimport sys, pkgutil\nmods=[&#x27;numpy&#x27;,&#x27;scipy&#x27;,&#x27;sklearn&#x27;,&#x27;statsmodels&#x27;,&#x27;pandas&#x27;,&#x27;networkx&#x27;]\nfor m in mods:\n print(m, pkgutil.find_loader(m...</code></td></tr><tr><td colspan="3" class="muted">... 4 intermediate actions omitted</td></tr><tr><td>9</td><td>Script</td><td><code>python3 - &lt;&lt;&#x27;PY&#x27;\nimport csv, math, itertools\nfrom collections import deque\np=&#x27;/app/bn_sample_10k.csv&#x27;\nwith open(p) as f:\n r=csv.reader(f)\n header=ne...</code></td></tr><tr><td>10</td><td>Edit</td><td><code>cat &gt; /tmp/solve_bn.py &lt;&lt;&#x27;PY&#x27;\nimport csv, math, random\nfrom collections import defaultdict, deque\n\ninp=&#x27;/app/bn_sample_10k.csv&#x27;\nwith open(inp) as f:\...</code></td></tr></tbody></table>
+                </div>
+                
+                <div class="case-run success">
+                  <div class="case-head">
+                    <span>mini-swe-agent</span>
+                    <b>success</b>
+                  </div>
+                  <div class="micro">Read 3, Script 2, Edit 5</div>
+                  <table class="trace"><tbody><tr><td>1</td><td>Read</td><td><code>ls -la /app &amp;&amp; echo &#x27;---&#x27; &amp;&amp; python - &lt;&lt;&#x27;PY&#x27;\nimport pandas as pd\npath=&#x27;/app/bn_sample_10k.csv&#x27;\ndf=pd.read_csv(path)\nprint(df.head())\nprint(&#x27;cols:&#x27;, l...</code></td></tr><tr><td>2</td><td>Read</td><td><code>python3 - &lt;&lt;&#x27;PY&#x27;\nimport pandas as pd\npath=&#x27;/app/bn_sample_10k.csv&#x27;\ndf=pd.read_csv(path)\nprint(df.head())\nprint(&#x27;cols:&#x27;, list(df.columns))\nprint(&#x27;sha...</code></td></tr><tr><td>3</td><td>Read</td><td><code>head -n 5 /app/bn_sample_10k.csv &amp;&amp; echo &#x27;---&#x27; &amp;&amp; python3 - &lt;&lt;&#x27;PY&#x27;\nimport csv\npath=&#x27;/app/bn_sample_10k.csv&#x27;\nwith open(path, newline=&#x27;&#x27;) as f:\n r=csv.r...</code></td></tr><tr><td>4</td><td>Script</td><td><code>python3 - &lt;&lt;&#x27;PY&#x27;\nmods=[&#x27;numpy&#x27;,&#x27;scipy&#x27;,&#x27;sklearn&#x27;,&#x27;pgmpy&#x27;,&#x27;networkx&#x27;,&#x27;pandas&#x27;]\nfor m in mods:\n try:\n __import__(m)\n print(m, &#x27;OK&#x27;)\n except Exception ...</code></td></tr><tr><td colspan="3" class="muted">... 4 intermediate actions omitted</td></tr><tr><td>9</td><td>Edit</td><td><code>python3 - &lt;&lt;&#x27;PY&#x27;\nimport csv, math, itertools\npath=&#x27;/app/bn_sample_10k.csv&#x27;\nwith open(path) as f:\n r=csv.DictReader(f)\n rows=list(r)\ncols=r.fieldname...</code></td></tr><tr><td>10</td><td>Edit</td><td><code>python3 - &lt;&lt;&#x27;PY&#x27;\nimport csv, math, random\nrandom.seed(0)\npath=&#x27;/app/bn_sample_10k.csv&#x27;\nwith open(path) as f:\n r=csv.DictReader(f)\n rows=list(r)\ncol...</code></td></tr></tbody></table>
+                </div>
+                
+                <div class="case-run failure">
+                  <div class="case-head">
+                    <span>codex-700</span>
+                    <b>failure</b>
+                  </div>
+                  <div class="micro">Read 1, Search 2, Script 6, Edit 1</div>
+                  <table class="trace"><tbody><tr><td>1</td><td>Search</td><td><code>pwd &amp;&amp; find . -name AGENTS.md -print &amp;&amp; echo &#x27;---&#x27; &amp;&amp; rg --files | sed -n &#x27;1,200p&#x27;</code></td></tr><tr><td>2</td><td>Read</td><td><code>head -n 5 bn_sample_10k.csv &amp;&amp; echo &#x27;---&#x27; &amp;&amp; python - &lt;&lt;&#x27;PY&#x27;\nimport pandas as pd\nf=&#x27;bn_sample_10k.csv&#x27;\ndf=pd.read_csv(f)\nprint(df.head())\nprint(df.co...</code></td></tr><tr><td>3</td><td>Search</td><td><code>find . -name AGENTS.md -print &amp;&amp; echo &#x27;---&#x27; &amp;&amp; python3 - &lt;&lt;&#x27;PY&#x27;\nimport pandas as pd\nf=&#x27;bn_sample_10k.csv&#x27;\ndf=pd.read_csv(f)\nprint(df.head())\nprint(df...</code></td></tr><tr><td>4</td><td>Script</td><td><code>python3 - &lt;&lt;&#x27;PY&#x27;\nimport importlib.util as u\nmods=[&#x27;numpy&#x27;,&#x27;pandas&#x27;,&#x27;scipy&#x27;,&#x27;sklearn&#x27;,&#x27;pgmpy&#x27;,&#x27;networkx&#x27;]\nfor m in mods:\n print(m, bool(u.find_spec(m))...</code></td></tr><tr><td colspan="3" class="muted">... 4 intermediate actions omitted</td></tr><tr><td>9</td><td>Script</td><td><code>python3 - &lt;&lt;&#x27;PY&#x27;\nimport csv, math, itertools\nnodes=[&#x27;U&#x27;,&#x27;Y&#x27;,&#x27;R&#x27;,&#x27;D&#x27;,&#x27;M&#x27;]\nwith open(&#x27;bn_sample_10k.csv&#x27;) as fh:\n r=csv.DictReader(fh)\n data={c:[] for ...</code></td></tr><tr><td>10</td><td>Edit</td><td><code>cat &gt; /app/recover_and_sample.py &lt;&lt;&#x27;PY&#x27;\nimport csv, math, random\n\nINFILE = &#x27;/app/bn_sample_10k.csv&#x27;\nLEARNED = &#x27;/app/learned_dag.csv&#x27;\nINTERVENED = &#x27;/a...</code></td></tr></tbody></table>
+                </div>
+                
+                <div class="case-run failure">
+                  <div class="case-head">
+                    <span>codex-compressed</span>
+                    <b>failure</b>
+                  </div>
+                  <div class="micro">Read 4, Search 2, Script 12, Edit 2, Deps 4, Other 15</div>
+                  <table class="trace"><tbody><tr><td>1</td><td>Search</td><td><code>pwd &amp;&amp; ls -la &amp;&amp; rg --files -g &#x27;AGENTS.md&#x27; -g &#x27;bn_sample_10k.csv&#x27; -g &#x27;*.py&#x27; -g &#x27;*.ipynb&#x27;</code></td></tr><tr><td>2</td><td>Read</td><td><code>python - &lt;&lt;&#x27;PY&#x27;\nimport pandas as pd\nf=&#x27;/app/bn_sample_10k.csv&#x27;\ndf=pd.read_csv(f)\nprint(df.head())\nprint(df.columns.tolist())\nprint(df.shape)\nprint(...</code></td></tr><tr><td>3</td><td>Search</td><td><code>find /app -name AGENTS.md -o -name &#x27;bn_sample_10k.csv&#x27; -o -name &#x27;*.py&#x27; -o -name &#x27;*.ipynb&#x27;</code></td></tr><tr><td>4</td><td>Read</td><td><code>python3 - &lt;&lt;&#x27;PY&#x27;\nimport pandas as pd\nf=&#x27;/app/bn_sample_10k.csv&#x27;\ndf=pd.read_csv(f)\nprint(df.head().to_string())\nprint(df.columns.tolist())\nprint(df.s...</code></td></tr><tr><td colspan="3" class="muted">... 33 intermediate actions omitted</td></tr><tr><td>38</td><td>Read</td><td><code>ls -l /app/learned_dag.csv /app/intervened_dag.csv /app/final_bn_sample.csv &amp;&amp; echo &#x27;--- learned&#x27; &amp;&amp; cat /app/learned_dag.csv &amp;&amp; echo &#x27;--- intervened&#x27; &amp;&amp; ...</code></td></tr><tr><td>39</td><td>Other</td><td><code>wc -l /app/final_bn_sample.csv /app/learned_dag.csv /app/intervened_dag.csv</code></td></tr></tbody></table>
+                </div>
+                
+                <div class="case-run failure">
+                  <div class="case-head">
+                    <span>codex-full</span>
+                    <b>failure</b>
+                  </div>
+                  <div class="micro">Read 3, Search 2, Script 8, Edit 1, Other 5</div>
+                  <table class="trace"><tbody><tr><td>1</td><td>Search</td><td><code>ls -l /app &amp;&amp; echo &#x27;---&#x27; &amp;&amp; rg --files /app | sed &#x27;s#^/app/##&#x27;</code></td></tr><tr><td>2</td><td>Read</td><td><code>python - &lt;&lt;&#x27;PY&#x27;\nimport pandas as pd\nf=&#x27;/app/bn_sample_10k.csv&#x27;\ndf=pd.read_csv(f)\nprint(df.head())\nprint(df.columns.tolist())\nprint(df.shape)\nprint(...</code></td></tr><tr><td>3</td><td>Search</td><td><code>find /app -maxdepth 2 -type f | sed &#x27;s#^/app/##&#x27; | sort</code></td></tr><tr><td>4</td><td>Read</td><td><code>python3 - &lt;&lt;&#x27;PY&#x27;\nimport pandas as pd\nf=&#x27;/app/bn_sample_10k.csv&#x27;\ndf=pd.read_csv(f)\nprint(df.head().to_string())\nprint(&#x27;cols&#x27;, df.columns.tolist())\npr...</code></td></tr><tr><td colspan="3" class="muted">... 13 intermediate actions omitted</td></tr><tr><td>18</td><td>Other</td><td><code>write_stdin(session_id=1, chars=0 chars)</code></td></tr><tr><td>19</td><td>Edit</td><td><code>cat &gt; /app/build_bn.py &lt;&lt;&#x27;PY&#x27;\nimport csv, math, random\nfrom collections import defaultdict\n\nINFILE=&#x27;/app/bn_sample_10k.csv&#x27;\nLEARNED=&#x27;/app/learned_dag...</code></td></tr></tbody></table>
+                </div>
+                </div>
+            </section>
+            
+            <section class="case-card">
+              <h3>SPARQL university, attempt 4</h3>
+              <p>Codex-700 succeeds by reading enough of the RDF shape, writing the query, and executing an rdflib check. Codex-1000 has similar surface capabilities but does not close the loop here; harness size alone is not the mechanism.</p>
+              <div class="case-grid">
+                <div class="case-run failure">
+                  <div class="case-head">
+                    <span>mini-swe-agent</span>
+                    <b>failure</b>
+                  </div>
+                  <div class="micro">Read 4, Script 2, Edit 1</div>
+                  <table class="trace"><tbody><tr><td>1</td><td>Read</td><td><code>ls -la /app &amp;&amp; echo &#x27;---&#x27; &amp;&amp; nl -ba /app/university_graph.ttl | sed -n &#x27;1,220p&#x27;</code></td></tr><tr><td>2</td><td>Read</td><td><code>nl -ba /app/university_graph.ttl | sed -n &#x27;220,420p&#x27;</code></td></tr><tr><td>3</td><td>Read</td><td><code>nl -ba /app/university_graph.ttl | sed -n &#x27;420,520p&#x27;</code></td></tr><tr><td>4</td><td>Read</td><td><code>nl -ba /app/university_graph.ttl | sed -n &#x27;1,40p&#x27;</code></td></tr><tr><td colspan="3" class="muted">... 1 intermediate actions omitted</td></tr><tr><td>6</td><td>Script</td><td><code>python - &lt;&lt;&#x27;PY&#x27;\nfrom rdflib import Graph\n\ng = Graph()\ng.parse(&#x27;/app/university_graph.ttl&#x27;, format=&#x27;turtle&#x27;)\nq = open(&#x27;/app/solution.sparql&#x27;).read()\n...</code></td></tr><tr><td>7</td><td>Script</td><td><code>python3 - &lt;&lt;&#x27;PY&#x27;\nfrom rdflib import Graph\n\ng = Graph()\ng.parse(&#x27;/app/university_graph.ttl&#x27;, format=&#x27;turtle&#x27;)\nq = open(&#x27;/app/solution.sparql&#x27;).read()\...</code></td></tr></tbody></table>
+                </div>
+                
+                <div class="case-run success">
+                  <div class="case-head">
+                    <span>codex-700</span>
+                    <b>success</b>
+                  </div>
+                  <div class="micro">Read 3, Search 1, Script 3, Edit 1</div>
+                  <table class="trace"><tbody><tr><td>1</td><td>Search</td><td><code>find . -name AGENTS.md -o -name &#x27;README*&#x27; -o -name &#x27;*.ttl&#x27; -o -name &#x27;*.sparql&#x27; | sort</code></td></tr><tr><td>2</td><td>Read</td><td><code>sed -n &#x27;1,220p&#x27; /app/university_graph.ttl</code></td></tr><tr><td>3</td><td>Read</td><td><code>sed -n &#x27;221,520p&#x27; /app/university_graph.ttl</code></td></tr><tr><td>4</td><td>Read</td><td><code>sed -n &#x27;521,760p&#x27; /app/university_graph.ttl</code></td></tr><tr><td colspan="3" class="muted">... 2 intermediate actions omitted</td></tr><tr><td>7</td><td>Script</td><td><code>python3 - &lt;&lt;&#x27;PY&#x27;\nfrom rdflib import Graph\n\ng = Graph()\ng.parse(&#x27;/app/university_graph.ttl&#x27;, format=&#x27;turtle&#x27;)\nq = open(&#x27;/app/solution.sparql&#x27;).read()\...</code></td></tr><tr><td>8</td><td>Script</td><td><code>which sparql || which rapper || which rdflib || which java || which node || which ruby</code></td></tr></tbody></table>
+                </div>
+                
+                <div class="case-run failure">
+                  <div class="case-head">
+                    <span>codex-1000</span>
+                    <b>failure</b>
+                  </div>
+                  <div class="micro">Read 4, Search 2, Edit 1</div>
+                  <table class="trace"><tbody><tr><td>1</td><td>Search</td><td><code>pwd &amp;&amp; rg --files -g &#x27;AGENTS.md&#x27; -g &#x27;university_graph.ttl&#x27; -g &#x27;solution.sparql&#x27; -g &#x27;README*&#x27;</code></td></tr><tr><td>2</td><td>Read</td><td><code>sed -n &#x27;1,220p&#x27; /app/university_graph.ttl</code></td></tr><tr><td>3</td><td>Read</td><td><code>sed -n &#x27;221,520p&#x27; /app/university_graph.ttl</code></td></tr><tr><td>4</td><td>Search</td><td><code>find /app -name AGENTS.md -o -name solution.sparql</code></td></tr><tr><td colspan="3" class="muted">... 1 intermediate actions omitted</td></tr><tr><td>6</td><td>Edit</td><td><code>apply_patch &lt;&lt;&#x27;PATCH&#x27;\n*** Begin Patch\n*** Add File: /app/solution.sparql\n+PREFIX uni: &lt;http://university.org/ontology/&gt;\n+PREFIX xsd: &lt;http://www.w3.or...</code></td></tr><tr><td>7</td><td>Read</td><td><code>sed -n &#x27;1,220p&#x27; /app/solution.sparql</code></td></tr></tbody></table>
+                </div>
+                </div>
+            </section>
+            
+
+  <h2>TBLite Appendix</h2>
+  <p>TBLite is a separate 100-task, 1-trial-per-task benchmark and should not be
+  pooled with TB2. It points in the same direction: codex-full beats
+  msa-prompt-compressed by 20 percentage points for gpt-5.4-mini low and by 10
+  points for gpt-5.4 low.</p>
+  <div class="legend"><span><i style="background:#4c78a8"></i>Read</span><span><i style="background:#f58518"></i>Search</span><span><i style="background:#54a24b"></i>Script</span><span><i style="background:#e45756"></i>Edit</span><span><i style="background:#72b7b2"></i>Test</span><span><i style="background:#b279a2"></i>Deps</span><span><i style="background:#9d755d"></i>Git</span><span><i style="background:#ff9da6"></i>Nav</span><span><i style="background:#8f8f8f"></i>Other</span><span><i style="background:#000000"></i>Abort</span></div>
+  <div class="figure">
+    <table class="data compact">
+      <thead><tr><th>Model</th><th>Harness</th><th>Score</th>
+      <th>Actions/attempt</th><th>Tests/attempt</th><th>Action mix</th></tr></thead>
+      <tbody><tr><td>gpt-5.4</td><td>codex-full</td><td class="num">60.0%</td><td class="num">17.4</td><td class="num">0.38</td><td><svg class="stack" viewBox="0 0 180 14" role="img" aria-label="action category mix"><rect x="0.00" y="0" width="28.14" height="14" fill="#4c78a8"><title>Read: 15.6%</title></rect><rect x="28.14" y="0" width="38.48" height="14" fill="#f58518"><title>Search: 21.4%</title></rect><rect x="66.62" y="0" width="20.69" height="14" fill="#54a24b"><title>Script: 11.5%</title></rect><rect x="87.31" y="0" width="20.07" height="14" fill="#e45756"><title>Edit: 11.1%</title></rect><rect x="107.38" y="0" width="3.93" height="14" fill="#72b7b2"><title>Test: 2.2%</title></rect><rect x="111.31" y="0" width="0.93" height="14" fill="#b279a2"><title>Deps: 0.5%</title></rect><rect x="112.24" y="0" width="3.83" height="14" fill="#9d755d"><title>Git: 2.1%</title></rect><rect x="116.07" y="0" width="2.90" height="14" fill="#ff9da6"><title>Nav: 1.6%</title></rect><rect x="118.97" y="0" width="61.03" height="14" fill="#8f8f8f"><title>Other: 33.9%</title></rect></svg></td></tr><tr><td>gpt-5.4-mini</td><td>codex-full</td><td class="num">57.0%</td><td class="num">13.4</td><td class="num">0.45</td><td><svg class="stack" viewBox="0 0 180 14" role="img" aria-label="action category mix"><rect x="0.00" y="0" width="27.61" height="14" fill="#4c78a8"><title>Read: 15.3%</title></rect><rect x="27.61" y="0" width="39.94" height="14" fill="#f58518"><title>Search: 22.2%</title></rect><rect x="67.55" y="0" width="38.73" height="14" fill="#54a24b"><title>Script: 21.5%</title></rect><rect x="106.28" y="0" width="29.62" height="14" fill="#e45756"><title>Edit: 16.5%</title></rect><rect x="135.90" y="0" width="6.03" height="14" fill="#72b7b2"><title>Test: 3.4%</title></rect><rect x="141.94" y="0" width="0.54" height="14" fill="#b279a2"><title>Deps: 0.3%</title></rect><rect x="142.47" y="0" width="5.76" height="14" fill="#9d755d"><title>Git: 3.2%</title></rect><rect x="148.24" y="0" width="5.63" height="14" fill="#ff9da6"><title>Nav: 3.1%</title></rect><rect x="153.86" y="0" width="26.14" height="14" fill="#8f8f8f"><title>Other: 14.5%</title></rect></svg></td></tr><tr><td>gpt-5.4</td><td>msa-prompt-compressed</td><td class="num">50.0%</td><td class="num">6.8</td><td class="num">0.55</td><td><svg class="stack" viewBox="0 0 180 14" role="img" aria-label="action category mix"><rect x="0.00" y="0" width="43.14" height="14" fill="#4c78a8"><title>Read: 24.0%</title></rect><rect x="43.14" y="0" width="24.23" height="14" fill="#f58518"><title>Search: 13.5%</title></rect><rect x="67.37" y="0" width="49.79" height="14" fill="#54a24b"><title>Script: 27.7%</title></rect><rect x="117.16" y="0" width="31.95" height="14" fill="#e45756"><title>Edit: 17.8%</title></rect><rect x="149.11" y="0" width="14.64" height="14" fill="#72b7b2"><title>Test: 8.1%</title></rect><rect x="163.76" y="0" width="1.07" height="14" fill="#b279a2"><title>Deps: 0.6%</title></rect><rect x="164.82" y="0" width="1.07" height="14" fill="#9d755d"><title>Git: 0.6%</title></rect><rect x="165.89" y="0" width="5.33" height="14" fill="#ff9da6"><title>Nav: 3.0%</title></rect><rect x="171.21" y="0" width="8.79" height="14" fill="#8f8f8f"><title>Other: 4.9%</title></rect></svg></td></tr><tr><td>gpt-5.4-mini</td><td>msa-prompt-compressed</td><td class="num">37.0%</td><td class="num">6.2</td><td class="num">0.23</td><td><svg class="stack" viewBox="0 0 180 14" role="img" aria-label="action category mix"><rect x="0.00" y="0" width="31.83" height="14" fill="#4c78a8"><title>Read: 17.7%</title></rect><rect x="31.83" y="0" width="28.36" height="14" fill="#f58518"><title>Search: 15.8%</title></rect><rect x="60.19" y="0" width="61.64" height="14" fill="#54a24b"><title>Script: 34.2%</title></rect><rect x="121.83" y="0" width="35.59" height="14" fill="#e45756"><title>Edit: 19.8%</title></rect><rect x="157.43" y="0" width="6.66" height="14" fill="#72b7b2"><title>Test: 3.7%</title></rect><rect x="164.08" y="0" width="1.74" height="14" fill="#b279a2"><title>Deps: 1.0%</title></rect><rect x="165.82" y="0" width="0.58" height="14" fill="#9d755d"><title>Git: 0.3%</title></rect><rect x="166.40" y="0" width="5.79" height="14" fill="#ff9da6"><title>Nav: 3.2%</title></rect><rect x="172.19" y="0" width="7.81" height="14" fill="#8f8f8f"><title>Other: 4.3%</title></rect></svg></td></tr></tbody></table></div>
+
+  <h2>Interpretation</h2>
+  <p>The answer to "how is the small model making use of the harness?" is:
+  the harness improves the <i>control loop</i>, not just the available command
+  surface. For gpt-5.4-mini low, the best harnesses keep tool interaction
+  organized enough that the model can iterate after partial failures, preserve
+  context through replay/session mechanics, and spend more of its limited
+  competence on concrete repository state rather than remembering what happened.</p>
+  <p>That benefit is bounded. Very compact agents can terminate too early or
+  lack recovery pressure. Very rich harnesses can add overhead, reasoning-only
+  turns, or affordances the small model does not exploit reliably. The empirical
+  sweet spot in this TB2 subset is the Codex 700/1000/compressed region, not the
+  smallest or largest harness.</p>
+
+  <h2>Files</h2>
+  <p class="files">Source CSVs used here:</p>
+  <ul class="files">
+    <li><code>/wbl-fast/usrs/trost/harness-complexity/final_test/behavior_gpt54_low_family_20260612/action_category_analysis/harness_action_category_matrix.csv</code></li>
+    <li><code>/wbl-fast/usrs/trost/harness-complexity/final_test/behavior_gpt54_low_family_20260612/action_category_analysis/action_category_by_harness_success.csv</code></li>
+    <li><code>/wbl-fast/usrs/trost/harness-complexity/final_test/behavior_gpt54_low_family_20260612/action_category_analysis/attempt_action_profiles.csv</code></li>
+    <li><code>/wbl-fast/usrs/trost/harness-complexity/final_test/behavior_gpt54_low_family_20260612/action_category_analysis/action_events.csv</code></li>
+    <li><code>/wbl-fast/usrs/trost/harness-complexity/final_test/behavior_gpt54_low_family_20260612/combined_by_harness_mechanisms.csv</code></li>
+    <li><code>/wbl-fast/usrs/trost/harness-complexity/final_test/behavior_gpt54_low_family_20260612/gpt54mini_low_tb2_allharnesses/by_task_harness.csv</code></li>
+  </ul>
+</article>
+</main>
+</body>
+</html>

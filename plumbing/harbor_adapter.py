@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import time
 import tomllib
+import uuid
 from contextlib import suppress
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -54,6 +55,7 @@ SHELL_TOOL_NAMES = {
     "bash",
 }
 WRITE_STDIN_TOOL_NAMES = {"write_stdin"}
+PERSISTENT_BASH_TOOL_NAMES = {"persistent_bash"}
 PATCH_TOOL_NAMES = {"apply_patch", "patch"}
 PLAN_TOOL_NAMES = {"update_plan", "plan"}
 FUNCTION_HISTORY_TOOL_NAMES = {"exec_command", "write_stdin", "update_plan"}
@@ -603,6 +605,14 @@ async def _execute_tool_call(
             tool_name=name,
             max_timeout_sec=max_timeout_sec,
         )
+    if lowered in PERSISTENT_BASH_TOOL_NAMES:
+        return await _persistent_bash_observed(
+            environment,
+            tool_call=tool_call,
+            default_timeout_sec=default_timeout_sec,
+            max_timeout_sec=max_timeout_sec,
+            tool_name=name,
+        )
     if lowered in PLAN_TOOL_NAMES:
         return _plan_observed(tool_call, name)
     if lowered in SHELL_TOOL_NAMES:
@@ -773,6 +783,183 @@ def _tool_wait_timeout_result(
             "adapter_timeout_sec": wait_timeout_sec,
         },
     )
+
+
+async def _persistent_bash_observed(
+    environment: Any,
+    tool_call: HarnessToolCall,
+    default_timeout_sec: int | None,
+    max_timeout_sec: int | None,
+    tool_name: str,
+) -> CommandResult:
+    args = tool_call.arguments
+    session_id = _tool_int(args.get("session_id"))
+    command = _tool_string(args.get("command") or args.get("cmd")) or ""
+    if session_id is None:
+        return CommandResult(
+            command="<invalid persistent_bash session_id>",
+            return_code=2,
+            stderr="persistent_bash requires session_id",
+            tool_name=tool_name,
+            tool_call_id=tool_call.call_id,
+            metadata={"arguments": args},
+        )
+    if not command.strip():
+        return CommandResult(
+            command="<invalid persistent_bash command>",
+            return_code=2,
+            stderr="persistent_bash requires command",
+            tool_name=tool_name,
+            tool_call_id=tool_call.call_id,
+            metadata={"arguments": args},
+        )
+    if not hasattr(environment, "write_stdin"):
+        return CommandResult(
+            command=command,
+            return_code=2,
+            stderr="Environment does not support persistent terminal sessions.",
+            tool_name=tool_name,
+            tool_call_id=tool_call.call_id,
+            metadata={"arguments": args},
+        )
+
+    timeout_sec = _cap_timeout(_tool_timeout(args, default_timeout_sec) or 30, max_timeout_sec)
+    deadline = time.monotonic() + timeout_sec if timeout_sec is not None else None
+    token = f"__HC_PERSISTENT_BASH_{os.getpid()}_{uuid.uuid4().hex}__"
+    start_marker = f"{token}_START"
+    end_prefix = f"{token}_END:"
+    payload = (
+        f"printf '\\n{start_marker}\\n'\n"
+        f"{command}\n"
+        "__hc_persistent_bash_status=$?\n"
+        f"printf '\\n{end_prefix}%s\\n' \"$__hc_persistent_bash_status\"\n"
+    )
+    stdout_parts: list[str] = []
+    stderr_parts: list[str] = []
+    last_result: Any = None
+    first = True
+    try:
+        while True:
+            remaining_ms = _persistent_bash_yield_ms(deadline)
+            last_result = await environment.write_stdin(
+                session_id=session_id,
+                chars=payload if first else "",
+                yield_time_ms=remaining_ms,
+                max_output_tokens=MAX_OBSERVATION_CHARS,
+            )
+            first = False
+            stdout_parts.append(getattr(last_result, "stdout", "") or "")
+            stderr_parts.append(getattr(last_result, "stderr", "") or "")
+            parsed = _persistent_bash_parse(
+                "".join(stdout_parts) + "".join(stderr_parts),
+                start_marker,
+                end_prefix,
+            )
+            if parsed is not None:
+                stdout, return_code = parsed
+                return CommandResult(
+                    command=command,
+                    return_code=return_code,
+                    stdout=_tail(stdout),
+                    stderr="",
+                    tool_name=tool_name,
+                    tool_call_id=tool_call.call_id,
+                    metadata=_persistent_bash_metadata(args, timeout_sec, last_result),
+                )
+            if deadline is not None and time.monotonic() >= deadline:
+                return await _persistent_bash_timeout_result(
+                    environment,
+                    session_id,
+                    command,
+                    tool_name,
+                    tool_call.call_id,
+                    args,
+                    timeout_sec,
+                    "".join(stdout_parts) + "".join(stderr_parts),
+                    last_result,
+                )
+    except RuntimeError as exc:
+        if not _model_visible_tool_error(str(exc)):
+            raise
+        return CommandResult(
+            command=command,
+            return_code=1,
+            stderr=str(exc),
+            tool_name=tool_name,
+            tool_call_id=tool_call.call_id,
+            metadata={"arguments": args},
+        )
+
+
+def _persistent_bash_yield_ms(deadline: float | None) -> int:
+    if deadline is None:
+        return 500
+    remaining = max(0.0, deadline - time.monotonic())
+    return max(1, min(500, int(remaining * 1000)))
+
+
+def _persistent_bash_parse(
+    text: str,
+    start_marker: str,
+    end_prefix: str,
+) -> tuple[str, int] | None:
+    end_index = text.rfind(end_prefix)
+    if end_index < 0:
+        return None
+    code_start = end_index + len(end_prefix)
+    code_line = text[code_start:].splitlines()[0].strip() if text[code_start:] else ""
+    try:
+        return_code = int(code_line)
+    except ValueError:
+        return None
+    start_index = text.rfind(start_marker, 0, end_index)
+    if start_index >= 0:
+        body = text[start_index + len(start_marker) : end_index]
+    else:
+        body = text[:end_index]
+    return body.strip("\r\n"), return_code
+
+
+async def _persistent_bash_timeout_result(
+    environment: Any,
+    session_id: int,
+    command: str,
+    tool_name: str,
+    tool_call_id: str,
+    args: dict[str, Any],
+    timeout_sec: int | None,
+    output: str,
+    last_result: Any,
+) -> CommandResult:
+    with suppress(Exception):
+        await environment.write_stdin(
+            session_id=session_id,
+            chars="\x03",
+            yield_time_ms=1000,
+            max_output_tokens=MAX_OBSERVATION_CHARS,
+        )
+    return CommandResult(
+        command=command,
+        return_code=124,
+        stdout=_tail(output),
+        stderr=f"persistent_bash timed out after {timeout_sec} seconds",
+        tool_name=tool_name,
+        tool_call_id=tool_call_id,
+        metadata=_persistent_bash_metadata(args, timeout_sec, last_result),
+    )
+
+
+def _persistent_bash_metadata(
+    args: dict[str, Any],
+    timeout_sec: int | None,
+    result: Any,
+) -> dict[str, Any]:
+    return {
+        "arguments": args,
+        "persistent_bash": True,
+        "persistent_bash_timeout_sec": timeout_sec,
+        "unified_exec": _unified_exec_metadata(result) if result is not None else {},
+    }
 
 
 async def _exec_command_observed(

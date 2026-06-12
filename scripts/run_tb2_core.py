@@ -53,6 +53,30 @@ SEED_CANDIDATES = (
     ),
     EvalCandidate("seed_mini_swe_agent_v2", "harness", Path("seeds/mini_swe_agent_v2"), 478),
     EvalCandidate(
+        "seed_mini_swe_agent_barebones_v2",
+        "harness",
+        Path("seeds/mini_swe_agent_barebones_v2"),
+        478,
+    ),
+    EvalCandidate(
+        "seed_mini_swe_agent_barebones_v2_persistent",
+        "harness",
+        Path("seeds/mini_swe_agent_barebones_v2_persistent"),
+        478,
+    ),
+    EvalCandidate(
+        "seed_mini_swe_agent_barebones_v2_rich_terminal",
+        "harness",
+        Path("seeds/mini_swe_agent_barebones_v2_rich_terminal"),
+        478,
+    ),
+    EvalCandidate(
+        "seed_mini_swe_agent_barebones_v2_rich_terminal_no_examples",
+        "harness",
+        Path("seeds/mini_swe_agent_barebones_v2_rich_terminal_no_examples"),
+        478,
+    ),
+    EvalCandidate(
         "seed_terminus_2_compressed", "harness", Path("seeds/terminus_2_compressed"), 634
     ),
 )

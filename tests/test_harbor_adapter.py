@@ -319,6 +319,32 @@ def test_harbor_agent_provides_persistent_terminal_context(tmp_path: Path) -> No
     assert payload["metadata"]["terminal_command_count"] == 2
 
 
+def test_persistent_bash_tool_runs_command_in_existing_session() -> None:
+    env = PersistentBashToolEnvironment()
+    record = asyncio.run(
+        harbor_adapter._persistent_bash_observed(
+            env,
+            HarnessToolCall(
+                "persistent_bash",
+                {"session_id": 9, "command": "cd /app\nexport FOO=bar\npwd", "timeout_sec": 5},
+                "call_persist",
+            ),
+            default_timeout_sec=None,
+            max_timeout_sec=None,
+            tool_name="persistent_bash",
+        )
+    )
+
+    assert record.command == "cd /app\nexport FOO=bar\npwd"
+    assert record.return_code == 0
+    assert record.stdout == "ran in persistent shell"
+    assert record.tool_call_id == "call_persist"
+    assert record.metadata["persistent_bash"] is True
+    assert env.stdin_calls[0]["session_id"] == 9
+    assert "cd /app" in env.stdin_calls[0]["chars"]
+    assert env.stdin_calls[0]["yield_time_ms"] <= 500
+
+
 def test_harbor_agent_provides_tmux_persistent_terminal_context(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     candidate = workspace / "candidate"
@@ -1212,6 +1238,42 @@ class PersistentUnifiedEnvironment(UnifiedEnvironment):
             wall_time_seconds=0.1,
             session_id=session_id,
             original_token_count=1,
+        )
+
+
+class PersistentBashToolEnvironment:
+    def __init__(self) -> None:
+        self.stdin_calls: list[dict[str, object]] = []
+
+    async def write_stdin(
+        self,
+        session_id: int,
+        chars: str = "",
+        yield_time_ms: int | None = None,
+        max_output_tokens: int | None = None,
+    ):
+        self.stdin_calls.append(
+            {
+                "session_id": session_id,
+                "chars": chars,
+                "yield_time_ms": yield_time_ms,
+                "max_output_tokens": max_output_tokens,
+            }
+        )
+        if chars == "\x03":
+            return SimpleNamespace(stdout="interrupted\n", stderr="", return_code=None)
+        token_start = chars.index("__HC_PERSISTENT_BASH_")
+        token_end = chars.index("_START", token_start) + len("_START")
+        start_marker = chars[token_start:token_end]
+        end_prefix = start_marker.removesuffix("_START") + "_END:"
+        return SimpleNamespace(
+            stdout=f"{chars}\n{start_marker}\nran in persistent shell\n{end_prefix}0\n",
+            stderr="",
+            return_code=None,
+            chunk_id="persist123",
+            wall_time_seconds=0.1,
+            session_id=session_id,
+            original_token_count=4,
         )
 
 

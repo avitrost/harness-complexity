@@ -11,6 +11,7 @@ def test_tb2_model_sweep_defaults_to_supported_codex_backend_models(monkeypatch,
     monkeypatch.delenv("MODEL_PROVIDER", raising=False)
     monkeypatch.delenv("OPENAI_AUTH_MODE", raising=False)
     monkeypatch.delenv("HARBOR_SLURM_PYXIS_PARTITION", raising=False)
+    monkeypatch.setenv("SLURM_JOB_ID", "unit-test")
 
     def fake_run_attempt(root, spec, args):
         calls.append((root, spec, args))
@@ -49,11 +50,11 @@ def test_tb2_model_sweep_defaults_to_supported_codex_backend_models(monkeypatch,
     assert manifest["global_concurrency"] == 45
     assert manifest["attempt_concurrency"] == 1
     assert manifest["effective_max_in_flight"] == 45
-    assert manifest["attempt_cells"] == 3 * 10 * 9 * 10
+    assert manifest["attempt_cells"] == 3 * 14 * 9 * 10
     assert manifest["include_codex_cli"] is False
     assert manifest["include_terminus_2"] is False
 
-    assert len(calls) == 3 * 10 * 9 * 10
+    assert len(calls) == 3 * 14 * 9 * 10
     models = {call[1].model for call in calls}
     assert models == {"gpt-5.4-mini", "gpt-5.4", "gpt-5.5"}
     assert {call[2].concurrency for call in calls} == {45}
@@ -68,6 +69,8 @@ def test_tb2_model_sweep_can_select_models_and_candidates(monkeypatch, tmp_path)
     monkeypatch.delenv("OPENAI_TERMINAL_PROVIDER", raising=False)
     monkeypatch.delenv("MODEL_PROVIDER", raising=False)
     monkeypatch.delenv("OPENAI_AUTH_MODE", raising=False)
+    monkeypatch.setenv("SLURM_JOB_ID", "unit-test")
+    monkeypatch.setenv("SLURM_JOB_ID", "unit-test")
     monkeypatch.delenv("HARBOR_SLURM_PYXIS_PARTITION", raising=False)
 
     def fake_run_attempt(root, spec, args):
@@ -129,6 +132,7 @@ def test_tb2_model_sweep_can_select_anthropic_provider(monkeypatch, tmp_path) ->
     monkeypatch.delenv("OPENAI_TERMINAL_PROVIDER", raising=False)
     monkeypatch.delenv("MODEL_PROVIDER", raising=False)
     monkeypatch.delenv("OPENAI_AUTH_MODE", raising=False)
+    monkeypatch.setenv("SLURM_JOB_ID", "unit-test")
 
     def fake_run_attempt(root, spec, args):
         calls.append((spec, args))

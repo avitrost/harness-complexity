@@ -1229,7 +1229,9 @@ def _call_codex_backend_result(
     )
     try:
         with urlopen(request, timeout=TIMEOUT_SEC) as response:
-            result = _extract_sse_result(response.read().decode("utf-8", errors="replace"))
+            text = response.read().decode("utf-8", errors="replace")
+            _write_codex_raw_sse_trace(body, headers, text)
+            result = _extract_sse_result(text)
             return ToolModelResult(
                 result.content,
                 result.tool_calls,
@@ -1343,6 +1345,41 @@ def _codex_request_metadata(
         if result.usage:
             metadata["usage"] = result.usage
     return metadata
+
+
+def _write_codex_raw_sse_trace(
+    body: dict[str, Any],
+    headers: dict[str, str],
+    text: str,
+) -> None:
+    raw_dir = os.getenv("CODEX_RAW_SSE_TRACE_DIR")
+    if not raw_dir:
+        return
+    try:
+        trace_dir = _trace_dir.get()
+        if raw_dir == "__TRACE_DIR__":
+            if trace_dir is None:
+                return
+            path = trace_dir
+        elif raw_dir.startswith("__TRACE_DIR__/"):
+            if trace_dir is None:
+                return
+            path = trace_dir / raw_dir.removeprefix("__TRACE_DIR__/")
+        else:
+            path = Path(raw_dir)
+        path.mkdir(parents=True, exist_ok=True)
+        index = _trace_count.get() + 1
+        stem = f"codex-raw-sse-{index:02d}"
+        (path / f"{stem}.txt").write_text(text, encoding="utf-8")
+        request_metadata = _codex_request_metadata(body, headers)
+        request_metadata["body_keys"] = sorted(body)
+        request_metadata["body"] = body
+        (path / f"{stem}.request.json").write_text(
+            json.dumps(request_metadata, indent=2),
+            encoding="utf-8",
+        )
+    except OSError:
+        return
 
 
 def _is_instruction(item: dict[str, Any]) -> bool:
