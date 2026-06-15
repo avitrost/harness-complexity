@@ -126,6 +126,39 @@ def test_rich_terminal_submit_exec_command_finishes() -> None:
     assert turn.assistant_content == ""
 
 
+def test_persistent_submit_with_shell_prompt_finishes() -> None:
+    module = _variant_module()
+
+    turn = module.create_bash_persistent_agent().next_command(
+        TaskContext(
+            "Finish.",
+            metadata={"persistent_terminal": {"available": True, "session_id": 7}},
+        ),
+        [
+            CommandResult(
+                command=(
+                    "export PAGER=cat MANPAGER=cat LESS=-R PIP_PROGRESS_BAR=off "
+                    "TQDM_DISABLE=1;\n"
+                    "echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT"
+                ),
+                return_code=0,
+                stdout=(
+                    "$ export PAGER=cat MANPAGER=cat LESS=-R PIP_PROGRESS_BAR=off "
+                    "TQDM_DISABLE=1;\n"
+                    "$ echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n"
+                    "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n"
+                    "$ __hc_persistent_bash_status=$?\n"
+                ),
+                tool_name="persistent_bash",
+                tool_call_id="call_done",
+            )
+        ],
+    )
+
+    assert turn.done is True
+    assert turn.assistant_content == ""
+
+
 class RecordingTerminalModel:
     def __init__(self, responses: list[ToolModelResult]):
         self.responses = list(responses)

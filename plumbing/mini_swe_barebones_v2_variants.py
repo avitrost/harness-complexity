@@ -341,9 +341,9 @@ def _submission_from_history(history: list[CommandResult]) -> str | None:
     if not history:
         return None
     last = history[-1]
-    if last.return_code == 0 and last.command.strip() == SUBMIT_COMMAND:
+    if last.return_code == 0 and _is_submit_command(last.command):
         output = (last.stdout or "") + (last.stderr or "")
-        return _submission_from_output(output)
+        return "" if _output_contains_submit_marker(output) else None
     output = (last.stdout or "") + (last.stderr or "")
     lines = output.lstrip().splitlines(keepends=True)
     if last.return_code == 0 and lines and lines[0].strip() == SUBMIT_MARKER:
@@ -351,11 +351,20 @@ def _submission_from_history(history: list[CommandResult]) -> str | None:
     return None
 
 
+def _is_submit_command(command: str) -> bool:
+    return any(line.strip() == SUBMIT_COMMAND for line in command.splitlines())
+
+
 def _submission_from_output(output: str) -> str:
-    lines = output.lstrip().splitlines(keepends=True)
-    if lines and lines[0].strip() == SUBMIT_MARKER:
-        return "".join(lines[1:])
+    lines = output.splitlines(keepends=True)
+    for index, line in enumerate(lines):
+        if line.strip() == SUBMIT_MARKER:
+            return "".join(lines[index + 1 :])
     return ""
+
+
+def _output_contains_submit_marker(output: str) -> bool:
+    return any(line.strip() == SUBMIT_MARKER for line in output.splitlines())
 
 
 def _parse_actions(
