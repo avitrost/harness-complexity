@@ -21,6 +21,7 @@ ALLOWED_LOCAL_IMPORTS = {
     "plumbing.codex_full_minimal_surfaces",
     "plumbing.mini_swe_barebones_v2_variants",
     "plumbing.mini_swe_barebones_v2_codex_prompt",
+    "plumbing.mini_swe_barebones_v2_context_only",
     "plumbing.openai_client",
     "plumbing.types",
 }

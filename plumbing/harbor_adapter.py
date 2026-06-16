@@ -59,6 +59,7 @@ PERSISTENT_BASH_TOOL_NAMES = {"persistent_bash"}
 PATCH_TOOL_NAMES = {"apply_patch", "patch"}
 PLAN_TOOL_NAMES = {"update_plan", "plan"}
 FUNCTION_HISTORY_TOOL_NAMES = {"exec_command", "write_stdin", "update_plan"}
+PATCH_AFFORDANCE_DISABLED_PROFILES = {"no_patch_affordance", "loo_apply_patch"}
 _MODEL_EXECUTOR = ThreadPoolExecutor(
     max_workers=int(os.environ.get("HARBOR_MODEL_CALL_WORKERS", "512")),
     thread_name_prefix="harness-model",
@@ -636,6 +637,13 @@ async def _execute_tool_call(
         )
     if lowered in PATCH_TOOL_NAMES:
         patch = _patch_text(tool_call.arguments)
+        if _patch_affordance_disabled():
+            return _blocked_apply_patch_result(
+                patch=patch,
+                tool_name=name,
+                tool_call_id=tool_call.call_id,
+                arguments=tool_call.arguments,
+            )
         command = _apply_patch_command(patch)
         return await _exec_observed(
             environment,
@@ -982,6 +990,13 @@ async def _exec_command_observed(
         )
     cwd = _resolve_workdir(_tool_string(args.get("workdir")), environment)
     if patch := _extract_apply_patch(command):
+        if _patch_affordance_disabled():
+            return _blocked_apply_patch_result(
+                patch=patch,
+                tool_name=tool_name,
+                tool_call_id=tool_call.call_id,
+                arguments=tool_call.arguments,
+            )
         patch_command = _apply_patch_command(patch)
         if cwd:
             patch_command = f"cd {shlex.quote(cwd)} && {patch_command}"
@@ -1804,6 +1819,37 @@ def _metadata_value_int(metadata: dict[str, Any], key: str) -> int:
 def _patch_text(args: dict[str, Any]) -> str:
     patch = args.get("patch") or args.get("input") or args.get("diff") or ""
     return str(patch)
+
+
+def _patch_affordance_disabled() -> bool:
+    profile = os.environ.get("CODEX_HARNESS_PROFILE", "")
+    if profile in PATCH_AFFORDANCE_DISABLED_PROFILES:
+        return True
+    return os.environ.get("CODEX_DISABLE_APPLY_PATCH_AFFORDANCE", "").lower() in {
+        "1",
+        "true",
+        "yes",
+    }
+
+
+def _blocked_apply_patch_result(
+    patch: str,
+    tool_name: str,
+    tool_call_id: str,
+    arguments: dict[str, Any],
+) -> CommandResult:
+    return CommandResult(
+        command=_patch_display(patch),
+        return_code=2,
+        stderr="apply_patch is unavailable in this harness profile",
+        tool_name=tool_name,
+        tool_call_id=tool_call_id,
+        metadata={
+            "arguments": arguments,
+            "input": patch,
+            "blocked_apply_patch_cmd": True,
+        },
+    )
 
 
 def _extract_apply_patch(command: str) -> str | None:

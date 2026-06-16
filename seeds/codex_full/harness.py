@@ -339,7 +339,15 @@ CUSTOM_CALL_TYPES = {"custom_tool_call"}
 CUSTOM_OUTPUT_TYPES = {"custom_tool_call_output"}
 TOOL_OUTPUT_TYPES = FUNCTION_OUTPUT_TYPES | CUSTOM_OUTPUT_TYPES | {"tool_search_output"}
 TOOL_CALL_TYPES = FUNCTION_CALL_TYPES | CUSTOM_CALL_TYPES | {"tool_search_call"}
-SHELL_TOOL_NAMES = {"exec_command", "shell_command", "local_shell", "local_shell_call"}
+SHELL_TOOL_NAMES = {
+    "exec_command",
+    "shell",
+    "bash",
+    "terminal",
+    "shell_command",
+    "local_shell",
+    "local_shell_call",
+}
 PERMISSIONS_SANDBOX_DANGER_FULL_ACCESS = (
     "Filesystem sandboxing defines which files can be read or written. "
     "`sandbox_mode` is `danger-full-access`: No filesystem sandboxing - all commands "
@@ -456,9 +464,11 @@ ENABLE_CONTEXT_NORMALIZATION = True
 ENABLE_CONTEXT_BUDGETING = True
 ENABLE_MODEL_CONTEXT_COMPACTION = True
 ENABLE_PATCH_TOOL = True
+ENABLE_PATCH_PROMPT_GUIDANCE = True
 ENABLE_PLAN_TOOL = True
 ENABLE_WRITE_STDIN_TOOL = True
 ENABLE_UNIFIED_EXEC_OUTPUT_FORMAT = True
+ENABLE_EXEC_OUTPUT_METADATA = True
 ENABLE_MODEL_RESPONSE_ITEM_REPLAY = True
 ENABLE_MODEL_CALL_RESILIENCE = True
 ENABLE_RECOVERY_POLICY = True
@@ -475,10 +485,15 @@ class FeatureSet:
     context_normalization: bool = True
     context_budgeting: bool = True
     model_context_compaction: bool = True
+    exec_tool_name: str = "exec_command"
     patch_tool: bool = True
+    patch_prompt_guidance: bool = True
     plan_tool: bool = True
+    plan_prompt_guidance: bool = True
     write_stdin_tool: bool = True
+    write_stdin_prompt_guidance: bool = True
     unified_exec_output_format: bool = True
+    exec_output_metadata: bool = True
     model_response_item_replay: bool = True
     model_call_resilience: bool = True
     recovery_policy: bool = True
@@ -495,10 +510,15 @@ class FeatureSet:
             context_normalization=ENABLE_CONTEXT_NORMALIZATION,
             context_budgeting=ENABLE_CONTEXT_BUDGETING,
             model_context_compaction=ENABLE_MODEL_CONTEXT_COMPACTION,
+            exec_tool_name="exec_command",
             patch_tool=ENABLE_PATCH_TOOL,
+            patch_prompt_guidance=ENABLE_PATCH_PROMPT_GUIDANCE,
             plan_tool=ENABLE_PLAN_TOOL,
+            plan_prompt_guidance=True,
             write_stdin_tool=ENABLE_WRITE_STDIN_TOOL,
+            write_stdin_prompt_guidance=True,
             unified_exec_output_format=ENABLE_UNIFIED_EXEC_OUTPUT_FORMAT,
+            exec_output_metadata=ENABLE_EXEC_OUTPUT_METADATA,
             model_response_item_replay=ENABLE_MODEL_RESPONSE_ITEM_REPLAY,
             model_call_resilience=ENABLE_MODEL_CALL_RESILIENCE,
             recovery_policy=ENABLE_RECOVERY_POLICY,
@@ -507,11 +527,11 @@ class FeatureSet:
             instrumentation=ENABLE_INSTRUMENTATION,
         )
 
-    def with_overrides(self, overrides: dict[str, bool]) -> "FeatureSet":
+    def with_overrides(self, overrides: dict[str, Any]) -> "FeatureSet":
         return replace(self, **overrides)
 
 
-PROFILE_OVERRIDES: dict[str, dict[str, bool]] = {
+PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
     "codex_full": {},
     "no_instrumentation": {
         "instrumentation": False,
@@ -520,6 +540,42 @@ PROFILE_OVERRIDES: dict[str, dict[str, bool]] = {
     "no_classifier": {"command_classification": False},
     "no_recovery": {"recovery_policy": False},
     "no_compaction": {"model_context_compaction": False},
+    "no_history_replay": {"history_replay": False},
+    "no_context_manager": {
+        "context_manager": False,
+        "context_normalization": False,
+        "context_budgeting": False,
+        "model_context_compaction": False,
+    },
+    "no_patch_tool": {"patch_tool": False},
+    "no_patch_affordance": {
+        "patch_tool": False,
+        "patch_prompt_guidance": False,
+    },
+    "no_plan_tool": {"plan_tool": False},
+    "no_write_stdin_tool": {"write_stdin_tool": False},
+    "loo_apply_patch": {
+        "patch_tool": False,
+        "patch_prompt_guidance": False,
+    },
+    "loo_update_plan": {
+        "plan_tool": False,
+        "plan_prompt_guidance": False,
+    },
+    "loo_write_stdin": {
+        "write_stdin_tool": False,
+        "write_stdin_prompt_guidance": False,
+    },
+    "renamed_shell": {
+        "exec_tool_name": "shell",
+    },
+    "no_unified_exec_output": {"unified_exec_output_format": False},
+    "raw_exec_output": {
+        "unified_exec_output_format": False,
+        "exec_output_metadata": False,
+    },
+    "no_model_response_item_replay": {"model_response_item_replay": False},
+    "no_completion_policy": {"completion_policy": False},
     "exec_only_tools": {
         "patch_tool": False,
         "plan_tool": False,
@@ -532,9 +588,11 @@ PROFILE_OVERRIDES: dict[str, dict[str, bool]] = {
         "context_budgeting": False,
         "model_context_compaction": False,
         "patch_tool": False,
+        "patch_prompt_guidance": False,
         "plan_tool": False,
         "write_stdin_tool": False,
         "unified_exec_output_format": False,
+        "exec_output_metadata": False,
         "model_response_item_replay": False,
         "model_call_resilience": False,
         "recovery_policy": False,
@@ -786,9 +844,9 @@ class TextBudget:
 
 def _built_tools(features: FeatureSet | None = None) -> list[dict[str, Any]]:
     features = features or FeatureSet.from_globals()
-    tools = [_exec_command_tool()]
+    tools = [_exec_command_tool(features)]
     if features.write_stdin_tool:
-        tools.append(_construct("_write_stdin_tool"))
+        tools.append(_construct("_write_stdin_tool", features))
     if features.plan_tool:
         tools.append(_construct("_update_plan_tool"))
     if features.patch_tool:
@@ -796,7 +854,8 @@ def _built_tools(features: FeatureSet | None = None) -> list[dict[str, Any]]:
     return tools
 
 
-def _exec_command_tool() -> dict[str, Any]:
+def _exec_command_tool(features: FeatureSet | None = None) -> dict[str, Any]:
+    features = features or FeatureSet.from_globals()
     properties = {
         "cmd": JsonSchema.string("Shell command to execute."),
         "workdir": JsonSchema.string(
@@ -834,15 +893,16 @@ def _exec_command_tool() -> dict[str, Any]:
     }
     return {
         "type": "function",
-        "name": "exec_command",
+        "name": features.exec_tool_name,
         "description": "Runs a command in a PTY, returning output or a session ID for ongoing interaction.",
         "strict": False,
         "parameters": JsonSchema.object(properties, ["cmd"], False),
-        "output_schema": _unified_exec_output_schema(),
+        "output_schema": _exec_output_schema(features),
     }
 
 
-def _write_stdin_tool() -> dict[str, Any]:
+def _write_stdin_tool(features: FeatureSet | None = None) -> dict[str, Any]:
+    features = features or FeatureSet.from_globals()
     return {
         "type": "function",
         "name": "write_stdin",
@@ -862,7 +922,7 @@ def _write_stdin_tool() -> dict[str, Any]:
             ["session_id"],
             False,
         ),
-        "output_schema": _unified_exec_output_schema(),
+        "output_schema": _exec_output_schema(features),
     }
 
 
@@ -906,38 +966,60 @@ def _apply_patch_tool() -> dict[str, Any]:
     }
 
 
-def _unified_exec_output_schema() -> dict[str, Any]:
+def _unified_exec_output_schema(features: FeatureSet) -> dict[str, Any]:
+    properties = {
+        "chunk_id": {
+            "type": "string",
+            "description": "Chunk identifier included when the response reports one.",
+        },
+        "wall_time_seconds": {
+            "type": "number",
+            "description": "Elapsed wall time spent waiting for output in seconds.",
+        },
+        "exit_code": {
+            "type": "number",
+            "description": "Process exit code when the command finished during this call.",
+        },
+        "original_token_count": {
+            "type": "number",
+            "description": "Approximate token count before output truncation.",
+        },
+        "output": {
+            "type": "string",
+            "description": "Command output text, possibly truncated.",
+        },
+    }
+    if features.write_stdin_prompt_guidance:
+        properties["session_id"] = {
+            "type": "number",
+            "description": "Session identifier to pass to write_stdin when the process is still running.",
+        }
     return {
         "type": "object",
-        "properties": {
-            "chunk_id": {
-                "type": "string",
-                "description": "Chunk identifier included when the response reports one.",
-            },
-            "wall_time_seconds": {
-                "type": "number",
-                "description": "Elapsed wall time spent waiting for output in seconds.",
-            },
-            "exit_code": {
-                "type": "number",
-                "description": "Process exit code when the command finished during this call.",
-            },
-            "session_id": {
-                "type": "number",
-                "description": "Session identifier to pass to write_stdin when the process is still running.",
-            },
-            "original_token_count": {
-                "type": "number",
-                "description": "Approximate token count before output truncation.",
-            },
-            "output": {
-                "type": "string",
-                "description": "Command output text, possibly truncated.",
-            },
-        },
+        "properties": properties,
         "required": ["wall_time_seconds", "output"],
         "additionalProperties": False,
     }
+
+
+def _raw_exec_output_schema() -> dict[str, Any]:
+    return {
+        "type": "object",
+        "properties": {
+            "output": {
+                "type": "string",
+                "description": "Raw command output text, possibly truncated.",
+            },
+        },
+        "required": ["output"],
+        "additionalProperties": False,
+    }
+
+
+def _exec_output_schema(features: FeatureSet) -> dict[str, Any]:
+    if not features.exec_output_metadata:
+        return _raw_exec_output_schema()
+    return _unified_exec_output_schema(features)
 
 
 # === 06. Tool Router and Response Parsing ===
@@ -1116,6 +1198,8 @@ class ToolOutputFormatter:
     def tool_output_text(self, record: CommandResult) -> str:
         if self.features.unified_exec_output_format and self._has_unified_exec(record):
             return self.unified_exec_text(record)
+        if not self.features.exec_output_metadata:
+            return self.raw_output_text(record)
         return self.generic_function_text(record)
 
     def unified_exec_text(self, record: CommandResult) -> str:
@@ -1131,7 +1215,7 @@ class ToolOutputFormatter:
         if exit_code is not None:
             sections.append(f"Process exited with code {exit_code}")
         session_id = metadata.get("session_id")
-        if session_id is not None:
+        if session_id is not None and self.features.write_stdin_prompt_guidance:
             sections.append(f"Process running with session ID {session_id}")
         original_token_count = metadata.get("original_token_count")
         if original_token_count is not None:
@@ -1147,6 +1231,9 @@ class ToolOutputFormatter:
         sections.append("Output:")
         sections.append(TextBudget.clip_tail(self._combined_output(record), MAX_OBSERVATION_CHARS))
         return "\n".join(sections)
+
+    def raw_output_text(self, record: CommandResult) -> str:
+        return TextBudget.clip_tail(self._combined_output(record), MAX_OBSERVATION_CHARS)
 
     def failure_response_item(
         self, call_id: str, payload: ToolPayload, message: str
@@ -1297,9 +1384,12 @@ class HistoryReplay:
                 self.items.custom_tool_call(call_id, "apply_patch", patch),
                 self.formatter.tool_output_item(record, call_id),
             ]
+        function_history_tools = {*FUNCTION_HISTORY_TOOLS, self.features.exec_tool_name}
         tool_name = (
-            record.tool_name if record.tool_name in FUNCTION_HISTORY_TOOLS else "exec_command"
+            record.tool_name if record.tool_name in function_history_tools else "exec_command"
         )
+        if tool_name == "exec_command" and self.features.exec_tool_name != "exec_command":
+            tool_name = self.features.exec_tool_name
         arguments = self.arguments_from_record(record)
         return [
             self.items.function_call(call_id, tool_name, arguments),
@@ -1836,7 +1926,7 @@ class PromptBuilder:
             input_items,
             self.router,
             context,
-            BaseInstructions(CODEX_BASE_INSTRUCTIONS),
+            BaseInstructions(self.base_instructions()),
         )
         return CodexPromptBundle(
             messages=prompt.messages(),
@@ -1844,6 +1934,61 @@ class PromptBuilder:
             tools=prompt.tools,
             stats=stats,
         )
+
+    def base_instructions(self) -> str:
+        return _filtered_base_instructions(CODEX_BASE_INSTRUCTIONS, self.features)
+
+
+def _filtered_base_instructions(text: str, features: FeatureSet) -> str:
+    filtered = text
+    if not features.plan_prompt_guidance:
+        filtered = _remove_markdown_section(filtered, "## Planning")
+        filtered = _remove_markdown_section(filtered, "## `update_plan`")
+        filtered = filtered.replace(
+            "- Communicate with the user by streaming thinking & responses, and by making & updating plans.",
+            "- Communicate with the user by streaming thinking & responses.",
+        )
+    lines = []
+    for line in filtered.splitlines():
+        if not features.patch_prompt_guidance and _line_mentions_patch_tool(line):
+            continue
+        if not features.plan_prompt_guidance and "update_plan" in line:
+            continue
+        if not features.write_stdin_prompt_guidance and "write_stdin" in line:
+            continue
+        lines.append(line)
+    return "\n".join(lines).strip()
+
+
+def _remove_markdown_section(text: str, heading: str) -> str:
+    lines = text.splitlines()
+    output: list[str] = []
+    skipping = False
+    target_level = heading_level(heading)
+    for line in lines:
+        if line == heading:
+            skipping = True
+            continue
+        if skipping and _is_markdown_heading(line):
+            level = heading_level(line)
+            if level <= target_level:
+                skipping = False
+        if not skipping:
+            output.append(line)
+    return "\n".join(output)
+
+
+def _is_markdown_heading(line: str) -> bool:
+    return line.startswith("#") and line.lstrip("#").startswith(" ")
+
+
+def heading_level(line: str) -> int:
+    return len(line) - len(line.lstrip("#"))
+
+
+def _line_mentions_patch_tool(line: str) -> bool:
+    lowered = line.lower()
+    return "apply_patch" in line or "patches" in lowered
 
 
 def build_prompt(
@@ -2052,7 +2197,7 @@ class RecoveryPolicy:
         return HarnessTurn(
             tool_calls=(
                 HarnessToolCall(
-                    "exec_command",
+                    self.features.exec_tool_name,
                     {
                         "cmd": "pwd && git status --short 2>/dev/null || true && find . -maxdepth 2 -type f | sort | sed -n '1,120p'",
                         "yield_time_ms": 1000,
@@ -2206,5 +2351,5 @@ class CandidateHarness(BaseHarness):
 # === 15. Factory ===
 
 
-def create_agent() -> CandidateHarness:
-    return CandidateHarness()
+def create_agent(profile: str | FeatureSet | None = None) -> CandidateHarness:
+    return CandidateHarness(profile)

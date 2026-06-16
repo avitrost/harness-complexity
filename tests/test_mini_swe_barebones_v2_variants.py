@@ -15,6 +15,12 @@ ROOT = Path(__file__).resolve().parents[1]
 VARIANT_MODULE = "plumbing.mini_swe_barebones_v2_variants"
 SEED_PATHS = {
     "persistent": ROOT / "seeds/mini_swe_agent_barebones_v2_persistent/harness.py",
+    "persistent_prompt_only": (
+        ROOT / "seeds/mini_swe_agent_barebones_v2_persistent_prompt_only/harness.py"
+    ),
+    "persistent_exec_only": (
+        ROOT / "seeds/mini_swe_agent_barebones_v2_persistent_exec_only/harness.py"
+    ),
     "rich": ROOT / "seeds/mini_swe_agent_barebones_v2_rich_terminal/harness.py",
     "rich_no_examples": (
         ROOT / "seeds/mini_swe_agent_barebones_v2_rich_terminal_no_examples/harness.py"
@@ -50,6 +56,38 @@ def test_hidden_persistent_variant_exposes_only_bash(monkeypatch) -> None:
     assert turn.tool_calls[0].name == "persistent_bash"
     assert turn.tool_calls[0].arguments["session_id"] == 7
     assert turn.tool_calls[0].arguments["command"].endswith("\npwd")
+
+
+def test_persistent_prompt_only_prompts_persistent_but_runs_nonpersistent(monkeypatch) -> None:
+    module = _variant_module()
+    fake = RecordingTerminalModel([_result("Inspecting.", _call("bash", {"command": "pwd"}))])
+    monkeypatch.setattr(module, "call_terminal_model_with_tools", fake)
+
+    turn = module.create_bash_persistent_prompt_only_agent().next_command(TaskContext("List."), [])
+
+    prompt = fake.calls[0]["messages"][1]["content"]
+    assert "one persistent interactive shell" in prompt
+    assert turn.tool_calls[0].name == "local_shell"
+    assert "session_id" not in turn.tool_calls[0].arguments
+
+
+def test_persistent_exec_only_prompts_nonpersistent_but_runs_persistent(monkeypatch) -> None:
+    module = _variant_module()
+    fake = RecordingTerminalModel([_result("Inspecting.", _call("bash", {"command": "pwd"}))])
+    monkeypatch.setattr(module, "call_terminal_model_with_tools", fake)
+
+    turn = module.create_bash_persistent_exec_only_agent().next_command(
+        TaskContext(
+            "List.",
+            metadata={"persistent_terminal": {"available": True, "session_id": 7}},
+        ),
+        [],
+    )
+
+    prompt = fake.calls[0]["messages"][1]["content"]
+    assert "Every action is executed in a new subshell" in prompt
+    assert turn.tool_calls[0].name == "persistent_bash"
+    assert turn.tool_calls[0].arguments["session_id"] == 7
 
 
 def test_rich_terminal_variant_exposes_exec_and_write_stdin_with_examples(monkeypatch) -> None:

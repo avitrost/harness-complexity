@@ -194,7 +194,7 @@ class MiniSweBarebonesV2Variant(BaseHarness):
     def __init__(self, mode: str, include_examples: bool = False) -> None:
         self.mode = mode
         self.include_examples = include_examples
-        if mode == "bash_persistent":
+        if mode in {"bash_persistent", "bash_persistent_exec_only"}:
             self.wants_persistent_terminal = True
         elif mode == "rich_terminal":
             self.wants_persistent_terminal = "tmux"
@@ -243,6 +243,14 @@ def create_bash_persistent_agent() -> MiniSweBarebonesV2Variant:
     return MiniSweBarebonesV2Variant("bash_persistent")
 
 
+def create_bash_persistent_prompt_only_agent() -> MiniSweBarebonesV2Variant:
+    return MiniSweBarebonesV2Variant("bash_persistent_prompt_only")
+
+
+def create_bash_persistent_exec_only_agent() -> MiniSweBarebonesV2Variant:
+    return MiniSweBarebonesV2Variant("bash_persistent_exec_only")
+
+
 def create_rich_terminal_agent() -> MiniSweBarebonesV2Variant:
     return MiniSweBarebonesV2Variant("rich_terminal", include_examples=True)
 
@@ -265,8 +273,10 @@ def _initial_messages(
 
 
 def _command_rules(mode: str, include_examples: bool, vars_: dict[str, Any]) -> str:
-    if mode == "bash_persistent":
+    if mode in {"bash_persistent", "bash_persistent_prompt_only"}:
         return PERSISTENT_BASH_RULES
+    if mode == "bash_persistent_exec_only":
+        return NONPERSISTENT_RULES
     rules = _render(RICH_TERMINAL_RULES, vars_)
     if include_examples:
         rules = f"{rules}\n\n{_render(RICH_TERMINAL_EXAMPLES, vars_)}"
@@ -294,7 +304,7 @@ def _template_vars(task: TaskContext) -> dict[str, Any]:
 
 
 def _tools(mode: str) -> list[dict[str, Any]]:
-    if mode == "bash_persistent":
+    if mode in {"bash_persistent", "bash_persistent_prompt_only", "bash_persistent_exec_only"}:
         return [BASH_TOOL]
     return [EXEC_COMMAND_TOOL, WRITE_STDIN_TOOL]
 
@@ -380,6 +390,10 @@ def _parse_actions(
         parsed, error = _parsed_call_arguments(call)
         if mode == "bash_persistent":
             action, action_error = _bash_persistent_action(task, call, parsed, error, index)
+        elif mode == "bash_persistent_prompt_only":
+            action, action_error = _bash_nonpersistent_action(call, parsed, error, index)
+        elif mode == "bash_persistent_exec_only":
+            action, action_error = _bash_persistent_action(task, call, parsed, error, index)
         else:
             action, action_error = _rich_terminal_action(call, parsed, error, index)
         if action_error:
@@ -424,6 +438,31 @@ def _bash_persistent_action(
                 "command": _runtime_command(str(parsed["command"])),
                 "timeout_sec": DEFAULT_COMMAND_TIMEOUT_SEC,
                 "session_id": session_id,
+            },
+            _call_id(call, index),
+        ),
+        "",
+    )
+
+
+def _bash_nonpersistent_action(
+    call: ModelToolCall,
+    parsed: Any,
+    error: str,
+    index: int,
+) -> tuple[HarnessToolCall | None, str]:
+    if call.name != "bash":
+        error += f"Unknown tool '{call.name}'."
+    if not isinstance(parsed, dict) or "command" not in parsed:
+        error += "Missing 'command' argument in bash tool call."
+    if error:
+        return None, error.strip()
+    return (
+        HarnessToolCall(
+            "local_shell",
+            {
+                "command": _runtime_command(str(parsed["command"])),
+                "timeout_sec": DEFAULT_COMMAND_TIMEOUT_SEC,
             },
             _call_id(call, index),
         ),

@@ -1,0 +1,436 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Harness Mechanism Research Log</title>
+  <style>
+    :root {
+      --bg: #f7f5ef;
+      --paper: #fffdf7;
+      --ink: #1f2933;
+      --muted: #64707d;
+      --line: #d8d2c3;
+      --accent: #0f766e;
+      --warn: #a15c00;
+      --bad: #9f1d2b;
+      --good: #25633f;
+      --chip: #ebe6d8;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font: 15px/1.55 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    main {
+      width: min(1180px, calc(100vw - 40px));
+      margin: 32px auto 80px;
+      background: var(--paper);
+      border: 1px solid var(--line);
+      box-shadow: 0 18px 60px rgba(31, 41, 51, 0.08);
+    }
+    header {
+      padding: 34px 40px 24px;
+      border-bottom: 1px solid var(--line);
+    }
+    h1, h2, h3 { line-height: 1.12; margin: 0; }
+    h1 { font-size: 32px; letter-spacing: 0; }
+    h2 { font-size: 21px; margin: 34px 0 12px; }
+    h3 { font-size: 16px; margin: 22px 0 8px; }
+    p { margin: 9px 0; }
+    code {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+      font-size: 0.92em;
+      background: #f0ece0;
+      border: 1px solid #e3dccb;
+      padding: 1px 4px;
+      border-radius: 4px;
+    }
+    .subhead {
+      color: var(--muted);
+      margin-top: 10px;
+      max-width: 880px;
+    }
+    .content { padding: 0 40px 44px; }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 12px;
+      margin-top: 20px;
+    }
+    .metric {
+      border: 1px solid var(--line);
+      background: #fbf8ef;
+      padding: 13px 14px;
+      min-height: 88px;
+    }
+    .metric .label {
+      color: var(--muted);
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+    .metric .value {
+      font-size: 22px;
+      font-weight: 700;
+      margin-top: 6px;
+    }
+    .metric .note {
+      color: var(--muted);
+      font-size: 12px;
+      margin-top: 4px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 12px 0 20px;
+      table-layout: fixed;
+    }
+    th, td {
+      border-top: 1px solid var(--line);
+      padding: 10px 9px;
+      vertical-align: top;
+      text-align: left;
+    }
+    th {
+      color: #485461;
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      background: #f3efe4;
+    }
+    tr:last-child td { border-bottom: 1px solid var(--line); }
+    .status {
+      display: inline-block;
+      padding: 2px 7px;
+      border-radius: 999px;
+      background: var(--chip);
+      font-size: 12px;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+    .status.wait { color: var(--warn); }
+    .status.bad { color: var(--bad); }
+    .status.good { color: var(--good); }
+    .callout {
+      border-left: 4px solid var(--accent);
+      background: #eef7f4;
+      padding: 14px 16px;
+      margin: 18px 0;
+    }
+    .warnbox {
+      border-left: 4px solid var(--warn);
+      background: #fff4df;
+      padding: 14px 16px;
+      margin: 18px 0;
+    }
+    ol, ul { padding-left: 22px; }
+    li { margin: 6px 0; }
+    .timeline {
+      border-left: 2px solid var(--line);
+      margin: 14px 0 24px 8px;
+      padding-left: 18px;
+    }
+    .event { margin: 0 0 16px; }
+    .event time {
+      display: block;
+      color: var(--muted);
+      font-size: 12px;
+      margin-bottom: 3px;
+    }
+    .small { color: var(--muted); font-size: 13px; }
+    .paths {
+      display: grid;
+      grid-template-columns: 170px 1fr;
+      gap: 8px 14px;
+      margin-top: 10px;
+    }
+    .paths div:nth-child(odd) {
+      color: var(--muted);
+      font-weight: 700;
+    }
+    @media (max-width: 900px) {
+      main { width: calc(100vw - 20px); margin-top: 10px; }
+      header, .content { padding-left: 20px; padding-right: 20px; }
+      .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      table { table-layout: auto; }
+      .paths { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Harness Mechanism Research Log</h1>
+    <p class="subhead">
+      Working log for the TBLite mechanism investigation on <code>gpt-5.4-mini</code>
+      with low reasoning. This file records what is conclusive, what is not, and the
+      exact next steps needed to turn bounded subagent findings into causal claims.
+    </p>
+    <div class="grid">
+      <div class="metric">
+        <div class="label">Last updated</div>
+        <div class="value">2026-06-16</div>
+        <div class="note">20:43 UTC snapshot</div>
+      </div>
+      <div class="metric">
+        <div class="label">Run state</div>
+        <div class="value">Running</div>
+        <div class="note">Slurm array <code>473388</code></div>
+      </div>
+      <div class="metric">
+        <div class="label">Completed records</div>
+        <div class="value">639 / 2700</div>
+        <div class="note">Attempt artifacts flushed so far</div>
+      </div>
+      <div class="metric">
+        <div class="label">Analyzer</div>
+        <div class="value">Pending</div>
+        <div class="note">Job <code>473415</code>, dependency on grid</div>
+      </div>
+    </div>
+  </header>
+
+  <section class="content">
+    <h2>Short Answer</h2>
+    <div class="callout">
+      <p>
+        Almost nothing positive is conclusive yet. The only strong near-term conclusion is
+        negative: <strong>format retries / recovery are unlikely to be the main explanation</strong>
+        for the weak-model harness gap. Several other candidate mechanisms remain plausible, but
+        the current evidence is either incomplete because the 100-task grid is still running, or
+        contaminated because the ablation did not isolate the intended variable.
+      </p>
+    </div>
+
+    <h2>Current Evidence State</h2>
+    <div class="paths">
+      <div>Run directory</div>
+      <div><code>/wbl-fast/usrs/trost/harness-complexity/final_test/tblite_mechanism_gpt54mini_low_20260616_182830</code></div>
+      <div>Main grid</div>
+      <div><code>473388</code>, 27 variants x 100 tasks x 1 trial = 2700 attempts</div>
+      <div>Post-run analyzer</div>
+      <div><code>473415</code>, dependency-pending on <code>473388</code></div>
+      <div>Current artifacts</div>
+      <div>639 <code>records.json</code>, 639 <code>summary.json</code>, 651 <code>harness-result.json</code></div>
+      <div>Run health</div>
+      <div>No current log matches for 429, rate limit, policy/cyber block, traceback, timeout, or refusal signatures.</div>
+    </div>
+
+    <h2>Mechanism Status Matrix</h2>
+    <table>
+      <thead>
+        <tr>
+          <th style="width: 21%">Mechanism</th>
+          <th style="width: 15%">Status</th>
+          <th style="width: 32%">What We Know</th>
+          <th>Next Step</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Prompt / context prior</td>
+          <td><span class="status wait">Inconclusive</span></td>
+          <td>Clean prompt graft was positive over context-only in early overlap, but CI crossed zero and there was a concrete regression.</td>
+          <td>After analyzer, compare <code>bare_v2_r3</code>, <code>context_only</code>, <code>codex_prompt</code>, <code>codex_full_minimal_prompt</code>, and <code>codex_full</code> on all 100 paired tasks.</td>
+        </tr>
+        <tr>
+          <td>Persistent shell / sessions</td>
+          <td><span class="status wait">Inconclusive</span></td>
+          <td>Partial data does not support hidden persistence as the main factor. Prompt-only matched or beat actual persistent execution in sparse overlap.</td>
+          <td>Compute paired estimands for persistent, prompt-only, exec-only, and <code>codex_full_no_write_stdin</code>; stratify by actual session reuse and polling.</td>
+        </tr>
+        <tr>
+          <td>Structured exec / error feedback</td>
+          <td><span class="status bad">Ablation contaminated</span></td>
+          <td><code>codex_full_no_unified_output</code> still exposes wall time, exit code, and framed output, so it is not a true no-status/no-structured-feedback test.</td>
+          <td>Create a matched Codex observation-format experiment: full unified, exit-code-only, raw stdout/stderr only, no <code>session_id</code>, and no exit code.</td>
+        </tr>
+        <tr>
+          <td>Retries / recovery / parser tolerance</td>
+          <td><span class="status good">Likely not main driver</span></td>
+          <td>Early <code>r0</code> vs <code>r3</code> was flat, and observed Codex wins did not involve recorded recovery events.</td>
+          <td>Confirm on completed grid. If parser tolerance remains targeted, run strict-parser Codex ablation.</td>
+        </tr>
+        <tr>
+          <td>Patch / editing affordance</td>
+          <td><span class="status bad">Ablation contaminated</span></td>
+          <td><code>codex_full_no_patch_tool</code> removes the explicit tool, but <code>exec_command</code> still intercepts shell <code>apply_patch</code>.</td>
+          <td>Add a true no-patch-affordance profile: no patch tool, no patch prompt guidance, and no exec-side patch interception.</td>
+        </tr>
+        <tr>
+          <td>History / replay / context management</td>
+          <td><span class="status wait">Split interpretation</span></td>
+          <td><code>no_history_replay</code> is an intentionally unrealistic negative control: no serious chat-style harness should omit prior assistant/tool/tool-output history. The more realistic questions are response-item replay, context manager, and compaction.</td>
+          <td>Use <code>no_history_replay</code> only as a sanity check. After analyzer, focus causal claims on <code>no_response_replay</code>, <code>no_context_manager</code>, and <code>no_compaction</code>.</td>
+        </tr>
+        <tr>
+          <td>Terminus / tmux semantics</td>
+          <td><span class="status wait">Inconclusive</span></td>
+          <td>There is real lossy terminal observation: <code>return_code=null</code> and here-doc continuation ambiguity. But failures also include ordinary solution errors.</td>
+          <td>Build discordant set after analyzer, label Terminus failures by terminal-continuation, missing-exit/status, premature completion, raw-output noise, or ordinary error.</td>
+        </tr>
+        <tr>
+          <td>Tool surface / action categories</td>
+          <td><span class="status wait">Pending analyzer</span></td>
+          <td>Prior data suggests stateful/replay/session variables correlate more strongly than surface size alone. Current contrasts are needed.</td>
+          <td>Run action-category pass over paired win/loss cells after <code>473415</code> writes analysis CSVs.</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h2>Concrete Next Steps</h2>
+    <ol>
+      <li>
+        <strong>Wait for Slurm grid <code>473388</code> and analyzer <code>473415</code>.</strong>
+        The analyzer should create <code>analysis/aggregate_by_variant.csv</code>,
+        <code>analysis/paired_contrasts_vs_bare_v2_r3.csv</code>,
+        <code>analysis/mechanism_summary.csv</code>, and <code>analysis/mechanism_report.html</code>.
+      </li>
+      <li>
+        <strong>Do the post-run paired read.</strong>
+        Treat paired task deltas as primary; use raw aggregate scores only as secondary context.
+      </li>
+      <li>
+        <strong>Run a discordant-trace audit.</strong>
+        For each mechanism, inspect tasks where the treatment and control disagree. Label the failure mode before claiming causality.
+      </li>
+      <li>
+        <strong>Fix contaminated ablations before rerunning those hypotheses.</strong>
+        Patch affordance and unified-output feedback cannot be decided from the current variants.
+      </li>
+      <li>
+        <strong>Run only minimal follow-ups.</strong>
+        If the full grid is ambiguous, rerun discordant cells or targeted subsets, not the whole 2700-attempt matrix by default.
+      </li>
+    </ol>
+
+    <h2>Post-Analyzer Checklist</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>Analysis</th>
+          <th>Inputs</th>
+          <th>Decision Rule</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Prompt prior</td>
+          <td><code>bare_v2_r3</code>, <code>context_only</code>, <code>codex_prompt</code>, <code>codex_full_minimal_prompt</code></td>
+          <td>Support only if paired delta is positive and traces show changed task framing/action choice, not just noise.</td>
+        </tr>
+        <tr>
+          <td>Persistence</td>
+          <td><code>persistent_bash</code>, <code>prompt_only</code>, <code>exec_only</code>, <code>no_write_stdin</code></td>
+          <td>Support only if wins concentrate on traces with actual shell-state reuse or live-process polling.</td>
+        </tr>
+        <tr>
+          <td>Recovery</td>
+          <td><code>bare_v2_r0</code>, <code>bare_v2_r3</code>, <code>codex_full_no_recovery</code></td>
+          <td>Falsify as main driver if full-grid deltas stay small and winning traces lack recovery events.</td>
+        </tr>
+        <tr>
+          <td>History/context</td>
+          <td><code>no_response_replay</code>, <code>no_context_manager</code>, <code>no_compaction</code>; <code>no_history_replay</code> only as negative control</td>
+          <td>Support realistic history/context claims only if paired losses cluster in multi-turn, parallel-call, or compacted traces. Do not treat <code>no_history_replay</code> as representative of a plausible harness.</td>
+        </tr>
+        <tr>
+          <td>Terminus semantics</td>
+          <td><code>terminus_2_compressed</code> versus structured controls</td>
+          <td>Support only if Terminus-only losses concentrate in terminal-observation labels and structured controls recover them.</td>
+        </tr>
+        <tr>
+          <td>Tool mediation</td>
+          <td>Action-category counts and paired traces</td>
+          <td>Support only if a concrete action category mediates paired wins, not merely if larger harnesses score higher.</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h2>Known Design Corrections Before Next Evals</h2>
+    <div class="warnbox">
+      <p><strong>Patch ablation has been fixed in code.</strong> The new <code>codex_full_no_patch_affordance</code> profile removes the explicit tool, removes model-visible <code>apply_patch</code> prompt guidance, and blocks shell <code>apply_patch</code> interception.</p>
+      <p><strong>Unified-output ablation has been fixed in code.</strong> The new <code>codex_full_raw_exec_output</code> profile renders only raw stdout/stderr as model-visible command output while holding the Codex tool loop otherwise fixed.</p>
+    </div>
+
+    <h2>Running Log</h2>
+    <div class="timeline">
+      <div class="event">
+        <time>2026-06-16 21:28 UTC</time>
+        <p>Status snapshot. Original mechanism grid is still running with <code>1191/2700</code> summaries flushed and no stderr/rate-limit signatures seen. Hypothesis-relevant paired deltas versus <code>codex_full</code> have strengthened: <code>exec_only_tools</code> <code>-0.238</code> over <code>42</code> paired tasks, <code>minimal_surfaces</code> <code>-0.268</code> over <code>41</code>, <code>no_response_replay</code> <code>-0.163</code> over <code>43</code>, and <code>no_write_stdin</code> <code>-0.143</code> over <code>42</code>. <code>no_context_manager</code>, <code>no_compaction</code>, and <code>minimal_prompt</code> remain near-flat versus <code>codex_full</code>. Fixed v2 has <code>121/300</code> summaries and is still underpowered; current paired results do not yet support a clean isolated patch or raw-output effect (<code>no_patch_affordance</code> <code>+0.069</code> over <code>29</code>, <code>raw_exec_output</code> flat over <code>28</code>). Treat the cleaner decomposition as unresolved until it completes.</p>
+      </div>
+      <div class="event">
+        <time>2026-06-16 21:06 UTC</time>
+        <p>Flagged <code>codex_full_exec_only_tools</code> for follow-up rather than treating it as a clean single-factor result. It is a promising degradation signal, but it jointly removes explicit <code>apply_patch</code>, <code>write_stdin</code>, and <code>update_plan</code> from the model-visible tool list while leaving most Codex machinery intact; older attempts may also retain patch-related prompt/tool-prior residue. Current original-run partial is <code>1075</code> parsed summaries. Serious signals versus <code>codex_full</code>: <code>exec_only_tools</code> is <code>-0.216</code> over <code>37</code> paired tasks, <code>no_response_replay</code> is <code>-0.158</code> over <code>38</code>, <code>minimal_surfaces</code> is <code>-0.182</code> over <code>33</code>, and <code>no_write_stdin</code> is <code>-0.132</code> over <code>38</code>. Non-signals so far: <code>no_context_manager</code> is flat and <code>no_compaction</code> is slightly up versus <code>codex_full</code>, so context management/compaction are not currently credible causes of the weak-model gap. Fixed v2 is still early at <code>67</code> summaries: <code>raw_exec_output</code> is directionally down, but <code>no_patch_affordance</code> is inconclusive.</p>
+      </div>
+      <div class="event">
+        <time>2026-06-16 20:49 UTC</time>
+        <p>Interpreted signal (2), <code>codex_full_exec_only_tools</code>. Current partial result is meaningful but composite: the profile removes <code>write_stdin</code>, <code>update_plan</code>, and explicit <code>apply_patch</code> from the advertised tool list, while the original run may still contain patch prompt guidance and shell-level patch interception. Paired against <code>codex_full</code>, current overlap is <code>n=32</code>, delta <code>-0.188</code>, with <code>0/6/26</code> exec-only wins/losses/ties. Discordant losses include <code>basic-message-queue</code>, <code>battery-charging-optimization</code>, <code>csv-json-jsonl-merger</code>, <code>db-migration-local-storage</code>, <code>game-of-stones</code>, <code>html-index-analysis</code>, and <code>hydra-debug-slurm-mode</code>. The qualitative read points to a combination of structured edit affordance, ongoing process/session handling, and tool-transcript scaffolding; it is not yet a clean single-cause result. The fixed v2 run is intended to decompose this with <code>no_patch_affordance</code>, <code>raw_exec_output</code>, and the existing <code>no_write_stdin</code> ablation.</p>
+      </div>
+      <div class="event">
+        <time>2026-06-16 20:43 UTC</time>
+        <p>Original run has 935 parsed per-task records. Excluding unrealistic or contaminated variants, two serious signals are most promising: <code>codex_full_no_response_replay</code> is down versus <code>codex_full</code> by <code>-0.147</code> over 34 paired tasks, and <code>codex_full_exec_only_tools</code> is down versus <code>codex_full</code> by <code>-0.188</code> over 32 paired tasks. <code>no_compaction</code> and <code>no_context_manager</code> are not currently hurting; if this holds, they are unlikely to explain the gap. Fixed v2 run is still too early: 17 records total, with <code>raw_exec_output</code> at 1/4 and <code>no_patch_affordance</code> at 4/5, not enough to interpret.</p>
+      </div>
+      <div class="event">
+        <time>2026-06-16 20:26 UTC</time>
+        <p>Implemented and relaunched fixed contaminated ablations. The first fixed launch
+        was canceled after finding one remaining raw-output schema exposure; corrected v2
+        is:
+        <code>/wbl-fast/usrs/trost/harness-complexity/final_test/tblite_fixed_contaminated_v2_gpt54mini_low_20260616_202855</code>.
+        Slurm array <code>473446</code> runs <code>codex_full</code>,
+        <code>codex_full_no_patch_affordance</code>, and
+        <code>codex_full_raw_exec_output</code> across the 100 TBLite tasks, 1 trial,
+        4 shards x concurrency 25. Dependent analyzer is <code>473447</code>.
+        Initial health check: all four shards running, first records flushed, no 429/rate-limit/profile/error signatures. Live no-patch check shows only <code>exec_command</code>, <code>write_stdin</code>, and <code>update_plan</code> tools; live raw-output request metadata reports no model-visible output schema.</p>
+      </div>
+      <div class="event">
+        <time>2026-06-16 20:05 UTC</time>
+        <p>Reframed around serious cache-friendly harnesses, excluding <code>no_history_replay</code> and <code>minimal_loop</code>. Current promising serious signal is <code>no_response_replay</code>: it still has history, but reconstructs transcript shape instead of replaying exact raw response items. Partial paired deltas are <code>-0.120</code> versus <code>bare_v2_r3</code> over 25 paired tasks and <code>-0.136</code> versus <code>codex_full</code> over 22 paired tasks. This suggests exact transcript/replay shape may matter. <code>codex_full_exec_only_tools</code> is also down versus <code>codex_full</code> by <code>-0.190</code> over 21 paired tasks, suggesting richer tool surface may matter. Other serious ablations are mixed or not yet convincing.</p>
+      </div>
+      <div class="event">
+        <time>2026-06-16 19:56 UTC</time>
+        <p>User correctly noted that <code>no_history_replay</code> is not a realistic harness condition: normal LLM agents receive prior conversation/tool history. Checked whether targeted cancellation was possible. It is not cleanly targetable because those attempts are futures inside the existing shard controllers, not independent Slurm jobs. Marked this variant as a sanity negative control and deprioritized it for causal interpretation.</p>
+      </div>
+      <div class="event">
+        <time>2026-06-16 19:50 UTC</time>
+        <p>Checked live state: grid <code>473388</code> still running, analyzer <code>473415</code> dependency-pending, 537 attempt records present. Partial paired read is promising for one thing: history replay/context shape and minimal-loop removal appear to matter strongly so far. Against <code>bare_v2_r3</code>, <code>codex_full_no_history_replay</code> is currently <code>-0.615</code> over 13 paired tasks and <code>codex_full_minimal_loop</code> is <code>-0.667</code> over 12 paired tasks. This is still early and must be confirmed after the analyzer.</p>
+      </div>
+      <div class="event">
+        <time>2026-06-16 19:31 UTC</time>
+        <p>Checked live state: grid <code>473388</code> running, analyzer <code>473415</code> dependency-pending, 478 attempt records present, no error signatures in Slurm logs.</p>
+      </div>
+      <div class="event">
+        <time>2026-06-16 19:20 UTC</time>
+        <p>Dedicated subagents returned bounded results for all mechanism areas. None produced a defensible positive single-factor causal claim from current partial data.</p>
+      </div>
+      <div class="event">
+        <time>2026-06-16 19:02 UTC</time>
+        <p>Created markdown coordination summary at <code>viz/mechanism_goal_notes/coordination_summary.md</code>.</p>
+      </div>
+      <div class="event">
+        <time>2026-06-16 18:30 UTC</time>
+        <p>Mechanism grid launched under Slurm with 27 variants x 100 TBLite tasks x 1 trial for <code>gpt-5.4-mini</code> low.</p>
+      </div>
+    </div>
+
+    <h2>Files To Watch</h2>
+    <ul>
+      <li><code>/wbl-fast/usrs/trost/harness-complexity/final_test/tblite_mechanism_gpt54mini_low_20260616_182830/analysis/mechanism_report.html</code></li>
+      <li><code>/wbl-fast/usrs/trost/harness-complexity/final_test/tblite_mechanism_gpt54mini_low_20260616_182830/analysis/aggregate_by_variant.csv</code></li>
+      <li><code>/wbl-fast/usrs/trost/harness-complexity/final_test/tblite_mechanism_gpt54mini_low_20260616_182830/analysis/paired_contrasts_vs_bare_v2_r3.csv</code></li>
+      <li><code>/home/trost/harness-complexity/viz/mechanism_goal_notes/coordination_summary.md</code></li>
+      <li><code>/home/trost/harness-complexity/viz/mechanism_goal_notes/mechanism_research_log.html</code></li>
+    </ul>
+
+    <p class="small">
+      This log is intentionally conservative. A mechanism is not marked conclusive unless
+      it has paired task evidence, trace-level mechanism evidence, and a clean enough
+      treatment/control contrast.
+    </p>
+  </section>
+</main>
+</body>
+</html>

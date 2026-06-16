@@ -517,6 +517,53 @@ def test_harbor_agent_intercepts_shell_apply_patch_from_exec_command(tmp_path: P
     assert payload["metadata"]["intercepted_apply_patch"] is True
 
 
+@pytest.mark.parametrize("profile", ["no_patch_affordance", "loo_apply_patch"])
+def test_harbor_agent_blocks_shell_apply_patch_when_affordance_disabled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, profile: str
+) -> None:
+    monkeypatch.setenv("CODEX_HARNESS_PROFILE", profile)
+    workdir = tmp_path / "task"
+    workdir.mkdir()
+    (workdir / "hello.txt").write_text("old\n", encoding="utf-8")
+    workspace = tmp_path / "workspace"
+    candidate = workspace / "candidate"
+    candidate.mkdir(parents=True)
+    command = (
+        "apply_patch <<'PATCH'\n"
+        "*** Begin Patch\n"
+        "*** Update File: hello.txt\n"
+        "@@\n"
+        "-old\n"
+        "+new\n"
+        "*** End Patch\n"
+        "PATCH"
+    )
+    (candidate / "harness.py").write_text(
+        "from plumbing.base_agent import BaseHarness\n"
+        "from plumbing.types import HarnessToolCall, HarnessTurn\n"
+        f"COMMAND = {command!r}\n"
+        "class H(BaseHarness):\n"
+        "    def next_command(self, task, history):\n"
+        "        if history:\n"
+        "            return HarnessTurn(done=True)\n"
+        "        return HarnessTurn(tool_calls=(HarnessToolCall('exec_command', {\n"
+        "            'cmd': COMMAND\n"
+        "        }, 'call_1'),))\n"
+        "def create_agent():\n"
+        "    return H()\n",
+        encoding="utf-8",
+    )
+    env = LocalUnifiedEnvironment(workdir)
+    agent = HarborHarnessAgent(logs_dir=tmp_path / "logs", candidate_dir=workspace)
+    asyncio.run(agent.run("instruction", env, SimpleNamespace(metadata=None)))
+
+    assert (workdir / "hello.txt").read_text(encoding="utf-8") == "old\n"
+    assert env.exec_command_calls == 0
+    payload = json.loads((tmp_path / "logs" / "harness-turn-01.json").read_text())
+    assert payload["return_code"] == 2
+    assert payload["metadata"]["blocked_apply_patch_cmd"] is True
+
+
 def test_harbor_agent_executes_update_plan_without_environment(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     candidate = workspace / "candidate"

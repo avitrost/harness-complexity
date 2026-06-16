@@ -75,6 +75,182 @@ def test_codex_full_seed_uses_codex_tool_specs() -> None:
     assert tools[3]["format"]["definition"] == module.APPLY_PATCH_GRAMMAR
 
 
+def test_codex_full_no_patch_affordance_removes_tool_and_prompt_guidance() -> None:
+    module = _load_seed()
+    features = module.resolve_features("no_patch_affordance")
+    tools = module._built_tools(features)
+    builder = module.PromptBuilder(module.ToolRouter(tools), features)
+
+    assert [tool["name"] for tool in tools] == [
+        "exec_command",
+        "write_stdin",
+        "update_plan",
+    ]
+    assert "apply_patch" not in builder.base_instructions()
+
+
+def test_codex_full_raw_exec_output_removes_status_metadata() -> None:
+    module = _load_seed()
+    features = module.resolve_features("raw_exec_output")
+    tools = module._built_tools(features)
+    formatter = module.ToolOutputFormatter(features)
+    record = CommandResult(
+        command="python test.py",
+        return_code=7,
+        stdout="stdout text",
+        stderr="stderr text",
+        tool_name="exec_command",
+        metadata={
+            "unified_exec": {
+                "wall_time_seconds": 1.25,
+                "exit_code": 7,
+                "session_id": 9,
+            }
+        },
+    )
+
+    rendered = formatter.tool_output_text(record)
+
+    assert tools[0]["output_schema"]["required"] == ["output"]
+    assert set(tools[0]["output_schema"]["properties"]) == {"output"}
+    assert tools[1]["output_schema"]["required"] == ["output"]
+    assert set(tools[1]["output_schema"]["properties"]) == {"output"}
+    assert rendered == "stdout text\nSTDERR:\nstderr text"
+    assert "Process exited" not in rendered
+    assert "Wall time" not in rendered
+    assert "session ID" not in rendered
+
+
+def test_codex_full_leave_one_out_apply_patch_removes_tool_prompt_and_shell_intercept() -> None:
+    module = _load_seed()
+    features = module.resolve_features("loo_apply_patch")
+    tools = module._built_tools(features)
+    builder = module.PromptBuilder(module.ToolRouter(tools), features)
+
+    assert [tool["name"] for tool in tools] == [
+        "exec_command",
+        "write_stdin",
+        "update_plan",
+    ]
+    assert "apply_patch" not in builder.base_instructions()
+    assert "patches" not in builder.base_instructions().lower()
+
+
+def test_codex_full_leave_one_out_update_plan_removes_tool_and_prompt_guidance() -> None:
+    module = _load_seed()
+    features = module.resolve_features("loo_update_plan")
+    tools = module._built_tools(features)
+    builder = module.PromptBuilder(module.ToolRouter(tools), features)
+    prompt = builder.base_instructions()
+
+    assert [tool["name"] for tool in tools] == [
+        "exec_command",
+        "write_stdin",
+        "apply_patch",
+    ]
+    assert "update_plan" not in prompt
+    assert "## Planning" not in prompt
+    assert "## `update_plan`" not in prompt
+    assert "making & updating plans" not in prompt
+
+
+def test_codex_full_leave_one_out_write_stdin_removes_tool_and_session_guidance() -> None:
+    module = _load_seed()
+    features = module.resolve_features("loo_write_stdin")
+    tools = module._built_tools(features)
+    builder = module.PromptBuilder(module.ToolRouter(tools), features)
+    formatter = module.ToolOutputFormatter(features)
+    record = CommandResult(
+        command="python server.py",
+        return_code=None,
+        stdout="server started",
+        tool_name="exec_command",
+        metadata={
+            "unified_exec": {
+                "wall_time_seconds": 1.5,
+                "session_id": 3,
+            }
+        },
+    )
+
+    assert [tool["name"] for tool in tools] == [
+        "exec_command",
+        "update_plan",
+        "apply_patch",
+    ]
+    assert "write_stdin" not in builder.base_instructions()
+    assert "session_id" not in tools[0]["output_schema"]["properties"]
+    assert "write_stdin" not in json.dumps(tools)
+    assert "session ID" not in formatter.tool_output_text(record)
+
+
+def test_codex_full_renamed_shell_replaces_exec_command_model_visible_name(
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("OPENAI_AUTH_MODE", raising=False)
+    module = _load_seed()
+    fake = RecordingToolOpenAI(
+        [
+            SimpleNamespace(
+                output_text="",
+                output=[
+                    SimpleNamespace(
+                        type="function_call",
+                        name="shell",
+                        arguments='{"cmd":"pwd","yield_time_ms":1000}',
+                        call_id="call_shell",
+                    )
+                ],
+            )
+        ]
+    )
+    set_client_factory(lambda: fake)
+    try:
+        turn = module.create_agent(profile="renamed_shell").next_command(
+            TaskContext("List files."), []
+        )
+    finally:
+        set_client_factory(None)
+
+    assert [tool["name"] for tool in fake.calls[0]["tools"]] == [
+        "shell",
+        "write_stdin",
+        "update_plan",
+        "apply_patch",
+    ]
+    assert "exec_command" not in json.dumps(fake.calls[0]["tools"])
+    assert len(turn.tool_calls) == 1
+    assert turn.tool_calls[0].name == "exec_command"
+    assert turn.tool_calls[0].arguments["cmd"] == "pwd"
+
+
+def test_codex_full_renamed_shell_replays_synthetic_shell_history(monkeypatch) -> None:
+    monkeypatch.delenv("OPENAI_AUTH_MODE", raising=False)
+    module = _load_seed()
+    fake = RecordingToolOpenAI([SimpleNamespace(output_text="done", output=[])])
+    set_client_factory(lambda: fake)
+    history = [
+        CommandResult(
+            command="pwd",
+            return_code=0,
+            stdout="/workspace\n",
+            tool_name="shell",
+            tool_call_id="call_shell",
+            metadata={"arguments": {"cmd": "pwd"}},
+        )
+    ]
+    try:
+        module.create_agent(profile="renamed_shell").next_command(
+            TaskContext("List files."), history
+        )
+    finally:
+        set_client_factory(None)
+
+    input_items = fake.calls[0]["input"]
+    assert input_items[3]["type"] == "function_call"
+    assert input_items[3]["name"] == "shell"
+
+
 def test_codex_full_seed_returns_model_tool_call(monkeypatch) -> None:
     monkeypatch.delenv("OPENAI_AUTH_MODE", raising=False)
     module = _load_seed()

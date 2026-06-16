@@ -1,0 +1,251 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Codex Full Tool Leave-One-Out Proposal</title>
+  <style>
+    :root {
+      --bg: #fbfaf6;
+      --ink: #1f2528;
+      --muted: #5d686e;
+      --rule: #d7d0c3;
+      --panel: #fffefa;
+      --accent: #0f766e;
+      --warn: #9a3412;
+      --code: #f0ede5;
+    }
+    html { background: var(--bg); color: var(--ink); font-family: ui-serif, Georgia, "Times New Roman", serif; }
+    body { margin: 0; }
+    main { max-width: 1120px; margin: 0 auto; padding: 42px 28px 72px; }
+    h1, h2, h3 { font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; line-height: 1.1; }
+    h1 { font-size: 34px; margin: 0 0 8px; }
+    h2 { font-size: 23px; margin: 38px 0 12px; border-top: 1px solid var(--rule); padding-top: 22px; }
+    h3 { font-size: 17px; margin: 22px 0 8px; }
+    p, li { font-size: 16px; line-height: 1.52; }
+    .subtitle { color: var(--muted); max-width: 820px; margin: 0 0 24px; }
+    .callout { background: var(--panel); border: 1px solid var(--rule); border-left: 4px solid var(--accent); padding: 14px 16px; margin: 20px 0; }
+    .warn { border-left-color: var(--warn); }
+    code { background: var(--code); padding: 1px 4px; border-radius: 3px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.92em; }
+    pre { background: var(--code); padding: 12px; overflow-x: auto; border-radius: 4px; font-size: 13px; line-height: 1.45; }
+    table { width: 100%; border-collapse: collapse; margin: 12px 0 22px; font-size: 14px; }
+    th { text-align: left; font-family: ui-sans-serif, system-ui, sans-serif; border-bottom: 2px solid var(--rule); padding: 9px 8px; vertical-align: bottom; }
+    td { border-bottom: 1px solid var(--rule); padding: 10px 8px; vertical-align: top; }
+    .status { display: inline-block; font-family: ui-sans-serif, system-ui, sans-serif; font-size: 12px; letter-spacing: .02em; text-transform: uppercase; border: 1px solid var(--rule); border-radius: 999px; padding: 2px 8px; background: var(--panel); }
+    .approved { color: var(--accent); }
+    .blocked { color: var(--warn); }
+    .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+    .card { background: var(--panel); border: 1px solid var(--rule); padding: 14px 16px; }
+    .card h3 { margin-top: 0; }
+    @media (max-width: 760px) {
+      .grid { grid-template-columns: 1fr; }
+      main { padding: 28px 18px 56px; }
+      table { font-size: 13px; }
+    }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Codex Full Tool Leave-One-Out Proposal</h1>
+  <p class="subtitle">Approval document for a cleaner family of Codex-full ablations. Each proposed variant keeps the Codex-full harness as fixed as possible while removing one explicit model-visible tool affordance and removing matching model-visible prompt/schema references.</p>
+
+  <div class="callout">
+    <p><strong>Proposed rule.</strong> For each tool, disable the explicit harness-provided tool call, remove direct prompt/schema mentions of that tool, but leave bash-level workarounds available where that is scientifically possible.</p>
+    <p><strong>Important exception.</strong> <code>exec_command</code> is the shell access tool. Removing it does not leave a bash workaround. I propose treating it separately as either a negative control or a renamed-shell control, not as a standard leave-one-out member.</p>
+  </div>
+
+  <h2>Current Codex-Full Tool Surface</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>Tool</th>
+        <th>Current role</th>
+        <th>Can function be approximated through bash?</th>
+        <th>Standard leave-one-out?</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>apply_patch</code></td>
+        <td>Structured file editing through a custom freeform patch grammar.</td>
+        <td>Yes. Use heredocs, <code>python - &lt;&lt;'PY'</code>, <code>sed</code>, <code>perl</code>, or file rewrites.</td>
+        <td><span class="status approved">yes</span></td>
+      </tr>
+      <tr>
+        <td><code>update_plan</code></td>
+        <td>Structured planning state rendered outside normal assistant text.</td>
+        <td>Mostly yes. The model can keep plan text in normal messages or temporary files, but loses structured status state.</td>
+        <td><span class="status approved">yes</span></td>
+      </tr>
+      <tr>
+        <td><code>write_stdin</code></td>
+        <td>Continuation/polling for an existing harness-managed terminal session.</td>
+        <td>Partly yes. The model can use <code>tmux</code>, background jobs, log files, <code>ps</code>, and <code>tail</code> via <code>exec_command</code>.</td>
+        <td><span class="status approved">yes</span></td>
+      </tr>
+      <tr>
+        <td><code>exec_command</code></td>
+        <td>Primary shell execution channel.</td>
+        <td>No. This is bash access. Removing it removes the bash workaround itself.</td>
+        <td><span class="status blocked">separate control</span></td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2>Proposed Variants</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>Variant</th>
+        <th>Disable</th>
+        <th>Prompt/schema removal</th>
+        <th>Bash fallback still allowed</th>
+        <th>Hypothesis tested</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>codex_full_loo_apply_patch</code></td>
+        <td><code>patch_tool=False</code>; block shell-level <code>apply_patch</code> interception.</td>
+        <td>Remove all <code>apply_patch</code> guidance from base instructions and do not advertise the custom patch grammar.</td>
+        <td>Yes: normal shell file editing only.</td>
+        <td>Whether the special structured edit affordance itself is responsible for the performance lift.</td>
+      </tr>
+      <tr>
+        <td><code>codex_full_loo_update_plan</code></td>
+        <td><code>plan_tool=False</code>.</td>
+        <td>Remove the <code>## Planning</code> section, direct <code>update_plan</code> references, and the final <code>## update_plan</code> tool-instruction section.</td>
+        <td>Yes: ordinary assistant text or local notes.</td>
+        <td>Whether structured external planning state helps the weak model maintain task control.</td>
+      </tr>
+      <tr>
+        <td><code>codex_full_loo_write_stdin</code></td>
+        <td><code>write_stdin_tool=False</code>.</td>
+        <td>Remove <code>write_stdin</code> tool schema and remove/rewrite model-visible <code>session_id</code> guidance that says to pass IDs to <code>write_stdin</code>.</td>
+        <td>Yes: <code>tmux</code>, background jobs, PID/log polling, repeated shell commands.</td>
+        <td>Whether harness-managed persistent terminal continuation is a key scaffold.</td>
+      </tr>
+      <tr>
+        <td><code>codex_full_no_exec_command</code></td>
+        <td><code>exec_command</code> removed.</td>
+        <td>Remove shell-command guidance and tool schema.</td>
+        <td>No.</td>
+        <td>Negative control only. This should perform badly and is not a fair member of the bash-fallback family.</td>
+      </tr>
+      <tr>
+        <td><code>codex_full_renamed_shell</code></td>
+        <td>Remove the <code>exec_command</code> name, but replace it with an equivalent <code>bash</code> or <code>shell</code> tool.</td>
+        <td>Remove <code>exec_command</code> wording while preserving shell-use guidance under the replacement tool.</td>
+        <td>Yes, by construction.</td>
+        <td>Whether the Codex-native <code>exec_command</code> name/schema prior matters, independent of shell access.</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="callout warn">
+    <p><strong>Approval question.</strong> I recommend running the first three as the main leave-one-out set. For <code>exec_command</code>, I recommend <code>codex_full_renamed_shell</code> if you want a serious experiment, and <code>codex_full_no_exec_command</code> only as a sanity negative control.</p>
+  </div>
+
+  <h2>Prompt Edits</h2>
+  <div class="grid">
+    <section class="card">
+      <h3><code>apply_patch</code></h3>
+      <p>Remove direct patch-tool guidance from the task execution and presentation sections.</p>
+      <pre>Remove lines containing:
+- "Use the `apply_patch` tool..."
+- "Do not waste tokens by re-reading files after calling `apply_patch`..."
+- "if you've created or modified files using `apply_patch`..."
+- any "patches" wording that implies the custom tool</pre>
+      <p>Keep general file-editing instructions. Do not forbid shell editing.</p>
+    </section>
+
+    <section class="card">
+      <h3><code>update_plan</code></h3>
+      <p>Remove both the broad planning guidance and the dedicated tool appendix.</p>
+      <pre>Remove sections:
+## Planning
+  ... all text through the examples block ...
+
+## `update_plan`
+  ... all text through "If all steps are complete..."</pre>
+      <p>Also remove standalone references like "making &amp; updating plans" and "plan tool".</p>
+    </section>
+
+    <section class="card">
+      <h3><code>write_stdin</code></h3>
+      <p>There is little base-prompt text for this tool; most mentions are in the model-visible tool schema and command-output schema.</p>
+      <pre>Remove from model-visible schemas:
+- the `write_stdin` tool schema
+- "Session identifier to pass to write_stdin..."
+- output fields that only exist to route to write_stdin, unless rewritten neutrally</pre>
+      <p>Preserve normal shell advice. The model can still use <code>tmux</code>, logs, and background jobs through <code>exec_command</code>.</p>
+    </section>
+
+    <section class="card">
+      <h3><code>exec_command</code></h3>
+      <p>This needs an explicit design choice before implementation.</p>
+      <pre>Option A: no exec_command
+- remove shell tool entirely
+- negative control, not bash-fallback comparable
+
+Option B: renamed shell
+- replace exec_command with equivalent bash/shell tool
+- removes Codex-specific name/schema prior
+- keeps task solvability</pre>
+      <p>I recommend Option B for a useful mechanism test.</p>
+    </section>
+  </div>
+
+  <h2>Implementation Sketch</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>Area</th>
+        <th>Change</th>
+        <th>Reason</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>FeatureSet</code></td>
+        <td>Add explicit prompt-guidance booleans for <code>plan</code>, <code>write_stdin</code>, and optionally <code>exec_command</code>. Reuse existing <code>patch_prompt_guidance</code>.</td>
+        <td>Keeps tool removal separate from prompt removal and lets tests assert each profile precisely.</td>
+      </tr>
+      <tr>
+        <td><code>PROFILE_OVERRIDES</code></td>
+        <td>Add the proposed profiles with one tool affordance removed per profile.</td>
+        <td>Makes the experiment grid auditable and reproducible.</td>
+      </tr>
+      <tr>
+        <td>Prompt filtering</td>
+        <td>Replace the current patch-only filter with a section-aware filter that can remove tool-specific sections and line-level references.</td>
+        <td>Avoids dangling prompt instructions for tools that are not visible.</td>
+      </tr>
+      <tr>
+        <td>Tool schemas</td>
+        <td>Ensure removed tools do not appear in <code>router.model_visible_specs()</code>. For no-write-stdin, remove or neutralize <code>session_id</code> guidance.</td>
+        <td>The model should not see an unavailable affordance.</td>
+      </tr>
+      <tr>
+        <td><code>harbor_adapter</code></td>
+        <td>For no-apply-patch only, keep blocking shell-level <code>apply_patch</code> interception. Do not block ordinary shell editing.</td>
+        <td>Prevents the removed custom patch tool from re-entering through <code>exec_command</code>.</td>
+      </tr>
+      <tr>
+        <td>Tests</td>
+        <td>Add assertions for visible tool names, absence of removed prompt strings, and allowed bash fallbacks.</td>
+        <td>Prevents contaminated ablations before running the expensive eval.</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2>Recommended Approval Set</h2>
+  <ol>
+    <li>Approve <code>codex_full_loo_apply_patch</code>, using the already-clean no-patch-affordance behavior as the implementation basis.</li>
+    <li>Approve <code>codex_full_loo_update_plan</code>, removing both model-visible tool schema and planning prompt guidance.</li>
+    <li>Approve <code>codex_full_loo_write_stdin</code>, removing the tool and dangling <code>session_id</code> guidance while preserving bash/tmux fallbacks.</li>
+    <li>Choose whether <code>exec_command</code> should be excluded, included only as <code>codex_full_renamed_shell</code>, or included as a negative control.</li>
+  </ol>
+</main>
+</body>
+</html>
