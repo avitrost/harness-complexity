@@ -17,7 +17,10 @@ from evaluator.splits import TEST_TASKS, VAL_TASKS  # noqa: E402
 
 ALLOWED_LOCAL_IMPORTS = {
     "plumbing.base_agent",
+    "plumbing.codex_full_minimal_prompt",
+    "plumbing.codex_full_minimal_surfaces",
     "plumbing.mini_swe_barebones_v2_variants",
+    "plumbing.mini_swe_barebones_v2_codex_prompt",
     "plumbing.openai_client",
     "plumbing.types",
 }

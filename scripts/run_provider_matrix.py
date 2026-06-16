@@ -48,6 +48,7 @@ MINI_BACKFILL_CANDIDATES = {
     "seed_mini_swe_agent_v2",
     "seed_mini_swe_agent_barebones",
     "seed_mini_swe_agent_barebones_v2",
+    "seed_mini_swe_agent_barebones_v2_codex_prompt",
     "seed_mini_swe_agent_barebones_v2_persistent",
     "seed_mini_swe_agent_barebones_v2_rich_terminal",
     "seed_mini_swe_agent_barebones_v2_rich_terminal_no_examples",

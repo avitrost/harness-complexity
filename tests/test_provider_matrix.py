@@ -19,10 +19,10 @@ def test_provider_matrix_default_attempt_count() -> None:
         trials=10,
     )
 
-    assert len(attempts) == 23400
-    assert sum(1 for item in attempts if item.provider == "openai") == 7020
-    assert sum(1 for item in attempts if item.provider == "anthropic") == 8820
-    assert sum(1 for item in attempts if item.provider == "deepseek") == 7560
+    assert len(attempts) == 28260
+    assert sum(1 for item in attempts if item.provider == "openai") == 8370
+    assert sum(1 for item in attempts if item.provider == "anthropic") == 10710
+    assert sum(1 for item in attempts if item.provider == "deepseek") == 9180
 
 
 def test_provider_matrix_openai_backfills_only_mini_candidates() -> None:
@@ -48,6 +48,7 @@ def test_provider_matrix_openai_backfills_only_mini_candidates() -> None:
     assert set(medium.candidates) == {
         "seed_mini_swe_agent_barebones",
         "seed_mini_swe_agent_barebones_v2",
+        "seed_mini_swe_agent_barebones_v2_codex_prompt",
         "seed_mini_swe_agent_barebones_v2_persistent",
         "seed_mini_swe_agent_barebones_v2_rich_terminal",
         "seed_mini_swe_agent_barebones_v2_rich_terminal_no_examples",

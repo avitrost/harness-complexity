@@ -46,6 +46,18 @@ SEED_CANDIDATES = (
     EvalCandidate("seed_codex_compressed", "harness", Path("seeds/codex_compressed"), 1660),
     EvalCandidate("seed_codex_full", "harness", Path("seeds/codex_full"), 2210),
     EvalCandidate(
+        "seed_codex_full_minimal_prompt",
+        "harness",
+        Path("seeds/codex_full_minimal_prompt"),
+        2210,
+    ),
+    EvalCandidate(
+        "seed_codex_full_minimal_surfaces",
+        "harness",
+        Path("seeds/codex_full_minimal_surfaces"),
+        2210,
+    ),
+    EvalCandidate(
         "seed_mini_swe_agent_barebones",
         "harness",
         Path("seeds/mini_swe_agent_barebones"),
@@ -56,6 +68,12 @@ SEED_CANDIDATES = (
         "seed_mini_swe_agent_barebones_v2",
         "harness",
         Path("seeds/mini_swe_agent_barebones_v2"),
+        478,
+    ),
+    EvalCandidate(
+        "seed_mini_swe_agent_barebones_v2_codex_prompt",
+        "harness",
+        Path("seeds/mini_swe_agent_barebones_v2_codex_prompt"),
         478,
     ),
     EvalCandidate(
